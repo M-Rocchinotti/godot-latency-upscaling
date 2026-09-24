@@ -351,9 +351,9 @@ def log_windowed_run(name: str, args: list[str], when: str, seconds: str, outcom
             f"{WINDOW_MAX_SECONDS} s), in a normal window that does not take the\n"
             "keyboard focus, and start only when `preflight` finds the PC idle (GPU load, foreground window).\n\n"
             "| Start (the RTX PC's local time) | Run | What | Duration | Outcome | PC state before |\n"
-            "|---|---|---|---|---|---|\n", encoding="utf-8")
+            "|---|---|---|---|---|---|\n", encoding="utf-8", newline="\n")
     what = " ".join(a for a in args if not a.startswith("--log-file")).replace("|", "\\|")
-    with WINDOW_LOG.open("a", encoding="utf-8") as f:
+    with WINDOW_LOG.open("a", encoding="utf-8", newline="\n") as f:
         f.write(f"| {when} | {name} | `{what}` | {seconds} s | {outcome} | {preflight.replace('|', '/')} |\n")
 
 
