@@ -23,7 +23,8 @@ Vulkan dispatch layer the addon installs in front of Godot at start-up.
 | DLSS Super Resolution / DLAA | planned (Phase 2) | design in `docs/ARCHITECTURE.md` |
 | DLSS Frame Generation / Multi Frame Generation | planned (Phase 3) | |
 | DLSS Ray Reconstruction | not planned | Godot 4.7 has no ray-traced signals to denoise |
-| D3D12 renderer, Compatibility renderer, Linux, macOS | not supported | the addon stays idle and says so |
+| D3D12 renderer, Compatibility renderer | not supported | the addon stays idle and says why |
+| Linux, macOS, Android, iOS, Web, Windows on ARM | not supported | no library: exclude the addon from those exports (see [Platforms](#platforms)) |
 
 ## Requirements
 
@@ -35,7 +36,7 @@ Vulkan dispatch layer the addon installs in front of Godot at start-up.
 | Multi Frame Generation (planned) | GeForce RTX 50 series | | as Frame Generation |
 
 Other GPUs, older drivers and unsupported configurations do not break anything: Godot runs
-exactly as without the addon and `LatencyUpscaling.get_reflex_status()` says why Reflex is unavailable.
+exactly as without the addon and `get_reflex_status()` says why Reflex is unavailable.
 
 To build from source: Python 3.10+, MSVC (Visual Studio 2022 Build Tools or a portable MSVC
 14.4x with the Windows SDK), Git. SCons is installed automatically. For the validation-layer test:
@@ -43,8 +44,11 @@ the LunarG Vulkan SDK.
 
 ## Installation
 
-1. Copy `addons/latency_upscaling/` into your project, keeping the path, with the built DLLs in
-   `addons/latency_upscaling/bin/` (from a release, or build them: see below).
+1. Download a **release zip** and unzip it into your project folder, so that
+   `addons/latency_upscaling/` sits at the project root (keep the path). The zip contains both DLLs:
+   the editor, games run from it and debug exports load the debug DLL, release exports the release
+   DLL. GitHub's green **"Download ZIP"** button (a `git archive` of the sources) is **not
+   installable**: it has no DLLs, which are build outputs. Without a release, build them (below).
 2. Open the project in Godot 4.7. The GDExtension loads by itself. If you copied the folder while
    the editor was running, restart the editor once (games you start from it work immediately).
 3. Optional: Project > Project Settings > Plugins > enable **Latency & Upscaling**. The plugin adds a
@@ -67,6 +71,33 @@ SCons with 2 parallel jobs (`-j N` to change). MSVC is taken from, in this order
 developer prompt (INCLUDE and LIB set); a dev-shell script named in `GODOT_LATENCY_UPSCALING_DEVSHELL` or
 `tools/.devshell_path` that runs its arguments inside the MSVC environment; SCons' Visual Studio
 detection. Output: `addons/latency_upscaling/bin/godot_latency_upscaling.windows.template_{debug,release}.x86_64.dll`.
+
+## Platforms
+
+The addon has one library: **Windows x86_64** (Vulkan renderer). There is none for Linux, macOS,
+Android, iOS, Web or Windows on ARM.
+
+- **Exclude the addon from exports to other platforms.** In each such export preset, Resources tab >
+  "Filters to exclude files/folders from project", enter `addons/latency_upscaling/*`. Godot then
+  leaves the addon, and its entry in the exported extension list, out of that export.
+- Without the filter the export still succeeds, with a warning (`No "x86_64" library found for
+  GDExtension: "res://addons/latency_upscaling/latency_upscaling.gdextension" ...`), and the game
+  prints Godot's standard messages at start-up:
+
+  ```
+  ERROR: No GDExtension library found for current OS and architecture (linux.x86_64) in configuration file: res://addons/latency_upscaling/latency_upscaling.gdextension
+  ERROR: GDExtension dynamic library not found: 'res://addons/latency_upscaling/latency_upscaling.gdextension'.
+  ERROR: Error loading extension: 'res://addons/latency_upscaling/latency_upscaling.gdextension'.
+  ```
+
+  They are **harmless**: the game runs normally, only without the addon. The filter just avoids them.
+- On those platforms the `LatencyUpscaling` singleton does not exist, so scripts must reach it
+  through `Engine` (see [Usage](#usage)); a script that names it directly does not parse there.
+
+`tests/run_portable.py` checks all of this: the README examples with the extension loaded, with the
+addon removed, with no library for the platform (the start-up messages above), in a Windows export
+with the filter, and real Linux exports with and without the filter. A cross-platform no-op stub
+library exists in `stub/` but is experimental and not shipped (see `stub/README.md`).
 
 ## Configuration
 
@@ -93,24 +124,81 @@ Settings are resolved in this order (later wins):
 | `overlay/enabled` | `false` | show the latency overlay in games |
 
 Other environment variables: `GODOT_LATENCY_UPSCALING_VERBOSE=1` prints informational lines (also
-enabled by `--verbose`). Debug builds read two test knobs used by the fallback tests:
-`GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS` and `GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION`.
+enabled by `--verbose`). Debug builds read three test knobs used by the fallback tests:
+`GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS`, `GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION` and
+`GODOT_LATENCY_UPSCALING_TEST_FAULT` (forced failures: `device_extension`, `swapchain_create`,
+`swapchain_recreate`, `loader_incomplete`). Release builds ignore all three.
 
 ## Usage
 
 The singleton `LatencyUpscaling` is registered automatically. Reflex is On by default.
 
-```gdscript
-# A settings menu. NVIDIA's UI guidelines: name it "NVIDIA Reflex Low Latency" with the options
-# Off / On / On + Boost, and disable the control when Reflex is unavailable.
-reflex_option.disabled = not LatencyUpscaling.is_reflex_supported()
-LatencyUpscaling.reflex_mode = LatencyUpscaling.REFLEX_MODE_ON_BOOST
-LatencyUpscaling.reflex_fps_limit = 144.0     # instead of Engine.max_fps
-LatencyUpscaling.overlay_visible = true       # small latency overlay
+**Write your scripts against it through `Engine`, as below.** The singleton exists only where the
+extension is loaded (Windows x86_64). Code that names it directly (`LatencyUpscaling.reflex_mode =
+1`) does not even parse on other platforms or in an export that excludes the addon; this style
+parses and runs everywhere and simply does nothing where the addon is absent.
+`tests/run_portable.py` runs this exact block with the extension loaded, with the addon removed,
+with no library for the platform, and in an export that excludes the addon.
 
-print(LatencyUpscaling.get_reflex_status())   # "active" or "unavailable: <reason>"
-var stats := LatencyUpscaling.get_latency_stats()
-print(stats.sim_start_to_gpu_end_ms)    # simulation start to GPU render end, last 64 frames
+<!-- portable-example -->
+```gdscript
+extends Node
+## Latency & Upscaling from GDScript: parses and runs on every platform. Where the extension is
+## not loaded (another OS, or the addon excluded from an export) these functions do nothing.
+
+const SINGLETON := "LatencyUpscaling"
+const REFLEX_MODE_OFF := 0 # the values of LatencyUpscaling.REFLEX_MODE_*
+const REFLEX_MODE_ON := 1
+const REFLEX_MODE_ON_BOOST := 2
+
+
+# For a settings menu. NVIDIA's UI guidelines: name it "NVIDIA Reflex Low Latency" with the
+# options Off / On / On + Boost, and disable the control when Reflex is unavailable.
+func is_reflex_available() -> bool:
+	return Engine.has_singleton(SINGLETON) and Engine.get_singleton(SINGLETON).is_reflex_supported()
+
+
+func set_reflex_mode(mode: int) -> void:
+	if Engine.has_singleton(SINGLETON):
+		Engine.get_singleton(SINGLETON).set("reflex_mode", mode)
+
+
+func set_fps_limit(fps: float) -> void: # driver-paced: use it instead of Engine.max_fps
+	if Engine.has_singleton(SINGLETON):
+		Engine.get_singleton(SINGLETON).set("reflex_fps_limit", fps)
+
+
+func show_latency_overlay(on: bool) -> void:
+	if Engine.has_singleton(SINGLETON):
+		Engine.get_singleton(SINGLETON).set("overlay_visible", on)
+
+
+func reflex_status() -> String: # "active", "unavailable: <reason>" or "not available on this platform"
+	if not Engine.has_singleton(SINGLETON):
+		return "not available on this platform"
+	return Engine.get_singleton(SINGLETON).get_reflex_status()
+
+
+func latency_ms() -> float: # simulation start to GPU render end, average of the last 64 frames
+	if not Engine.has_singleton(SINGLETON):
+		return 0.0
+	var stats: Dictionary = Engine.get_singleton(SINGLETON).get_latency_stats()
+	return stats.get("sim_start_to_gpu_end_ms", 0.0)
+```
+
+**Windows-only projects** may use the global name and the typed constants directly. Such a script
+is shorter but **fails to parse** wherever the extension is not loaded, so never use this style in a
+project that also exports to other platforms (the same test checks both behaviours):
+
+<!-- windows-only-example -->
+```gdscript
+extends Node
+
+
+func _ready() -> void:
+	LatencyUpscaling.reflex_mode = LatencyUpscaling.REFLEX_MODE_ON_BOOST
+	LatencyUpscaling.reflex_fps_limit = 144.0
+	print(LatencyUpscaling.get_reflex_status())
 ```
 
 | Member | Description |
@@ -191,11 +279,11 @@ call finishing and the GPU starting the next frame — which the Reflex sleep do
 
 **The cause is not established.** Two candidates were considered: (a) windowed (DWM-composited)
 presentation, and (b) Pascal / the render graph's wait on `COLOR_ATTACHMENT_OUTPUT` before each
-frame's work (`rendering_device_driver_vulkan.cpp:3204`). The benchmark measures an
-**exclusive-fullscreen** run to test (a): the gap does **not** shrink — it is about **30 ms** there
-(overall latency about 46 ms, at the higher fullscreen resolution) — so leaving windowed composition
-does not remove it and (a) is ruled out as the cause. That leaves the Pascal / render-graph
-explanation (b). NVIDIA's own Streamline 2.14 no longer offers Vulkan Reflex before Turing; RTX GPUs
+frame's work (`rendering_device_driver_vulkan.cpp:3204`). The benchmark repeats the run in
+**exclusive fullscreen** to probe (a): the gap is **not removed by exclusive fullscreen** — it is
+about **30 ms** there (overall latency about 46 ms). That run was at the monitor's resolution, not
+1280x720, so the two numbers are not directly comparable and (a) is weakened, not excluded; (b)
+remains the leading candidate. NVIDIA's own Streamline 2.14 no longer offers Vulkan Reflex before Turing; RTX GPUs
 are expected to do better but were not available for testing.
 
 > An earlier version of this note blamed Godot's frame queue and cited `frame_queue_size = 1` as
@@ -239,7 +327,7 @@ The layer alone is below the run-to-run noise (about 0.1 ms). The Reflex calls c
 | "inactive in the editor" | By design: the editor only passes Vulkan calls through. Set `latency_upscaling/general/enable_in_editor` to change that |
 | "markers only, sleep stopped: ..." | The driver rejected or did not answer the Reflex sleep; latency markers still work. After timeouts the sleep resumes with the next window swapchain (resize); after an error it stays off. Please report the driver version |
 | No latency gain | Reflex only helps when the GPU is the bottleneck; with VSync on and no VRR there is little to gain |
-| Anything else | `print(JSON.stringify(LatencyUpscaling.get_status(), "  "))` (or the Tools menu entry) shows every decision the addon made. `GODOT_LATENCY_UPSCALING_DISABLE=1` turns it off without removing it |
+| Anything else | `print(JSON.stringify(Engine.get_singleton("LatencyUpscaling").get_status(), "  "))` (or the Tools menu entry) shows every decision the addon made. `GODOT_LATENCY_UPSCALING_DISABLE=1` turns it off without removing it |
 | Anti-cheat software complains | The addon patches `godot.exe`'s import table in memory (see `docs/ARCHITECTURE.md`). Test with your anti-cheat before shipping |
 
 ## Version
@@ -249,9 +337,9 @@ The layer alone is below the run-to-run noise (about 0.1 ms). The Reflex calls c
 ## NVIDIA technologies, trademarks and attribution
 
 - NVIDIA, GeForce, RTX, DLSS and NVIDIA Reflex are trademarks and/or registered trademarks of NVIDIA
-  Corporation. This project is not affiliated with, sponsored by or endorsed by NVIDIA; the names
-  describe what it works with. Whether a project name containing "NVIDIA" needs NVIDIA's approval
-  has not been clarified yet.
+  Corporation. This project is not affiliated with, sponsored by or endorsed by NVIDIA. Its name
+  (godot-latency-upscaling, "Latency & Upscaling") deliberately contains no NVIDIA mark; NVIDIA's
+  names appear only where they describe the vendor technology the addon works with.
 - Phase 1 contains no NVIDIA code or binary: Reflex runs through the Khronos-registered Vulkan
   extension `VK_NV_low_latency2` implemented by the NVIDIA driver.
 - DLSS (Phase 2+) will use NVIDIA's DLSS / Streamline binaries, which are **not** in this repository.

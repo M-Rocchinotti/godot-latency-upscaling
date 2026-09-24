@@ -174,7 +174,7 @@ Vulkan 1.2; Godot's instance requests 1.2, so on current drivers it is core).
 | `vkSetLatencyMarkerNV` | see 4.2 | the present ID is the frame ID |
 | `VkPresentIdKHR` | `vkQueuePresentKHR` | ID of the window's swapchain = frame ID; 0 ("none") for other windows |
 | `VkLatencySubmissionPresentIdNV` | `vkQueueSubmit` of the Reflex device | only between RENDERSUBMIT_START and _END of a frame; lets the driver attribute the frame's GPU work |
-| `vkGetLatencyTimingsNV` | `LatencyUpscaling.get_latency_stats()` / `get_latency_reports()` | the driver keeps the last 64 frames |
+| `vkGetLatencyTimingsNV` | singleton `get_latency_stats()` / `get_latency_reports()` | the driver keeps the last 64 frames |
 
 ### 4.2 Marker placement
 
@@ -234,7 +234,7 @@ NVIDIA-RTX/godot fork (branch `worktree-dlss-fg-reflex`):
 - **TRIGGER_FLASH**: "anywhere between SIMULATION_START and SIMULATION_END whenever a left mouse
   click occurs … sent unconditionally" (driver R510+ decides whether to draw the indicator).
   The left button is sampled at `frame_pre_draw` and the marker goes out before SIMULATION_END.
-  `LatencyUpscaling.trigger_flash()` sends one manually.
+  The singleton's `trigger_flash()` sends one manually.
 - **PC Latency ping**: has no `VK_NV_low_latency2` marker (Streamline also drops it on Vulkan);
   not sent.
 
@@ -257,9 +257,9 @@ GTX 1080 (Pascal), driver 582.28, Windows 10 19045, HAGS on. The numbers are in 
   ~12.5 ms of GPU render), which the Reflex sleep does not remove. Its cause is not established.
   Two candidates were considered: windowed (DWM-composited) presentation, and Pascal / the render
   graph's wait on `COLOR_ATTACHMENT_OUTPUT` before each frame's work
-  (`rendering_device_driver_vulkan.cpp:3204`). The exclusive-fullscreen benchmark rules out the
-  first: the gap does not shrink (about 30 ms there), so leaving windowed composition does not
-  remove it. Whether an RTX GPU reaches the usual one-frame latency is untested (NVIDIA's
+  (`rendering_device_driver_vulkan.cpp:3204`). The gap is not removed by exclusive fullscreen
+  (about 30 ms there), but that run was at the monitor's resolution rather than 1280x720, so it
+  weakens the composition candidate without excluding it. Whether an RTX GPU reaches the usual one-frame latency is untested (NVIDIA's
   Streamline 2.14 dropped Vulkan Reflex before Turing, which suggests Pascal is not a target).
   Note: this remainder was previously attributed to Godot's frame queue with `frame_queue_size = 1`
   as evidence; that was wrong. Godot clamps the queue to at least two frames (`MAX(2U, ...)` in
@@ -282,17 +282,44 @@ GTX 1080 (Pascal), driver 582.28, Windows 10 19045, HAGS on. The numbers are in 
 - With an almost empty scene (thousands of frames per second) the driver returns only a few
   complete reports; with a real scene it returns all 64.
 
-## 5. What is automatic
+## 5. Platforms and the stub
+
+The shipped library is Windows x86_64 only: the hook works by patching `godot.exe`'s import table
+and wrapping the Windows Vulkan loader, which has no counterpart elsewhere. The `.gdextension`
+therefore lists only `windows.debug.x86_64` and `windows.release.x86_64`. Godot picks the library
+entry with the most matching feature tags, so the editor, games run from it and debug exports load
+the debug DLL and release exports the release DLL; the release zip ships both
+(`tests/run_package.py` installs it into a fresh project and checks all four cases).
+
+On every other platform the extension simply does not load:
+
+- an export to such a platform should exclude `addons/latency_upscaling/*` (export preset filter);
+  Godot 4.7 then also drops the addon from the exported extension list
+  (`EditorExportPlatform::_get_filtered_cache`), so the game starts without any message;
+- without the filter, the export succeeds with a "No "x86_64" library found for GDExtension"
+  warning and the game logs three ERROR lines at start-up (no library, library not found, error
+  loading extension) and then runs normally without the addon;
+- the `LatencyUpscaling` singleton is absent, so scripts reach it through `Engine.has_singleton()` /
+  `Engine.get_singleton()`; naming it directly is a parse error there.
+
+`tests/run_portable.py` verifies each point, including real Linux exports (built, not run).
+
+`stub/` contains a raw-C no-op GDExtension that would register the singleton on the other
+platforms. It is **experimental and not shipped**: it has no ptrcall paths (a typed call crashes),
+no properties or constants, and its Linux/macOS builds have never run on those systems. It is
+kept for a later release; `stub/README.md` lists what must change first.
+
+## 6. What is automatic
 
 | Automatic | Needs a restart / setting / call |
 |---|---|
 | The GDExtension loads by being in `addons/` (listed in `.godot/extension_list.cfg`), in the editor, in games started from it and in exported games | Added while the editor runs: the editor itself activates after a restart |
 | Hook installation, extension injection, Reflex On by default, markers, sleep | Reflex in the editor process: `latency_upscaling/general/enable_in_editor` |
-| `LatencyUpscaling` engine singleton, project settings shown (only saved when changed) | Overlay: `LatencyUpscaling.overlay_visible = true` or `latency_upscaling/overlay/enabled` |
-| Fallback with a clear status on every unsupported configuration | A game's own settings menu should call `LatencyUpscaling.reflex_mode` |
+| `LatencyUpscaling` engine singleton, project settings shown (only saved when changed) | Overlay: the singleton's `overlay_visible` property or `latency_upscaling/overlay/enabled` |
+| Fallback with a clear status on every unsupported configuration | A game's own settings menu should set the singleton's `reflex_mode` (through `Engine`, see README Usage) |
 | Overrides via Project Settings (`latency_upscaling/...`) reach exported games, read at CORE init, with or without the editor plugin | Defaults changed only by setting them in the editor's Project Settings (saved to `project.godot`) |
 
-## 6. Phase 2: DLSS Super Resolution / DLAA (design)
+## 7. Phase 2: DLSS Super Resolution / DLAA (design)
 
 Nothing of this is active in Phase 1; `src/dlss/` holds the interface and the jitter code.
 
@@ -331,7 +358,7 @@ Nothing of this is active in Phase 1; `src/dlss/` holds the interface and the ji
    (resize, settings change), the debanding flag has to be restored, and everything must be
    re-validated for each Godot minor version. Needs an RTX 20+ GPU to test.
 
-## 7. Phase 3: Frame Generation (outline)
+## 8. Phase 3: Frame Generation (outline)
 
 Streamline's DLSS-G owns the present path: the eight swapchain / surface functions go to its
 proxies, Reflex switches from `VK_NV_low_latency2` to `sl.reflex` + `sl.pcl` (required by DLSS-G),

@@ -1,9 +1,10 @@
 extends CanvasLayer
 ## Small latency overlay of the Latency & Upscaling addon.
 ##
-## Created by the LatencyUpscaling singleton when `LatencyUpscaling.overlay_visible = true` or the setting
+## Created by the LatencyUpscaling singleton when its overlay_visible property is set
+## (Engine.get_singleton("LatencyUpscaling").set("overlay_visible", true)) or the setting
 ## latency_upscaling/overlay/enabled is on; it never needs to be added to a scene by hand. It reads
-## LatencyUpscaling.get_latency_stats() four times a second, so its own cost is negligible. The glass
+## get_latency_stats() four times a second, so its own cost is negligible. The glass
 ## panel deliberately has no backdrop blur: a blur pass would add GPU work to the very frames
 ## whose latency it reports.
 

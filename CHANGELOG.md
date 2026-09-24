@@ -47,6 +47,6 @@ Phase 0 (repository and build) and Phase 1 (Vulkan hook layer and NVIDIA Reflex)
 - GPU-bound, VSync off: Reflex On lowers game-to-render latency from about 50 ms to 41 ms
   (4.0 to 3.2 frames) for about 7 % more frame time; On + Boost the same within noise. The
   dominant remaining interval is ~27 ms between present-end and the next frame's GPU start; its
-  cause is not established, but an exclusive-fullscreen run rules out windowed composition (the gap
-  persists). See README "Reflex results".
+  cause is not established. The gap is not removed by exclusive fullscreen (measured at a different
+  resolution, so not directly comparable). See README "Reflex results".
 - Overhead of the layer below measurement noise; Reflex calls up to about 0.2 ms per frame.

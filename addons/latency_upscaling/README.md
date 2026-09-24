@@ -16,13 +16,32 @@ else the addon does nothing and says why.
 
 ## Use
 
+Reach the `LatencyUpscaling` singleton through `Engine`, as below: this parses and runs on every
+platform and does nothing where the extension is absent. A script that names `LatencyUpscaling`
+directly fails to parse wherever the extension is not loaded (see the repository README).
+
+<!-- portable-example -->
 ```gdscript
-LatencyUpscaling.reflex_mode = LatencyUpscaling.REFLEX_MODE_ON   # OFF, ON, ON_BOOST
-LatencyUpscaling.reflex_fps_limit = 0.0                          # 0 = none, else 10..1000
-LatencyUpscaling.overlay_visible = true                          # latency overlay
-print(LatencyUpscaling.get_reflex_status())                      # "active" or "unavailable: ..."
-print(LatencyUpscaling.get_latency_stats())                      # measured latency, last 64 frames
+extends Node
+
+
+func _ready() -> void:
+	if not Engine.has_singleton("LatencyUpscaling"):
+		return # another platform, or the addon excluded from this export
+	var lu := Engine.get_singleton("LatencyUpscaling")
+	lu.set("reflex_mode", 2) # REFLEX_MODE_OFF 0, ON 1, ON_BOOST 2
+	lu.set("reflex_fps_limit", 0.0) # 0 = none, else 10..1000
+	lu.set("overlay_visible", true) # latency overlay
+	print(lu.get_reflex_status()) # "active" or "unavailable: ..."
+	print(lu.get_latency_stats()) # measured latency, last 64 frames
 ```
+
+## Platforms
+
+Windows x86_64 only. For exports to other platforms, exclude the addon: in the export preset,
+Resources tab > "Filters to exclude files/folders from project", enter `addons/latency_upscaling/*`. Without that
+filter Godot prints its standard "No GDExtension library found" error at start-up there; it is
+harmless (the game runs, the singleton is simply absent) but noisy.
 
 Settings are built-in defaults, overridden by Project Settings `latency_upscaling/...` (always
 exported, so they reach exported games with or without this plugin), then by the
