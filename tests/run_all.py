@@ -189,21 +189,26 @@ FALLBACKS = [
      lambda s: s["hook"]["active"] and s["vulkan"]["devices_created"] >= 1
      and s["vulkan"]["device_handle"] == s["godot_vk_device"] and not s["reflex"]["supported"]
      and "without them" in s["vulkan"]["note"],
-     "vkCreateDevice retried without the addon's extensions; the device is Godot's"),
+     "vkCreateDevice retried without the addon's extensions; the device is Godot's",
+     [r"vkCreateDevice with the addon's extensions failed"]),  # the fault provokes this warning
     ("first swapchain create fails", [], {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "swapchain_create"},
      lambda s: s["hook"]["active"] and s["reflex"]["supported"] and not s["reflex"]["active"]
      and "without it" in s["reflex"]["reason"],
-     "swapchain retried without latency mode; Reflex reports the fallback, no crash"),
+     "swapchain retried without latency mode; Reflex reports the fallback, no crash",
+     [r"creating the swapchain with latency mode failed"]),
     ("loader missing entry points", [], {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "loader_incomplete"},
      lambda s: s["hook"]["installed"] and not s["hook"]["active"] and "does not export" in s["hook"]["reason"]
      and s["vulkan"]["loader_intercepted"] and not s["reflex"]["supported"],
-     "Vulkan passes through the real loader untouched; the game still runs"),
+     "Vulkan passes through the real loader untouched; the game still runs",
+     [r"the Vulkan loader does not export"]),
 ]
 
 
 def suite_fallbacks() -> bool:
     all_ok = True
-    for name, args, env, predicate, expectation in FALLBACKS:
+    for entry in FALLBACKS:
+        name, args, env, predicate, expectation = entry[:5]
+        expected_warnings = entry[5] if len(entry) > 5 else []  # warnings the case provokes on purpose
         log = "test_fallback_" + re.sub(r"\W+", "_", name)
         code, out = godot(args + ["--script", "res://tests/print_status.gd", "--", "--frames=30"], log, env)
         status = status_of(out)
@@ -216,7 +221,7 @@ def suite_fallbacks() -> bool:
             if base_code != 0 and base_code == code and not status_of(base_out):
                 print(f"SKIP  fallback: {name}  (Godot exits with {code} here even without the addon)", flush=True)
                 continue
-        problems = problems_in(out)
+        problems = problems_in(out, expected_warnings)
         try:
             expected = bool(status) and predicate(status)
         except KeyError as missing:
