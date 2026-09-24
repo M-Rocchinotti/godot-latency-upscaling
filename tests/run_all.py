@@ -182,6 +182,16 @@ FALLBACKS = [
     ("headless", ["--headless"], {},
      lambda s: not s["hook"]["active"] and "headless" in s["hook"]["reason"] and not s["reflex"]["supported"],
      "hook idle, reason says headless"),
+    # Forced faults (debug-only switch): the retry safety nets must recover with no crash.
+    ("device create fails (bogus extension)", [], {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "device_extension"},
+     lambda s: s["hook"]["active"] and s["vulkan"]["devices_created"] >= 1
+     and s["vulkan"]["device_handle"] == s["godot_vk_device"] and not s["reflex"]["supported"]
+     and "without them" in s["vulkan"]["note"],
+     "vkCreateDevice retried without the addon's extensions; the device is Godot's"),
+    ("first swapchain create fails", [], {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "swapchain_create"},
+     lambda s: s["hook"]["active"] and s["reflex"]["supported"] and not s["reflex"]["active"]
+     and "without it" in s["reflex"]["reason"],
+     "swapchain retried without latency mode; Reflex reports the fallback, no crash"),
 ]
 
 
@@ -256,25 +266,31 @@ def suite_validation() -> bool:
         return result("validation", False, "Vulkan SDK not found: set VULKAN_SDK or tools/.vulkan_sdk_path")
     env_base = {"VK_ADD_LAYER_PATH": str(sdk / "Bin")}
     args = ["--gpu-validation", "--verbose", "--script", "res://tests/reflex_tests.gd"]
-    runs = {}
-    for name, extra in (("baseline", {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}), ("hook", {})):
-        code, out = godot(args, f"test_validation_{name}", {**env_base, **extra}, timeout=600, medium=True)
-        messages = [l.strip() for l in out.splitlines() if VALIDATION_LINE.search(l)]
-        runs[name] = (code, messages, out)
-    hook_code, hook_messages, hook_out = runs["hook"]
-    base_messages = runs["baseline"][1]
-    tests_ok = re.search(r"reflex tests: \d+ passed, 0 failed", hook_out) is not None
-    layer_seen = "VK_LAYER_KHRONOS_validation" in hook_out
-    # Compare by message ID (the text contains handles that differ between runs). Anything the
-    # hook run reports more often than the run without the addon is attributed to the addon.
     from collections import Counter
 
     ids = lambda messages: Counter(m.group(1) for m in map(MESSAGE_ID.search, messages) if m)  # noqa: E731
-    hook_ids, base_ids = ids(hook_messages), ids(base_messages)
-    new = sorted((hook_ids - base_ids).elements())
-    ok = hook_code == 0 and tests_ok and layer_seen and not new
-    detail = (f"validation layer {'active' if layer_seen else 'NOT active'}; messages with hook {len(hook_messages)} "
-              f"{dict(hook_ids)}, without addon {len(base_messages)} {dict(base_ids)}, caused by the addon {len(new)}")
+    runs = {}
+    # baseline (no addon), hook active, and hook on the swapchain-fallback retry path.
+    for name, args, extra in (
+        ("baseline", ["--gpu-validation", "--verbose", "--script", "res://tests/reflex_tests.gd"], {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}),
+        ("hook", ["--gpu-validation", "--verbose", "--script", "res://tests/reflex_tests.gd"], {}),
+        ("swapchain fault", ["--gpu-validation", "--verbose", "--script", "res://tests/print_status.gd", "--", "--frames=60"],
+         {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "swapchain_create"}),
+    ):
+        code, out = godot(args, f"test_validation_{name.replace(' ', '_')}", {**env_base, **extra}, timeout=600, medium=True)
+        messages = [l.strip() for l in out.splitlines() if VALIDATION_LINE.search(l)]
+        runs[name] = (code, ids(messages), out)
+    hook_code, hook_ids, hook_out = runs["hook"]
+    base_ids = runs["baseline"][1]
+    fault_code, fault_ids, _ = runs["swapchain fault"]
+    tests_ok = re.search(r"reflex tests: \d+ passed, 0 failed", hook_out) is not None
+    layer_seen = "VK_LAYER_KHRONOS_validation" in hook_out
+    # Anything either the normal or the fallback-retry run reports more often than the run without
+    # the addon is attributed to the addon.
+    new = sorted(((hook_ids | fault_ids) - base_ids).elements())
+    ok = hook_code == 0 and fault_code == 0 and tests_ok and layer_seen and not new
+    detail = (f"validation layer {'active' if layer_seen else 'NOT active'}; message IDs hook {dict(hook_ids)}, "
+              f"swapchain-fault {dict(fault_ids)}, baseline {dict(base_ids)}, caused by the addon {len(new)}")
     return result("validation", ok, detail, [f"caused by the addon: {n}" for n in new])
 
 

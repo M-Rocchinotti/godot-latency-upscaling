@@ -38,6 +38,7 @@ func _run() -> void:
 	await _test_fps_limit()
 	await _test_swapchain_recreation()
 	await _test_minimized_window()
+	await _test_local_rendering_device()
 	await _test_overlay()
 	_finish()
 
@@ -162,11 +163,17 @@ func _test_mode_switching() -> void:
 func _test_fps_limit() -> void:
 	_dlss.reflex_fps_limit = 30.0
 	await _frames(10)
+	var presents_before: int = _counters()["presents_stamped"]
 	var start := Time.get_ticks_usec()
 	await _frames(30)
 	var interval_ms := (Time.get_ticks_usec() - start) / 30000.0
+	var presents_during: int = _counters()["presents_stamped"] - presents_before
 	# The driver paces the Reflex sleep to the requested minimum interval (33.3 ms at 30 fps).
 	_check("Reflex frame-rate limit paces frames", interval_ms > 30.0 and interval_ms < 40.0, "%.2f ms per frame" % interval_ms)
+	# Every capped frame still presents. With a separate render thread this only holds if the
+	# present hook is not blocked by the main thread's sleep (the shared/exclusive swapchain lock).
+	_check("present hook keeps up under the frame-rate cap", presents_during >= 27,
+			"%d presents in 30 capped frames" % presents_during)
 	_dlss.reflex_fps_limit = 0.0
 	_dlss.reflex_fps_limit = 5.0 # rejected: below 10 fps
 	_check("invalid frame-rate limit rejected", _dlss.reflex_fps_limit == 0.0)
@@ -208,6 +215,28 @@ func _test_minimized_window() -> void:
 	var sleeps: int = after["sleeps"]
 	await _frames(10)
 	_check("frames present and sleep again after restoring", _counters()["presents_stamped"] > presents and _counters()["sleeps"] > sleeps)
+
+
+func _test_local_rendering_device() -> void:
+	# RenderingDevice.create_local_rendering_device() makes a second VkDevice for off-screen work.
+	# It never presents, so the hook must pass it through untouched (no Reflex extensions, no
+	# semaphore) and keep reporting the presenting device.
+	var vulkan_before: Dictionary = _dlss.get_status()["vulkan"]
+	var main_handle: int = vulkan_before["device_handle"]
+	var main_gpu: String = vulkan_before["gpu"]
+	var before_local: int = vulkan_before["local_devices_created"]
+	# Create and immediately free it on the render thread (valid in every thread model).
+	RenderingServer.call_on_render_thread(func() -> void:
+		var local := RenderingServer.create_local_rendering_device()
+		if local != null:
+			local.free())
+	await _frames(10)
+	var vulkan: Dictionary = _dlss.get_status()["vulkan"]
+	_check("local rendering device passed through", vulkan["local_devices_created"] > before_local,
+			"%d -> %d" % [before_local, vulkan["local_devices_created"]])
+	_check("status still describes the presenting device", vulkan["device_handle"] == main_handle and vulkan["gpu"] == main_gpu,
+			"handle %d gpu %s" % [vulkan["device_handle"], vulkan["gpu"]])
+	_check("Reflex still active after a local device", _dlss.is_reflex_active(), _dlss.get_reflex_status())
 
 
 func _test_overlay() -> void:

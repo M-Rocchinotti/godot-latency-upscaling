@@ -33,6 +33,7 @@ IAT = "src/hook/iat_patch.cpp"
 JITTER = "src/dlss/jitter.cpp"
 REFLEX = "src/reflex/reflex_ll2.cpp"
 LL2 = "src/reflex/ll2_patches.cpp"
+DISPATCH = "src/vk/dispatch.cpp"
 SINGLETON = "src/godot/latency_upscaling.cpp"
 BOOT = "src/godot/bootstrap.cpp"
 ENTRY = "src/register_types.cpp"
@@ -91,6 +92,12 @@ MUTATIONS = [
      "\tconst uint64_t frame_id = sequencer.end_simulation();", "\tconst uint64_t frame_id = 0;", "reflex"),
     ("reflex: present ID repeated (validation layer)", LL2,
      "\tids_[index] = present_id;", "\tids_[index] = 1;", "validation"),
+    ("retry: no plain vkCreateDevice retry", DISPATCH,
+     "\t\t\tresult = L.next.CreateDevice(physical_device, info, allocator, device);\n",
+     "\t\t\t(void)info; // retry removed\n", "fallback"),
+    ("retry: swapchain not retried without latency mode", REFLEX,
+     "\t\tresult = next(device, &retry, allocator, swapchain);\n",
+     "\t\t(void)retry; // retry removed\n", "fallback"),
     ("safety: version check removed", BOOT,
      "} else if (major != 4 || minor != 7) {", "} else if (false) {", "fallback"),
     ("safety: late load not dormant", ENTRY,

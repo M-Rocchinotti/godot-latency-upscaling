@@ -38,6 +38,8 @@ name="Windows Desktop"
 platform="Windows Desktop"
 runnable=true
 export_filter="all_resources"
+include_filter=""
+exclude_filter=""
 export_path="build/export/demo.exe"
 
 [preset.0.options]
