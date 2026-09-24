@@ -54,6 +54,7 @@ PURE_SOURCES = [
     "src/reflex/latency_stats.cpp",
     "src/reflex/ll2_patches.cpp",
     "src/reflex/reflex_ll2.cpp",
+    "src/upscale/quality.cpp",
     "src/vk/device_patch.cpp",
     "src/vk/dispatch.cpp",
     "src/vk/vk_feature.cpp",

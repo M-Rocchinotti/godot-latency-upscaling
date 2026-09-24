@@ -12,7 +12,25 @@ TEST(settings_builtin_defaults) {
 	CHECK_EQ(r.settings.reflex_fps_limit, 0.0);
 	CHECK(r.settings.reflex_flash_indicator);
 	CHECK(!r.settings.overlay_enabled);
+	CHECK(r.settings.dlss_enabled); // NVIDIA UI guidelines: on (Auto) where DLSS is available
+	CHECK(r.settings.dlss_quality == lu::upscale::Quality::Auto);
+	CHECK(r.settings.dlss_preset == lu::upscale::Preset::Default);
 	CHECK(r.warnings.empty());
+}
+
+TEST(settings_dlss_values_are_validated) {
+	SettingsLayer good{ "project setting", { { keys::DLSS_QUALITY, 4.0 }, { keys::DLSS_PRESET, 2.0 }, { keys::DLSS_ENABLED, 0.0 } } };
+	ResolvedSettings r = resolve_settings({ good });
+	CHECK(r.settings.dlss_quality == lu::upscale::Quality::Performance);
+	CHECK(r.settings.dlss_preset == lu::upscale::Preset::K);
+	CHECK(!r.settings.dlss_enabled);
+	CHECK(r.warnings.empty());
+	SettingsLayer bad{ "env", { { keys::DLSS_QUALITY, 6.0 }, { keys::DLSS_PRESET, 1.5 }, { keys::DLSS_ENABLED, 2.0 } } };
+	r = resolve_settings({ good, bad });
+	CHECK(r.settings.dlss_quality == lu::upscale::Quality::Performance); // bad values ignored
+	CHECK(r.settings.dlss_preset == lu::upscale::Preset::K);
+	CHECK(!r.settings.dlss_enabled);
+	CHECK_EQ(r.warnings.size(), size_t(3));
 }
 
 TEST(settings_later_layers_win_and_sources_are_recorded) {

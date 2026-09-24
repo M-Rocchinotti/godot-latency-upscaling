@@ -34,4 +34,37 @@ JitterPixels jitter_in_pixels(uint64_t frame_number, uint32_t phase_count) {
 	return out;
 }
 
+JitterNdc jitter_ndc_from_projection(const float columns[4][4]) {
+	// correction = identity + depth correction + columns[3].xy = jitter. For a column v of the
+	// projection, correction * v adds v.w * jitter to v.xy. Perspective: column 2 has w = -1
+	// (and xy = 0 when symmetric); orthogonal: column 3 has w = 1 (and xy = 0).
+	JitterNdc out;
+	const float w2 = columns[2][3];
+	if (w2 != 0.0f) {
+		out.x = columns[2][0] / w2;
+		out.y = columns[2][1] / w2;
+	} else if (columns[3][3] != 0.0f) {
+		out.x = columns[3][0] / columns[3][3];
+		out.y = columns[3][1] / columns[3][3];
+	}
+	return out;
+}
+
+JitterPixels ndc_to_pixels(JitterNdc ndc, uint32_t render_width, uint32_t render_height) {
+	JitterPixels out;
+	out.x = ndc.x * static_cast<float>(render_width) * 0.5f;
+	out.y = ndc.y * static_cast<float>(render_height) * 0.5f;
+	return out;
+}
+
+int find_phase(JitterPixels observed, uint32_t phase_count, float tolerance) {
+	for (uint32_t i = 0; i < phase_count; ++i) {
+		const JitterPixels j = jitter_in_pixels(i, phase_count);
+		if (std::fabs(j.x - observed.x) <= tolerance && std::fabs(j.y - observed.y) <= tolerance) {
+			return static_cast<int>(i);
+		}
+	}
+	return -1;
+}
+
 } // namespace lu::dlss

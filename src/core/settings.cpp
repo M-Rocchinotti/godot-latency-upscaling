@@ -29,6 +29,9 @@ const std::vector<const char *> &all_setting_keys() {
 		keys::REFLEX_FPS_LIMIT,
 		keys::REFLEX_FLASH_INDICATOR,
 		keys::OVERLAY_ENABLED,
+		keys::DLSS_ENABLED,
+		keys::DLSS_QUALITY,
+		keys::DLSS_PRESET,
 	};
 	return list;
 }
@@ -103,7 +106,7 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 		for (const auto &[key, value] : layer.values) {
 			bool accepted = true;
 			if (key == keys::ENABLED || key == keys::ENABLE_IN_EDITOR || key == keys::REFLEX_FLASH_INDICATOR ||
-					key == keys::OVERLAY_ENABLED) {
+					key == keys::OVERLAY_ENABLED || key == keys::DLSS_ENABLED) {
 				if (!is_bool_value(value)) {
 					out.warnings.push_back(describe(layer, key, value, "true or false"));
 					accepted = false;
@@ -113,6 +116,8 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 					out.settings.enable_in_editor = value != 0.0;
 				} else if (key == keys::REFLEX_FLASH_INDICATOR) {
 					out.settings.reflex_flash_indicator = value != 0.0;
+				} else if (key == keys::DLSS_ENABLED) {
+					out.settings.dlss_enabled = value != 0.0;
 				} else {
 					out.settings.overlay_enabled = value != 0.0;
 				}
@@ -122,6 +127,21 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 					accepted = false;
 				} else {
 					out.settings.reflex_mode = static_cast<ReflexMode>(static_cast<int>(value));
+				}
+			} else if (key == keys::DLSS_QUALITY) {
+				if (value != std::floor(value) || value < 0.0 || value >= upscale::QUALITY_COUNT) {
+					out.warnings.push_back(describe(layer, key, value,
+							"0 (Auto), 1 (DLAA), 2 (Quality), 3 (Balanced), 4 (Performance) or 5 (Ultra Performance)"));
+					accepted = false;
+				} else {
+					out.settings.dlss_quality = static_cast<upscale::Quality>(static_cast<int>(value));
+				}
+			} else if (key == keys::DLSS_PRESET) {
+				if (value != std::floor(value) || value < 0.0 || value >= upscale::PRESET_COUNT) {
+					out.warnings.push_back(describe(layer, key, value, "0 (Default), 1 (J), 2 (K), 3 (L) or 4 (M)"));
+					accepted = false;
+				} else {
+					out.settings.dlss_preset = static_cast<upscale::Preset>(static_cast<int>(value));
 				}
 			} else if (key == keys::REFLEX_FPS_LIMIT) {
 				if (!is_valid_fps_limit(value)) {

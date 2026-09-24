@@ -396,6 +396,9 @@ Dictionary LatencyUpscaling::get_status() const {
 	entry(keys::REFLEX_FPS_LIMIT, s.reflex_fps_limit);
 	entry(keys::REFLEX_FLASH_INDICATOR, s.reflex_flash_indicator);
 	entry(keys::OVERLAY_ENABLED, s.overlay_enabled);
+	entry(keys::DLSS_ENABLED, s.dlss_enabled);
+	entry(keys::DLSS_QUALITY, static_cast<int>(s.dlss_quality));
+	entry(keys::DLSS_PRESET, static_cast<int>(s.dlss_preset));
 	d["settings"] = settings;
 	d["warnings"] = to_packed(boot.resolved.warnings);
 	return d;
@@ -483,6 +486,10 @@ void LatencyUpscaling::register_project_settings() {
 		{ keys::REFLEX_FPS_LIMIT, defaults.reflex_fps_limit, PROPERTY_HINT_RANGE, "0,1000,1", false },
 		{ keys::REFLEX_FLASH_INDICATOR, defaults.reflex_flash_indicator, PROPERTY_HINT_NONE, "", false },
 		{ keys::OVERLAY_ENABLED, defaults.overlay_enabled, PROPERTY_HINT_NONE, "", false },
+		{ keys::DLSS_ENABLED, defaults.dlss_enabled, PROPERTY_HINT_NONE, "", false },
+		{ keys::DLSS_QUALITY, static_cast<int>(defaults.dlss_quality), PROPERTY_HINT_ENUM,
+				"Auto,DLAA,Quality,Balanced,Performance,Ultra Performance", false },
+		{ keys::DLSS_PRESET, static_cast<int>(defaults.dlss_preset), PROPERTY_HINT_ENUM, "Default,J,K,L,M", false },
 	};
 	for (const Definition &def : definitions) {
 		const String name = String(PROJECT_SETTING_PREFIX) + def.key;

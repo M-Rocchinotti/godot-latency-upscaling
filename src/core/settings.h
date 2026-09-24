@@ -11,6 +11,8 @@
 // Pure C++: no Godot types, so the resolution rules are unit-tested.
 #pragma once
 
+#include "upscale/quality.h"
+
 #include <map>
 #include <string>
 #include <vector>
@@ -26,6 +28,11 @@ struct Settings {
 	double reflex_fps_limit = 0.0; // 0 = no limit, else frames per second
 	bool reflex_flash_indicator = true; // send TRIGGER_FLASH on left mouse clicks
 	bool overlay_enabled = false;
+	// DLSS Super Resolution / DLAA (Phase 2). Takes effect only where DLSS is available (NVIDIA RTX,
+	// the NVIDIA runtime installed); NVIDIA's UI guidelines: "Auto" on by default on RTX hardware.
+	bool dlss_enabled = true;
+	upscale::Quality dlss_quality = upscale::Quality::Auto;
+	upscale::Preset dlss_preset = upscale::Preset::Default;
 };
 
 // Setting keys, shared by the cfg file ("section/key") and the project settings
@@ -37,6 +44,9 @@ inline constexpr const char *REFLEX_MODE = "reflex/mode";
 inline constexpr const char *REFLEX_FPS_LIMIT = "reflex/fps_limit";
 inline constexpr const char *REFLEX_FLASH_INDICATOR = "reflex/flash_indicator_marker";
 inline constexpr const char *OVERLAY_ENABLED = "overlay/enabled";
+inline constexpr const char *DLSS_ENABLED = "dlss/enabled";
+inline constexpr const char *DLSS_QUALITY = "dlss/quality";
+inline constexpr const char *DLSS_PRESET = "dlss/preset";
 } // namespace keys
 
 // Every key the addon understands, in display order.

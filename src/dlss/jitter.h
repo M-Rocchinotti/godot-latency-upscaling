@@ -32,4 +32,24 @@ struct JitterPixels {
 // FSR2 receives and the unit DLSS expects. Zero when phase_count is 0.
 JitterPixels jitter_in_pixels(uint64_t frame_number, uint32_t phase_count);
 
+// Godot's taa_jitter (the NDC offset it adds to the projection), read back from the jittered
+// projection RenderSceneData.get_cam_projection() returns: 4.7 builds it as
+// correction * cam_projection with correction.add_jitter_offset(taa_jitter)
+// (render_scene_data_rd.cpp:42-47), so the offset lands in column 2 scaled by its w term
+// (perspective) or in column 3 (orthogonal). `columns` is Godot's column-major layout,
+// columns[c][r]. Exact for symmetric frusta (Camera3D perspective / orthogonal without a
+// frustum offset), which is what the addon supports.
+struct JitterNdc {
+	float x = 0.0f;
+	float y = 0.0f;
+};
+JitterNdc jitter_ndc_from_projection(const float columns[4][4]);
+
+// NDC offset -> render-resolution pixels (Godot's FSR2 convention: ndc * size * 0.5).
+JitterPixels ndc_to_pixels(JitterNdc ndc, uint32_t render_width, uint32_t render_height);
+
+// The phase (Godot's frame_number % phase_count) whose jitter matches `observed` (pixels), or -1.
+// Used once to align a local frame counter with Godot's rasterizer frame number.
+int find_phase(JitterPixels observed, uint32_t phase_count, float tolerance = 1e-3f);
+
 } // namespace lu::dlss
