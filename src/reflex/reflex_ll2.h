@@ -25,10 +25,14 @@
 
 namespace nvdlss::reflex {
 
-// How long a Reflex sleep may take before it is treated as "the driver never signalled".
+// How long one Reflex sleep may take before it counts as "the driver did not signal".
 // Frame-rate limits are clamped to >= 10 fps (100 ms), so a legitimate sleep is shorter.
 inline constexpr uint64_t SLEEP_TIMEOUT_NS = 250ull * 1000ull * 1000ull;
-inline constexpr int SLEEP_TIMEOUTS_BEFORE_GIVING_UP = 3;
+// After this many timeouts in a row the sleep is suspended until the window swapchain is
+// re-created (a stalled driver must not cost a quarter second per frame).
+inline constexpr int SLEEP_TIMEOUTS_BEFORE_SUSPENDING = 3;
+// vkGetLatencyTimingsNV changed its signature in revision 2; revision 1 would be called wrongly.
+inline constexpr uint32_t MIN_LL2_SPEC_VERSION = 2;
 
 struct SleepMode {
 	ReflexMode mode = ReflexMode::On;
@@ -38,6 +42,7 @@ struct SleepMode {
 struct Counters {
 	std::array<uint64_t, MARKER_COUNT> markers{};
 	uint64_t sleeps = 0;
+	uint64_t sleeps_skipped = 0; // no present since the previous sleep (minimised window, no draw)
 	uint64_t sleep_timeouts = 0;
 	uint64_t presents_stamped = 0;
 	uint64_t submits_tagged = 0;
@@ -48,27 +53,27 @@ struct Counters {
 
 class Ll2Device final : public MarkerSink {
 public:
-	explicit Ll2Device(const vk::DeviceContext &context);
+	Ll2Device(const vk::DeviceContext &context, const SleepMode &mode);
 	~Ll2Device() override;
 	Ll2Device(const Ll2Device &) = delete;
 	Ll2Device &operator=(const Ll2Device &) = delete;
 
 	bool valid() const { return valid_; }
 	const std::string &init_error() const { return init_error_; }
-	VkDevice device() const { return device_; }
 	vk::DispatchKey key() const { return key_; }
 	FrameSequencer &sequencer() { return sequencer_; }
 
 	// Main thread.
-	bool sleep(); // vkLatencySleepNV + wait; false when skipped or disabled
-	void apply_sleep_mode(const SleepMode &mode);
+	bool sleep(); // vkLatencySleepNV + wait; false when skipped, suspended or disabled
+	// Stores the mode and applies it to the window swapchain (now, or when it is created).
+	void set_sleep_mode(const SleepMode &mode);
 	std::vector<FrameReport> latency_reports();
 
 	// Vulkan hooks.
 	VkResult create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
-			const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next,
-			const SleepMode &mode);
+			const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next);
 	void forget_swapchain(VkSwapchainKHR swapchain);
+	void forget_surface(VkSurfaceKHR surface);
 	VkResult present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQueuePresentKHR next);
 	VkResult submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence, PFN_vkQueueSubmit next);
 
@@ -89,7 +94,11 @@ public:
 	void emit_marker(uint64_t frame_id, Marker marker) override;
 
 private:
-	void disable_sleep(const std::string &reason);
+	enum class SleepState { Enabled, Suspended, Disabled };
+	void stop_sleeping(SleepState state, const std::string &reason);
+	// Applies mode_ to swapchain_; called with mutex_ held. Returns the message to log (the log
+	// sink may call back into the addon, so nothing is logged under the lock).
+	std::string apply_sleep_mode_locked();
 
 	VkDevice device_ = VK_NULL_HANDLE;
 	vk::DispatchKey key_ = nullptr;
@@ -105,17 +114,21 @@ private:
 	PFN_vkDestroySemaphore destroy_semaphore_ = nullptr;
 	PFN_vkWaitSemaphores wait_semaphores_ = nullptr;
 
+	// Sleep state; the semaphore value is only touched by the thread that sleeps (main thread).
 	VkSemaphore sleep_semaphore_ = VK_NULL_HANDLE;
 	uint64_t sleep_value_ = 0;
+	std::atomic<bool> signal_pending_{ false }; // the last sleep timed out: the driver may still signal it
 	int consecutive_timeouts_ = 0;
+	std::atomic<bool> presented_since_sleep_{ false };
+	std::atomic<SleepState> sleep_state_{ SleepState::Enabled };
 
-	// Guards the swapchain handle against a destroy on another thread while an LL2 call uses
-	// it, and the counters/state strings. Never held across the semaphore wait.
+	// Guards the swapchain handle against a destroy on another thread while an LL2 call uses it,
+	// the mode and the counters/state strings. Never held across the semaphore wait or a log call.
 	std::mutex mutex_;
 	VkSurfaceKHR tracked_surface_ = VK_NULL_HANDLE;
 	VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
 	bool latency_mode_enabled_ = false;
-	std::atomic<bool> sleep_enabled_{ true };
+	SleepMode mode_;
 	std::string sleep_disabled_reason_;
 	std::string swapchain_note_;
 	std::string sleep_mode_error_;
@@ -144,12 +157,13 @@ public:
 			VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next) override;
 	void destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *allocator,
 			PFN_vkDestroySwapchainKHR next) override;
+	void destroy_surface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks *allocator,
+			PFN_vkDestroySurfaceKHR next) override;
 	VkResult queue_submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence, PFN_vkQueueSubmit next) override;
 	VkResult queue_present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQueuePresentKHR next) override;
 
 	// --- Godot side (see godot/nvidia_dlss.cpp for the frame-loop placement) ---
 	void set_sleep_mode(const SleepMode &mode);
-	SleepMode sleep_mode() const;
 	// The device driving the window, once its swapchain exists.
 	std::shared_ptr<Ll2Device> active_device();
 
@@ -164,6 +178,7 @@ public:
 private:
 	ReflexFeature() = default;
 	std::shared_ptr<Ll2Device> device_for(vk::DispatchKey key);
+	Ll2Device *fast_device_for(vk::DispatchKey key) const;
 
 	mutable std::mutex mutex_;
 	bool enabled_ = false;
@@ -174,8 +189,11 @@ private:
 	std::string decline_reason_; // why the first device could not use Reflex
 	std::map<vk::DispatchKey, std::shared_ptr<Ll2Device>> devices_;
 	std::shared_ptr<Ll2Device> active_;
-	// Lock-free lookup for the per-submit/present hooks: the device that owns the window swapchain.
-	std::atomic<Ll2Device *> fast_active_{ nullptr };
+	// Lock-free lookup for the per-submit/present hooks. The key is compared before the device
+	// pointer is touched, so a queue of another device never dereferences it; the active device
+	// itself cannot be destroyed while its own queues are in use (Vulkan external sync).
+	std::atomic<vk::DispatchKey> fast_key_{ nullptr };
+	std::atomic<Ll2Device *> fast_device_{ nullptr };
 };
 
 } // namespace nvdlss::reflex

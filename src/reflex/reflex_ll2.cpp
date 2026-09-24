@@ -1,6 +1,7 @@
 #include "reflex/reflex_ll2.h"
 
 #include "core/log.h"
+#include "reflex/ll2_patches.h"
 
 #include <algorithm>
 #include <chrono>
@@ -12,6 +13,8 @@ namespace {
 
 constexpr uint32_t NVIDIA_VENDOR_ID = 0x10DE;
 constexpr uint32_t MAX_TIMING_REPORTS = 64; // the driver keeps the last 64 frames
+// At device destruction, how long to wait for a sleep signal the driver may still deliver.
+constexpr uint64_t PENDING_SIGNAL_WAIT_NS = 100ull * 1000ull * 1000ull;
 
 std::string format(const char *fmt, ...) {
 	char buffer[512];
@@ -61,8 +64,8 @@ FrameReport to_report(const VkLatencyTimingsFrameReportNV &r) {
 // Ll2Device
 // ---------------------------------------------------------------------------------------------
 
-Ll2Device::Ll2Device(const vk::DeviceContext &context) :
-		device_(context.device), key_(vk::dispatch_key(context.device)) {
+Ll2Device::Ll2Device(const vk::DeviceContext &context, const SleepMode &mode) :
+		device_(context.device), key_(vk::dispatch_key(context.device)), mode_(mode) {
 	const PFN_vkGetDeviceProcAddr gdpa = context.get_device_proc_addr;
 	set_sleep_mode_ = load<PFN_vkSetLatencySleepModeNV>(gdpa, device_, "vkSetLatencySleepModeNV");
 	latency_sleep_ = load<PFN_vkLatencySleepNV>(gdpa, device_, "vkLatencySleepNV");
@@ -101,14 +104,29 @@ Ll2Device::~Ll2Device() {
 }
 
 void Ll2Device::shutdown() {
-	std::lock_guard<std::mutex> lock(mutex_);
-	if (sleep_semaphore_ != VK_NULL_HANDLE && destroy_semaphore_ != nullptr) {
-		destroy_semaphore_(device_, sleep_semaphore_, nullptr);
+	VkSemaphore semaphore = VK_NULL_HANDLE;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		valid_ = false;
+		semaphore = sleep_semaphore_;
+		sleep_semaphore_ = VK_NULL_HANDLE;
+		swapchain_ = VK_NULL_HANDLE;
+		latency_mode_enabled_ = false;
 	}
-	sleep_semaphore_ = VK_NULL_HANDLE;
-	swapchain_ = VK_NULL_HANDLE;
-	latency_mode_enabled_ = false;
-	valid_ = false;
+	if (semaphore == VK_NULL_HANDLE) {
+		return;
+	}
+	if (signal_pending_) {
+		// A sleep timed out and the driver may still signal it; a semaphore must not be destroyed
+		// with a pending signal operation. Wait briefly; the device is idle at this point anyway.
+		VkSemaphoreWaitInfo wait{};
+		wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
+		wait.semaphoreCount = 1;
+		wait.pSemaphores = &semaphore;
+		wait.pValues = &sleep_value_;
+		wait_semaphores_(device_, &wait, PENDING_SIGNAL_WAIT_NS);
+	}
+	destroy_semaphore_(device_, semaphore, nullptr);
 }
 
 void Ll2Device::emit_marker(uint64_t frame_id, Marker marker) {
@@ -124,52 +142,65 @@ void Ll2Device::emit_marker(uint64_t frame_id, Marker marker) {
 	counters_.markers[static_cast<size_t>(marker)]++;
 }
 
-void Ll2Device::disable_sleep(const std::string &reason) {
-	if (sleep_enabled_.exchange(false)) {
-		{
-			std::lock_guard<std::mutex> lock(mutex_);
-			sleep_disabled_reason_ = reason;
-		}
-		log::warning("Reflex sleep disabled: %s. Latency markers are still sent.", reason.c_str());
+void Ll2Device::stop_sleeping(SleepState state, const std::string &reason) {
+	SleepState expected = SleepState::Enabled;
+	if (!sleep_state_.compare_exchange_strong(expected, state)) {
+		return;
 	}
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		sleep_disabled_reason_ = reason;
+	}
+	log::warning("Reflex sleep %s: %s. Latency markers are still sent.",
+			state == SleepState::Suspended ? "suspended until the window swapchain is re-created" : "disabled", reason.c_str());
 }
 
 bool Ll2Device::sleep() {
-	if (!sleep_enabled_.load()) {
+	if (sleep_state_.load() != SleepState::Enabled) {
+		return false;
+	}
+	// One sleep per presented frame ("between presents"): without a present since the last
+	// sleep (minimised window, a frame that did not draw, a swapchain being re-created) there is
+	// nothing to pace, and a driver may hold the signal back until the next present.
+	if (!presented_since_sleep_.exchange(false)) {
+		std::lock_guard<std::mutex> lock(mutex_);
+		counters_.sleeps_skipped++;
 		return false;
 	}
 	uint64_t value = 0;
-	std::string failure;
+	VkSemaphore semaphore = VK_NULL_HANDLE;
+	VkResult result = VK_SUCCESS;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (!valid_ || swapchain_ == VK_NULL_HANDLE || !latency_mode_enabled_) {
 			return false;
 		}
-		value = ++sleep_value_;
+		semaphore = sleep_semaphore_;
+		value = sleep_value_ + 1;
 		VkLatencySleepInfoNV info{};
 		info.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV;
-		info.signalSemaphore = sleep_semaphore_;
+		info.signalSemaphore = semaphore;
 		info.value = value;
-		const VkResult result = latency_sleep_(device_, swapchain_, &info);
-		if (result != VK_SUCCESS) {
-			--sleep_value_; // nothing will signal this value
-			failure = format("vkLatencySleepNV returned VkResult %d", result);
+		result = latency_sleep_(device_, swapchain_, &info);
+		if (result == VK_SUCCESS) {
+			sleep_value_ = value; // only a value the driver will signal advances the counter
 		}
 	}
-	if (!failure.empty()) {
-		disable_sleep(failure);
+	if (result != VK_SUCCESS) {
+		stop_sleeping(SleepState::Disabled, format("vkLatencySleepNV returned VkResult %d", result));
 		return false;
 	}
-	// The wait only touches our own semaphore, so the swapchain lock is not held here: a resize
-	// on another thread must not stall behind a full frame of sleep.
+	// Only our own semaphore is involved, so no lock is held: a swapchain re-creation on another
+	// thread must not stall behind a frame of sleep.
 	VkSemaphoreWaitInfo wait{};
 	wait.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
 	wait.semaphoreCount = 1;
-	wait.pSemaphores = &sleep_semaphore_;
+	wait.pSemaphores = &semaphore;
 	wait.pValues = &value;
 	const auto start = std::chrono::steady_clock::now();
-	const VkResult result = wait_semaphores_(device_, &wait, SLEEP_TIMEOUT_NS);
+	result = wait_semaphores_(device_, &wait, SLEEP_TIMEOUT_NS);
 	const double slept_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	signal_pending_ = result == VK_TIMEOUT;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		counters_.sleeps++;
@@ -180,33 +211,46 @@ bool Ll2Device::sleep() {
 		}
 	}
 	if (result == VK_TIMEOUT) {
-		if (++consecutive_timeouts_ >= SLEEP_TIMEOUTS_BEFORE_GIVING_UP) {
-			disable_sleep(format("the driver did not signal the sleep semaphore within %llu ms, %d frames in a row",
-					static_cast<unsigned long long>(SLEEP_TIMEOUT_NS / 1000000ull), SLEEP_TIMEOUTS_BEFORE_GIVING_UP));
+		if (++consecutive_timeouts_ >= SLEEP_TIMEOUTS_BEFORE_SUSPENDING) {
+			stop_sleeping(SleepState::Suspended,
+					format("the driver did not signal the sleep semaphore within %llu ms, %d frames in a row",
+							static_cast<unsigned long long>(SLEEP_TIMEOUT_NS / 1000000ull), SLEEP_TIMEOUTS_BEFORE_SUSPENDING));
 		}
 		return false;
 	}
 	if (result != VK_SUCCESS) {
-		disable_sleep(format("vkWaitSemaphores returned VkResult %d", result));
+		stop_sleeping(SleepState::Disabled, format("vkWaitSemaphores returned VkResult %d", result));
 		return false;
 	}
 	consecutive_timeouts_ = 0;
 	return true;
 }
 
-void Ll2Device::apply_sleep_mode(const SleepMode &mode) {
-	std::lock_guard<std::mutex> lock(mutex_);
+std::string Ll2Device::apply_sleep_mode_locked() {
 	if (!valid_ || swapchain_ == VK_NULL_HANDLE || !latency_mode_enabled_) {
-		return; // applied when the window swapchain appears
+		return ""; // applied when the window swapchain appears
 	}
-	const VkLatencySleepModeInfoNV info = to_vk(mode);
+	const VkLatencySleepModeInfoNV info = to_vk(mode_);
 	const VkResult result = set_sleep_mode_(device_, swapchain_, &info);
 	if (result != VK_SUCCESS) {
-		sleep_mode_error_ = format("vkSetLatencySleepModeNV(%s, %u us) returned VkResult %d", reflex_mode_name(mode.mode),
-				mode.minimum_interval_us, result);
-		log::warning("%s", sleep_mode_error_.c_str());
+		sleep_mode_error_ = format("vkSetLatencySleepModeNV(%s, %u us) returned VkResult %d", reflex_mode_name(mode_.mode),
+				mode_.minimum_interval_us, result);
+		return sleep_mode_error_;
+	}
+	sleep_mode_error_.clear();
+	return "";
+}
+
+void Ll2Device::set_sleep_mode(const SleepMode &mode) {
+	std::string error;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		mode_ = mode;
+		error = apply_sleep_mode_locked();
+	}
+	if (!error.empty()) {
+		log::warning("%s", error.c_str());
 	} else {
-		sleep_mode_error_.clear();
 		log::info("Reflex sleep mode: %s, minimum interval %u us", reflex_mode_name(mode.mode), mode.minimum_interval_us);
 	}
 }
@@ -241,8 +285,7 @@ std::vector<FrameReport> Ll2Device::latency_reports() {
 }
 
 VkResult Ll2Device::create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
-		const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next,
-		const SleepMode &mode) {
+		const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next) {
 	if (info == nullptr || !valid_) {
 		return next(device, info, allocator, swapchain);
 	}
@@ -255,34 +298,24 @@ VkResult Ll2Device::create_swapchain(VkDevice device, const VkSwapchainCreateInf
 			return next(device, info, allocator, swapchain);
 		}
 	}
-	VkResult result;
-	bool latency_mode = false;
+	const SwapchainLatencyPatch patch(*info);
+	VkResult result = next(device, patch.get(), allocator, swapchain);
+	bool latency_mode = patch.latency_mode();
 	std::string note;
-	if (const auto *existing = reinterpret_cast<const VkSwapchainLatencyCreateInfoNV *>(
-				vk::find_in_chain(info->pNext, VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV))) {
-		// The host asked for latency mode itself: respect its choice.
-		result = next(device, info, allocator, swapchain);
-		latency_mode = existing->latencyModeEnable == VK_TRUE;
-	} else {
-		VkSwapchainLatencyCreateInfoNV latency{};
-		latency.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_LATENCY_CREATE_INFO_NV;
-		latency.pNext = info->pNext;
-		latency.latencyModeEnable = VK_TRUE;
-		VkSwapchainCreateInfoKHR patched = *info;
-		patched.pNext = &latency;
-		result = next(device, &patched, allocator, swapchain);
-		latency_mode = result == VK_SUCCESS;
-		// A failed create retires oldSwapchain, which may then not be passed again; retrying
-		// without latency mode is only valid when there was none.
-		if (result != VK_SUCCESS && info->oldSwapchain == VK_NULL_HANDLE) {
-			note = format("creating the swapchain with latency mode failed (VkResult %d); created without it", result);
-			log::warning("Reflex: %s", note.c_str());
-			result = next(device, info, allocator, swapchain);
-		}
+	if (result != VK_SUCCESS && !patch.host_provided()) {
+		// Retry as the host asked. A failed create retires oldSwapchain, which must not be passed
+		// again (VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933); a retired swapchain does not
+		// block a new one on the same surface.
+		note = format("creating the swapchain with latency mode failed (VkResult %d); created without it", result);
+		VkSwapchainCreateInfoKHR retry = *info;
+		retry.oldSwapchain = VK_NULL_HANDLE;
+		result = next(device, &retry, allocator, swapchain);
+		latency_mode = false;
 	}
 	if (result != VK_SUCCESS) {
 		return result;
 	}
+	std::string mode_error;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		tracked_surface_ = info->surface;
@@ -292,9 +325,18 @@ VkResult Ll2Device::create_swapchain(VkDevice device, const VkSwapchainCreateInf
 		if (latency_mode) {
 			counters_.swapchains_with_latency_mode++;
 		}
+		mode_error = apply_sleep_mode_locked();
 	}
+	presented_since_sleep_ = false;
+	consecutive_timeouts_ = 0;
+	SleepState suspended = SleepState::Suspended;
+	sleep_state_.compare_exchange_strong(suspended, SleepState::Enabled); // a new swapchain gets a new chance
 	sequencer_.reset_present_history();
-	apply_sleep_mode(mode);
+	for (const std::string &message : { note, mode_error }) {
+		if (!message.empty()) {
+			log::warning("Reflex: %s", message.c_str());
+		}
+	}
 	return result;
 }
 
@@ -303,6 +345,13 @@ void Ll2Device::forget_swapchain(VkSwapchainKHR swapchain) {
 	if (swapchain != VK_NULL_HANDLE && swapchain == swapchain_) {
 		swapchain_ = VK_NULL_HANDLE;
 		latency_mode_enabled_ = false;
+	}
+}
+
+void Ll2Device::forget_surface(VkSurfaceKHR surface) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (surface != VK_NULL_HANDLE && surface == tracked_surface_) {
+		tracked_surface_ = VK_NULL_HANDLE; // the next window swapchain is tracked afresh
 	}
 }
 
@@ -327,27 +376,18 @@ VkResult Ll2Device::present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQ
 		return next(queue, info);
 	}
 	const uint64_t present_id = sequencer_.present_begin(); // [RENDERSUBMIT_END] PRESENT_START
-	if (present_id == 0) {
-		return next(queue, info);
-	}
-	VkPresentInfoKHR patched = *info;
-	VkPresentIdKHR id_info{};
-	thread_local std::vector<uint64_t> ids;
-	const bool host_has_ids = vk::find_in_chain(info->pNext, VK_STRUCTURE_TYPE_PRESENT_ID_KHR) != nullptr ||
-			vk::find_in_chain(info->pNext, VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR) != nullptr;
-	if (present_id_enabled_ && !host_has_ids) {
-		ids.assign(info->swapchainCount, 0); // 0 = "no ID" for the other windows' swapchains
-		ids[index] = present_id;
-		id_info.sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR;
-		id_info.pNext = info->pNext;
-		id_info.swapchainCount = info->swapchainCount;
-		id_info.pPresentIds = ids.data();
-		patched.pNext = &id_info;
+	// Without the presentId feature the present goes out unstamped; markers still carry the ID.
+	const PresentIdPatch patch(*info, index, present_id_enabled_ ? present_id : 0);
+	if (patch.stamped()) {
 		std::lock_guard<std::mutex> lock(mutex_);
 		counters_.presents_stamped++;
 	}
-	const VkResult result = next(queue, &patched);
-	sequencer_.present_end(present_id); // PRESENT_END
+	const VkResult result = next(queue, patch.get());
+	sequencer_.present_end(present_id); // PRESENT_END (no-op without an ID)
+	const VkResult window_result = info->pResults != nullptr ? info->pResults[index] : result;
+	if (window_result == VK_SUCCESS || window_result == VK_SUBOPTIMAL_KHR) {
+		presented_since_sleep_ = true;
+	}
 	return result;
 }
 
@@ -356,26 +396,12 @@ VkResult Ll2Device::submit(VkQueue queue, uint32_t count, const VkSubmitInfo *su
 	if (frame_id == 0 || count == 0 || submits == nullptr || !valid_) {
 		return next(queue, count, submits, fence);
 	}
-	thread_local std::vector<VkSubmitInfo> copies;
-	thread_local std::vector<VkLatencySubmissionPresentIdNV> tags;
-	copies.assign(submits, submits + count);
-	tags.assign(count, VkLatencySubmissionPresentIdNV{});
-	uint32_t tagged = 0;
-	for (uint32_t i = 0; i < count; ++i) {
-		if (vk::find_in_chain(submits[i].pNext, VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV) != nullptr) {
-			continue; // the host tags its own submissions
-		}
-		tags[i].sType = VK_STRUCTURE_TYPE_LATENCY_SUBMISSION_PRESENT_ID_NV;
-		tags[i].pNext = submits[i].pNext;
-		tags[i].presentID = frame_id;
-		copies[i].pNext = &tags[i];
-		++tagged;
-	}
-	if (tagged > 0) {
+	const SubmitTagPatch patch(submits, count, frame_id);
+	if (patch.tagged() > 0) {
 		std::lock_guard<std::mutex> lock(mutex_);
-		counters_.submits_tagged += tagged;
+		counters_.submits_tagged += patch.tagged();
 	}
-	return next(queue, count, copies.data(), fence);
+	return next(queue, count, patch.get(), fence);
 }
 
 Ll2Device::State Ll2Device::state() {
@@ -383,7 +409,7 @@ Ll2Device::State Ll2Device::state() {
 	State s;
 	s.has_swapchain = swapchain_ != VK_NULL_HANDLE;
 	s.latency_mode_enabled = latency_mode_enabled_;
-	s.sleep_enabled = sleep_enabled_.load();
+	s.sleep_enabled = sleep_state_.load() == SleepState::Enabled;
 	s.sleep_disabled_reason = sleep_disabled_reason_;
 	s.swapchain_note = swapchain_note_;
 	s.sleep_mode_error = sleep_mode_error_;
@@ -423,15 +449,16 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 		reason = disabled_reason_;
 		return false;
 	}
-	auto available = [&](const char *name) {
+	auto version = [&](const char *name) -> uint32_t {
 		for (const std::string &hidden : hidden_extensions_) {
 			if (hidden == name) {
-				return false;
+				return 0;
 			}
 		}
-		return caps.has_extension(name);
+		return caps.extension_version(name);
 	};
-	if (!available(VK_NV_LOW_LATENCY_2_EXTENSION_NAME)) {
+	const uint32_t ll2 = version(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
+	if (ll2 == 0) {
 		if (caps.vendor_id != NVIDIA_VENDOR_ID) {
 			reason = format("'%s' (vendor 0x%04X) is not an NVIDIA GPU", caps.name.c_str(), caps.vendor_id);
 		} else {
@@ -439,12 +466,17 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 		}
 		return false;
 	}
-	if (!available(VK_KHR_PRESENT_ID_EXTENSION_NAME) || !caps.present_id_feature) {
+	if (ll2 < MIN_LL2_SPEC_VERSION) {
+		reason = format("the driver's VK_NV_low_latency2 is revision %u; revision %u is needed (update the NVIDIA driver)",
+				ll2, MIN_LL2_SPEC_VERSION);
+		return false;
+	}
+	if (version(VK_KHR_PRESENT_ID_EXTENSION_NAME) == 0 || !caps.present_id_feature) {
 		reason = "VK_KHR_present_id, which VK_NV_low_latency2 depends on, is not supported";
 		return false;
 	}
 	const bool core_timeline = caps.effective_api_version >= VK_API_VERSION_1_2;
-	if (!caps.timeline_semaphore_feature || (!core_timeline && !available(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME))) {
+	if (!caps.timeline_semaphore_feature || (!core_timeline && version(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME) == 0)) {
 		reason = "timeline semaphores, which VK_NV_low_latency2 depends on, are not supported";
 		return false;
 	}
@@ -461,7 +493,12 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 void ReflexFeature::on_device_created(const vk::DeviceContext &context, bool accepted, const std::string &reason) {
 	std::shared_ptr<Ll2Device> device;
 	if (accepted) {
-		device = std::make_shared<Ll2Device>(context);
+		SleepMode mode;
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			mode = mode_;
+		}
+		device = std::make_shared<Ll2Device>(context, mode);
 		if (!device->valid()) {
 			log::warning("Reflex unavailable on '%s': %s", context.caps.name.c_str(), device->init_error().c_str());
 		}
@@ -487,7 +524,8 @@ void ReflexFeature::on_device_destroyed(VkDevice device) {
 		gone = it->second;
 		devices_.erase(it);
 		if (active_ == gone) {
-			fast_active_.store(nullptr);
+			fast_key_.store(nullptr);
+			fast_device_.store(nullptr);
 			active_.reset();
 		}
 	}
@@ -500,18 +538,23 @@ std::shared_ptr<Ll2Device> ReflexFeature::device_for(vk::DispatchKey key) {
 	return it != devices_.end() ? it->second : nullptr;
 }
 
+Ll2Device *ReflexFeature::fast_device_for(vk::DispatchKey key) const {
+	return key != nullptr && fast_key_.load(std::memory_order_acquire) == key ? fast_device_.load(std::memory_order_acquire) : nullptr;
+}
+
 VkResult ReflexFeature::create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
 		const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next) {
 	std::shared_ptr<Ll2Device> target = device_for(vk::dispatch_key(device));
 	if (!target) {
 		return next(device, info, allocator, swapchain);
 	}
-	const VkResult result = target->create_swapchain(device, info, allocator, swapchain, next, sleep_mode());
+	const VkResult result = target->create_swapchain(device, info, allocator, swapchain, next);
 	if (result == VK_SUCCESS && target->state().latency_mode_enabled) {
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (!active_) {
 			active_ = target;
-			fast_active_.store(target.get());
+			fast_device_.store(target.get(), std::memory_order_release);
+			fast_key_.store(target->key(), std::memory_order_release);
 		}
 	}
 	return result;
@@ -525,38 +568,50 @@ void ReflexFeature::destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain,
 	next(device, swapchain, allocator);
 }
 
+void ReflexFeature::destroy_surface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks *allocator,
+		PFN_vkDestroySurfaceKHR next) {
+	std::vector<std::shared_ptr<Ll2Device>> devices;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		for (const auto &entry : devices_) {
+			devices.push_back(entry.second);
+		}
+	}
+	for (const std::shared_ptr<Ll2Device> &device : devices) {
+		device->forget_surface(surface);
+	}
+	next(instance, surface, allocator);
+}
+
 VkResult ReflexFeature::queue_submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence,
 		PFN_vkQueueSubmit next) {
-	Ll2Device *device = fast_active_.load(std::memory_order_acquire);
-	if (device != nullptr && device->key() == vk::dispatch_key(queue)) {
+	if (Ll2Device *device = fast_device_for(vk::dispatch_key(queue))) {
 		return device->submit(queue, count, submits, fence, next);
 	}
 	return next(queue, count, submits, fence);
 }
 
 VkResult ReflexFeature::queue_present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQueuePresentKHR next) {
-	Ll2Device *device = fast_active_.load(std::memory_order_acquire);
-	if (device != nullptr && device->key() == vk::dispatch_key(queue)) {
+	if (Ll2Device *device = fast_device_for(vk::dispatch_key(queue))) {
 		return device->present(queue, info, next);
 	}
 	return next(queue, info);
 }
 
 void ReflexFeature::set_sleep_mode(const SleepMode &mode) {
-	std::shared_ptr<Ll2Device> device;
+	std::vector<std::shared_ptr<Ll2Device>> devices;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		mode_ = mode;
-		device = active_;
+		for (const auto &entry : devices_) {
+			devices.push_back(entry.second);
+		}
 	}
-	if (device) {
-		device->apply_sleep_mode(mode);
+	// Stored per device even without a swapchain, so a swapchain being re-created on the render
+	// thread right now picks up this mode instead of the previous one.
+	for (const std::shared_ptr<Ll2Device> &device : devices) {
+		device->set_sleep_mode(mode);
 	}
-}
-
-SleepMode ReflexFeature::sleep_mode() const {
-	std::lock_guard<std::mutex> lock(mutex_);
-	return mode_;
 }
 
 std::shared_ptr<Ll2Device> ReflexFeature::active_device() {
@@ -591,7 +646,7 @@ ReflexFeature::Status ReflexFeature::status() {
 	}
 	const Ll2Device::State st = device->state();
 	if (!st.has_swapchain) {
-		s.reason = "the window swapchain is being recreated";
+		s.reason = "the window swapchain is being re-created";
 		return s;
 	}
 	if (!st.latency_mode_enabled) {
@@ -600,7 +655,7 @@ ReflexFeature::Status ReflexFeature::status() {
 	}
 	s.active = true;
 	if (!st.sleep_enabled) {
-		s.reason = "markers only, sleep disabled: " + st.sleep_disabled_reason;
+		s.reason = "markers only, sleep stopped: " + st.sleep_disabled_reason;
 	}
 	return s;
 }

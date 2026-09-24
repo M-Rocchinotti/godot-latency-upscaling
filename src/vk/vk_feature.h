@@ -5,6 +5,7 @@
 #include "vk/device_patch.h"
 #include "vk/vk_common.h"
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -20,11 +21,12 @@ struct PhysicalDeviceCaps {
 	// device is actually used at, which decides what is core.
 	uint32_t effective_api_version = VK_API_VERSION_1_0;
 	std::string name;
-	std::vector<std::string> extensions;
+	std::map<std::string, uint32_t> extensions; // name -> spec version
 	bool timeline_semaphore_feature = false;
 	bool present_id_feature = false;
 
-	bool has_extension(const char *name) const;
+	bool has_extension(const char *extension) const { return extension_version(extension) != 0; }
+	uint32_t extension_version(const char *extension) const; // 0 = not offered
 };
 
 // Functions a feature may use on the device it was created with. Resolved through the real

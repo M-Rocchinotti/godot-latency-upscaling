@@ -14,6 +14,8 @@ public:
 			const VkAllocationCallbacks *allocator, VkSwapchainKHR *swapchain, PFN_vkCreateSwapchainKHR next) = 0;
 	virtual void destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain, const VkAllocationCallbacks *allocator,
 			PFN_vkDestroySwapchainKHR next) = 0;
+	virtual void destroy_surface(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks *allocator,
+			PFN_vkDestroySurfaceKHR next) = 0;
 	virtual VkResult queue_submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence,
 			PFN_vkQueueSubmit next) = 0;
 	virtual VkResult queue_present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQueuePresentKHR next) = 0;

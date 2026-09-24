@@ -181,6 +181,10 @@ TEST(sequencer_submissions_carry_the_rendered_frame_id) {
 	seq.render_begin(drawn);
 	CHECK_EQ(seq.submission_id(), 1ull);
 	CHECK_EQ(seq.present_begin(), 1ull);
+	CHECK_EQ(seq.submission_id(), 0ull); // the frame's submissions ended before its present
+	seq.render_begin(2);
+	seq.render_end(2); // a draw without present ends its submissions too
+	CHECK_EQ(seq.submission_id(), 0ull);
 }
 
 TEST(sequencer_render_begin_closes_an_unfinished_render) {

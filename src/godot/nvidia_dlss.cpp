@@ -127,9 +127,10 @@ void NvidiaDLSS::_bind_methods() {
 //         ... vkQueueSubmit          -> submissions tagged with present ID N
 //         vkQueuePresentKHR          -> RENDERSUBMIT_END(N) PRESENT_START(N), VkPresentIdKHR = N,
 //                                       PRESENT_END(N)   (reflex/reflex_ll2.cpp)
-//         frame_post_draw            -> on_frame_post_draw(): RENDERSUBMIT_END(N) if no present
-//     GDExtension frame callback     -> on_frame(): vkLatencySleepNV + wait, then
-//                                       SIMULATION_START(N+1) INPUT_SAMPLE(N+1)
+//     GDExtension frame callback     -> on_frame(): queue on_render_frame_end(N) behind _draw(N)
+//                                       (RENDERSUBMIT_END(N) if no present sent it), then
+//                                       vkLatencySleepNV + wait, then SIMULATION_START(N+1),
+//                                       INPUT_SAMPLE(N+1)
 //     ScriptServer::frame, AudioServer::update, OS::add_frame_delay
 //   [OS run loop] DisplayServer::process_events()      input for N+1
 //
@@ -145,9 +146,7 @@ void NvidiaDLSS::connect_frame_signals() {
 	if (signals_connected_ || !boot_state().reflex_enabled || !Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
-	RenderingServer *rs = RenderingServer::get_singleton();
-	rs->connect("frame_pre_draw", callable_mp(this, &NvidiaDLSS::on_frame_pre_draw));
-	rs->connect("frame_post_draw", callable_mp(this, &NvidiaDLSS::on_frame_post_draw));
+	RenderingServer::get_singleton()->connect("frame_pre_draw", callable_mp(this, &NvidiaDLSS::on_frame_pre_draw));
 	signals_connected_ = true;
 }
 
@@ -155,9 +154,7 @@ void NvidiaDLSS::disconnect_frame_signals() {
 	if (!signals_connected_ || !Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
-	RenderingServer *rs = RenderingServer::get_singleton();
-	rs->disconnect("frame_pre_draw", callable_mp(this, &NvidiaDLSS::on_frame_pre_draw));
-	rs->disconnect("frame_post_draw", callable_mp(this, &NvidiaDLSS::on_frame_post_draw));
+	RenderingServer::get_singleton()->disconnect("frame_pre_draw", callable_mp(this, &NvidiaDLSS::on_frame_pre_draw));
 	signals_connected_ = false;
 }
 
@@ -177,6 +174,14 @@ void NvidiaDLSS::on_frame() {
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
+	}
+	if (drawn_frame_id_ != 0) {
+		// Queued behind this iteration's _draw(): right after it on a separate render thread, at
+		// once (after the present) in the default model. frame_post_draw cannot be used: with a
+		// separate render thread it is deferred and may arrive during the next frame's draw.
+		RenderingServer::get_singleton()->call_on_render_thread(
+				callable_mp(this, &NvidiaDLSS::on_render_frame_end).bind(drawn_frame_id_));
+		drawn_frame_id_ = 0;
 	}
 	reflex::FrameSequencer &sequencer = device->sequencer();
 	sequencer.close_open_simulation(); // a frame that never drew: close it before sleeping
@@ -203,8 +208,9 @@ void NvidiaDLSS::on_frame_pre_draw() {
 	if (frame_id != 0) {
 		// Runs immediately in the default thread model; with a separate render thread it runs
 		// right before this frame's _draw(), which was not queued yet.
+		drawn_frame_id_ = static_cast<int64_t>(frame_id);
 		RenderingServer::get_singleton()->call_on_render_thread(
-				callable_mp(this, &NvidiaDLSS::on_render_frame_begin).bind(static_cast<int64_t>(frame_id)));
+				callable_mp(this, &NvidiaDLSS::on_render_frame_begin).bind(drawn_frame_id_));
 	}
 }
 
@@ -213,16 +219,15 @@ void NvidiaDLSS::on_render_frame_begin(int64_t frame_id) {
 	if (!device) {
 		return;
 	}
-	render_frame_id_.store(frame_id);
 	device->sequencer().render_begin(static_cast<uint64_t>(frame_id));
 }
 
-void NvidiaDLSS::on_frame_post_draw() {
+void NvidiaDLSS::on_render_frame_end(int64_t frame_id) {
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
 	}
-	device->sequencer().render_end(static_cast<uint64_t>(render_frame_id_.load()));
+	device->sequencer().render_end(static_cast<uint64_t>(frame_id));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -353,6 +358,7 @@ Dictionary NvidiaDLSS::get_status() const {
 			counters[reflex::marker_name(static_cast<reflex::Marker>(i))] = static_cast<int64_t>(st.counters.markers[i]);
 		}
 		counters["sleeps"] = static_cast<int64_t>(st.counters.sleeps);
+		counters["sleeps_skipped"] = static_cast<int64_t>(st.counters.sleeps_skipped);
 		counters["sleep_timeouts"] = static_cast<int64_t>(st.counters.sleep_timeouts);
 		counters["presents_stamped"] = static_cast<int64_t>(st.counters.presents_stamped);
 		counters["submits_tagged"] = static_cast<int64_t>(st.counters.submits_tagged);

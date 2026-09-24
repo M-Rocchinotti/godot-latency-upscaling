@@ -6,8 +6,16 @@ namespace nvdlss::hook {
 namespace {
 
 bool write_pointer(void **slot, void *value) {
+	// Keep execute permission if the page has it: some linkers place the IAT in a page shared
+	// with code, which another thread may be running right now.
+	MEMORY_BASIC_INFORMATION page{};
+	if (VirtualQuery(slot, &page, sizeof(page)) == 0) {
+		return false;
+	}
+	constexpr DWORD EXECUTABLE = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+	const DWORD writable = (page.Protect & EXECUTABLE) != 0 ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE;
 	DWORD old_protect = 0;
-	if (!VirtualProtect(slot, sizeof(void *), PAGE_READWRITE, &old_protect)) {
+	if (!VirtualProtect(slot, sizeof(void *), writable, &old_protect)) {
 		return false;
 	}
 	// Pointer-sized aligned store: other threads calling through the slot see either the old

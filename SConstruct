@@ -51,6 +51,7 @@ PURE_SOURCES = [
     "src/hook/loader_name.cpp",
     "src/reflex/frame_sequencer.cpp",
     "src/reflex/latency_stats.cpp",
+    "src/reflex/ll2_patches.cpp",
     "src/vk/device_patch.cpp",
 ]
 

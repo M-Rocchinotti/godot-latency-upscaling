@@ -4,8 +4,9 @@
 
 namespace nvdlss::vk {
 
-bool PhysicalDeviceCaps::has_extension(const char *extension) const {
-	return std::find(extensions.begin(), extensions.end(), extension) != extensions.end();
+uint32_t PhysicalDeviceCaps::extension_version(const char *extension) const {
+	const auto it = extensions.find(extension);
+	return it != extensions.end() ? it->second : 0;
 }
 
 bool DeviceContext::has_enabled_extension(const char *extension) const {

@@ -82,7 +82,9 @@ void FrameSequencer::render_begin(uint64_t frame_id) {
 
 uint64_t FrameSequencer::submission_id() const {
 	std::lock_guard<std::mutex> lock(mutex_);
-	return render_id_;
+	// Once RENDERSUBMIT_END is out the frame's submissions are done; later ones (uploads from
+	// worker threads, script submissions) belong to no frame.
+	return render_end_sent_ ? 0 : render_id_;
 }
 
 uint64_t FrameSequencer::present_begin() {

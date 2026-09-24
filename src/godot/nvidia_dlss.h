@@ -7,7 +7,6 @@
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
-#include <atomic>
 #include <cstdint>
 
 namespace nvdlss {
@@ -56,8 +55,8 @@ protected:
 private:
 	void connect_frame_signals();
 	void on_frame_pre_draw();
-	void on_frame_post_draw();
 	void on_render_frame_begin(int64_t frame_id);
+	void on_render_frame_end(int64_t frame_id);
 	void apply_sleep_mode();
 
 	static NvidiaDLSS *singleton_;
@@ -65,7 +64,7 @@ private:
 	double fps_limit_ = 0.0;
 	bool flash_marker_ = true;
 	bool left_button_was_down_ = false;
-	std::atomic<int64_t> render_frame_id_{ 0 };
+	int64_t drawn_frame_id_ = 0; // main thread: frame whose draw this iteration queued
 	uint64_t overlay_id_ = 0; // ObjectID of the overlay node
 	bool signals_connected_ = false;
 };

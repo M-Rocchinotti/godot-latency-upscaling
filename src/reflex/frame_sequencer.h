@@ -62,7 +62,8 @@ public:
 	// --- Render thread (the main thread in Godot's default thread model) -------------------
 	// Start of the draw that renders frame `frame_id`: RENDERSUBMIT_START.
 	void render_begin(uint64_t frame_id);
-	// ID to stamp on the next submission (0 = none: no frame is being rendered).
+	// ID to stamp on the next submission: the frame between its RENDERSUBMIT_START and _END,
+	// 0 otherwise.
 	uint64_t submission_id() const;
 	// Before vkQueuePresentKHR of the tracked swapchain: [RENDERSUBMIT_END] PRESENT_START.
 	// Returns the present ID to stamp, or 0 (no markers, no ID) when no frame is being rendered

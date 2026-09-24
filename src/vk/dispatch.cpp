@@ -31,6 +31,7 @@ struct Next {
 	PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
 	PFN_vkDestroySwapchainKHR DestroySwapchainKHR = nullptr;
 	PFN_vkQueuePresentKHR QueuePresentKHR = nullptr;
+	PFN_vkDestroySurfaceKHR DestroySurfaceKHR = nullptr;
 };
 
 struct InstanceInfo {
@@ -42,7 +43,7 @@ struct InstanceInfo {
 struct Layer {
 	std::mutex mutex; // guards instances, snap and the loader set-up
 	HMODULE real_loader = nullptr;
-	bool ready = false;
+	std::atomic<bool> ready{ false }; // `next` is complete; set once, never cleared
 	Next next; // written once before `ready`, read-only afterwards
 	// Registered at CORE initialisation, before the host makes any Vulkan call, and never
 	// changed afterwards: read without the lock.
@@ -161,7 +162,7 @@ PhysicalDeviceCaps query_caps(const InstanceInfo &inst, VkPhysicalDevice physica
 	std::vector<VkExtensionProperties> extensions(count);
 	next.EnumerateDeviceExtensionProperties(physical_device, nullptr, &count, extensions.data());
 	for (uint32_t i = 0; i < count; ++i) {
-		caps.extensions.emplace_back(extensions[i].extensionName);
+		caps.extensions[extensions[i].extensionName] = extensions[i].specVersion;
 	}
 
 	// Feature queries need Vulkan 1.1 on the instance or VK_KHR_get_physical_device_properties2.
@@ -329,6 +330,16 @@ VKAPI_ATTR void VKAPI_CALL hook_DestroySwapchainKHR(VkDevice device, VkSwapchain
 	}
 }
 
+VKAPI_ATTR void VKAPI_CALL hook_DestroySurfaceKHR(VkInstance instance, VkSurfaceKHR surface, const VkAllocationCallbacks *allocator) {
+	Layer &L = layer();
+	QueueHooks *hooks = L.queue_hooks.load(std::memory_order_acquire);
+	if (hooks != nullptr) {
+		hooks->destroy_surface(instance, surface, allocator, L.next.DestroySurfaceKHR);
+	} else {
+		L.next.DestroySurfaceKHR(instance, surface, allocator);
+	}
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL hook_QueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence) {
 	Layer &L = layer();
 	QueueHooks *hooks = L.queue_hooks.load(std::memory_order_acquire);
@@ -357,8 +368,8 @@ PFN_vkVoidFunction find_hook(const char *name, bool device_scope);
 
 extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL nvdlss_proxy_vkGetInstanceProcAddr(VkInstance instance, const char *name) {
 	Layer &L = layer();
-	if (name == nullptr) {
-		return nullptr;
+	if (name == nullptr || !L.ready.load(std::memory_order_acquire)) {
+		return nullptr; // only reachable through the module handed out once the layer is ready
 	}
 	const PFN_vkVoidFunction real = L.next.GetInstanceProcAddr(instance, name);
 	if (real == nullptr) {
@@ -372,7 +383,7 @@ namespace {
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hook_GetDeviceProcAddr(VkDevice device, const char *name) {
 	Layer &L = layer();
-	if (name == nullptr) {
+	if (name == nullptr || !L.ready.load(std::memory_order_acquire)) {
 		return nullptr;
 	}
 	const PFN_vkVoidFunction real = L.next.GetDeviceProcAddr(device, name);
@@ -393,6 +404,7 @@ PFN_vkVoidFunction find_hook(const char *name, bool device_scope) {
 		{ "vkDestroyDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyDevice), true, false },
 		{ "vkCreateSwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateSwapchainKHR), true, true },
 		{ "vkDestroySwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySwapchainKHR), true, true },
+		{ "vkDestroySurfaceKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySurfaceKHR), false, true },
 		{ "vkQueueSubmit", reinterpret_cast<PFN_vkVoidFunction>(&hook_QueueSubmit), true, true },
 		{ "vkQueuePresentKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_QueuePresentKHR), true, true },
 	};
@@ -432,7 +444,8 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 	if (real == nullptr) {
 		return nullptr;
 	}
-	std::lock_guard<std::mutex> lock(L.mutex);
+	std::string problem;
+	std::unique_lock<std::mutex> lock(L.mutex);
 	L.snap.loader_intercepted = true;
 	if (L.ready) {
 		FreeLibrary(real); // the layer already holds a reference for the process lifetime
@@ -453,24 +466,30 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 			next.CreateSwapchainKHR = loader_export<PFN_vkCreateSwapchainKHR>(real, "vkCreateSwapchainKHR");
 			next.DestroySwapchainKHR = loader_export<PFN_vkDestroySwapchainKHR>(real, "vkDestroySwapchainKHR");
 			next.QueuePresentKHR = loader_export<PFN_vkQueuePresentKHR>(real, "vkQueuePresentKHR");
+			next.DestroySurfaceKHR = loader_export<PFN_vkDestroySurfaceKHR>(real, "vkDestroySurfaceKHR");
 			const bool complete = next.GetInstanceProcAddr && next.EnumerateInstanceExtensionProperties &&
 					next.CreateInstance && next.DestroyInstance && next.GetPhysicalDeviceProperties &&
 					next.EnumerateDeviceExtensionProperties && next.CreateDevice && next.DestroyDevice &&
 					next.GetDeviceProcAddr && next.QueueSubmit && next.CreateSwapchainKHR && next.DestroySwapchainKHR &&
-					next.QueuePresentKHR;
+					next.QueuePresentKHR && next.DestroySurfaceKHR;
 			if (complete) {
 				L.real_loader = real; // this reference keeps the loader loaded for the process lifetime
 				L.next = next;
-				L.ready = true;
+				L.ready.store(true, std::memory_order_release);
 			} else {
 				L.snap.loader_problem = "the Vulkan loader does not export the entry points the layer needs";
-				log::warning("%s; Vulkan calls pass through untouched", L.snap.loader_problem.c_str());
+				problem = L.snap.loader_problem;
 			}
 		}
-		if (!L.ready) {
+		if (!L.ready.load()) {
+			lock.unlock();
+			if (!problem.empty()) {
+				log::warning("%s; Vulkan calls pass through untouched", problem.c_str());
+			}
 			return real; // pure pass-through: the host owns this reference to the real loader
 		}
 	}
+	lock.unlock();
 	// The host receives this DLL. The reference taken here balances the FreeLibrary volk issues
 	// in volkFinalize; the DLL is pinned anyway (hook/loader_hook.cpp).
 	HMODULE self = nullptr;
@@ -480,6 +499,7 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 	}
 	return self;
 }
+
 LayerSnapshot snapshot() {
 	Layer &L = layer();
 	std::lock_guard<std::mutex> lock(L.mutex);
