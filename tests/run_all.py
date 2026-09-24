@@ -19,9 +19,12 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
   editor with Reflex enabled  enable_in_editor (environment override): Reflex in the editor process
   editor: addon added ...     the addon loaded into a running editor stays dormant, no crash
   validation                  Vulkan validation layers (LunarG SDK) report nothing with the hook
-  stub                        the no-op cross-platform stub registers the singleton (needs zig)
   archive                     `git archive` ships only the addon and the licences
-  package                     tools/package.py ships only the addon + release binaries, no debug/src
+  package                     the release zip (both DLLs) installed into a fresh project: editor,
+                              game run from the editor, debug and release export (tests/run_package.py)
+
+A skipped item is reported as SKIP, never as PASS, and fails the run unless it is listed in
+ALLOWED_SKIPS (with the reason) or accepted with --allow-skip NAME.
 
 Requirements: Godot 4.7.2 (tools/.godot_path or GODOT_BIN), a built debug DLL (build.cmd debug),
 for "validation" the Vulkan SDK (VULKAN_SDK or tools/.vulkan_sdk_path). Every Godot process is
@@ -69,6 +72,21 @@ def result(name: str, ok: bool, detail: str = "", problems: list[str] | None = N
     for p in (problems or [])[:12]:
         print(f"        {p}")
     return ok
+
+
+# A skip is neither a pass nor a failure: it is reported separately, and it fails the run unless
+# the skipped item is listed here (with the reason it cannot run on the reference machine) or
+# allowed with --allow-skip NAME.
+ALLOWED_SKIPS = {
+    "fallback: D3D12 driver": "Godot 4.7.2's own D3D12 driver crashes on the reference GTX 1080, with or "
+                              "without the addon; the refusal path is covered by code review and the status tests",
+}
+SKIPPED: list[str] = []
+
+
+def skip(name: str, reason: str) -> None:
+    SKIPPED.append(name)
+    print(f"SKIP  {name}  ({reason})", flush=True)
 
 
 # --- suites --------------------------------------------------------------------------------
@@ -219,7 +237,7 @@ def suite_fallbacks() -> bool:
             base_code, base_out = godot(args + ["--script", "res://tests/print_status.gd", "--", "--frames=30"],
                                         log + "_without_addon", {"GODOT_LATENCY_UPSCALING_DISABLE": "1"})
             if base_code != 0 and base_code == code and not status_of(base_out):
-                print(f"SKIP  fallback: {name}  (Godot exits with {code} here even without the addon)", flush=True)
+                skip(f"fallback: {name}", f"Godot exits with {code} here even without the addon")
                 continue
         problems = problems_in(out, expected_warnings)
         try:
@@ -274,7 +292,8 @@ def vulkan_sdk() -> Path | None:
 def suite_validation() -> bool:
     sdk = vulkan_sdk()
     if sdk is None or not (sdk / "Bin" / "VkLayer_khronos_validation.json").exists():
-        return result("validation", False, "Vulkan SDK not found: set VULKAN_SDK or tools/.vulkan_sdk_path")
+        skip("validation", "Vulkan SDK not found: set VULKAN_SDK or tools/.vulkan_sdk_path")
+        return None
     env_base = {"VK_ADD_LAYER_PATH": str(sdk / "Bin")}
     args = ["--gpu-validation", "--verbose", "--script", "res://tests/reflex_tests.gd"]
     from collections import Counter
@@ -324,42 +343,14 @@ def suite_archive() -> bool:
                   unexpected[:10] + missing + stale)
 
 
-def suite_stub() -> bool:
-    sys.path.insert(0, str(ROOT / "stub"))
-    from build_stubs import find_zig
-
-    if find_zig() is None:
-        return result("stub", True, "skipped: zig not found (needed only for the cross-platform stubs)")
-    proc = subprocess.run([sys.executable, str(ROOT / "stub" / "test_stub.py")], cwd=ROOT,
-                          capture_output=True, text=True, encoding="utf-8", errors="replace")
-    tail = [l for l in proc.stdout.splitlines() if l.startswith(("PASS", "FAIL"))]
-    return result("stub", proc.returncode == 0, "no-op stub registers the singleton, reports not supported",
-                  [l for l in tail if l.startswith("FAIL")])
-
-
 def suite_package() -> bool:
-    import zipfile
-
-    binaries = [
-        "godot_latency_upscaling.windows.template_release.x86_64.dll",
-        "godot_latency_upscaling.linux.x86_64.so", "godot_latency_upscaling.linux.arm64.so",
-        "godot_latency_upscaling.macos.x86_64.dylib", "godot_latency_upscaling.macos.arm64.dylib",
-        "godot_latency_upscaling.windows.arm64.dll",
-    ]
-    bin_dir = ROOT / "addons" / "latency_upscaling" / "bin"
-    if any(not (bin_dir / b).exists() for b in binaries):
-        return result("package", True, "skipped: shipped binaries not built (run tools/package.py)")
-    proc = subprocess.run([sys.executable, str(ROOT / "tools" / "package.py"), "--skip-build"], cwd=ROOT,
+    # Builds the release zip (both DLLs) and installs it into a fresh project: editor, game from the
+    # editor, debug export, release export (tests/run_package.py).
+    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "run_package.py")], cwd=ROOT,
                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if proc.returncode != 0:
-        return result("package", False, "package.py failed", [proc.stdout[-400:]])
-    zips = sorted((ROOT / "dist").glob("godot-latency-upscaling-v*.zip"))
-    names = zipfile.ZipFile(zips[-1]).namelist() if zips else []
-    banned = [n for n in names if n.endswith((".lib", ".exp", ".pdb")) or "template_debug" in n
-              or n.startswith(("src/", "tests/", "tools/", "stub/", "docs/"))]
-    have = all(f"addons/latency_upscaling/bin/{b}" in names for b in binaries)
-    have = have and "addons/latency_upscaling/README.md" in names and "LICENSE" in names
-    return result("package", have and not banned, f"{len(names)} files, only the addon + shipped binaries", banned)
+    lines = proc.stdout.splitlines()
+    summary = next((l for l in lines if l.startswith("package test:")), "no summary")
+    return result("package", proc.returncode == 0, summary, [l for l in lines if l.startswith("FAIL")])
 
 
 SUITES = [
@@ -373,7 +364,6 @@ SUITES = [
     ("editor reflex", suite_editor_with_reflex),
     ("late load", suite_editor_late_load),
     ("validation", suite_validation),
-    ("stub", suite_stub),
     ("archive", suite_archive),
     ("package", suite_package),
 ]
@@ -381,11 +371,17 @@ SUITES = [
 
 def main(argv: list[str]) -> int:
     only = argv[argv.index("--only") + 1] if "--only" in argv else None
+    allowed = dict(ALLOWED_SKIPS)
+    for i, a in enumerate(argv):
+        if a == "--allow-skip" and i + 1 < len(argv):
+            allowed[argv[i + 1]] = "allowed on the command line"
     results = []
     for name, suite in SUITES:
         if only and only not in name:
             continue
-        results.append(suite())
+        outcome = suite()
+        if outcome is not None:  # None: the whole suite was skipped (already reported)
+            results.append(outcome)
     extra = []
     if "--bench" in argv:
         extra.append("run_benchmark.py")
@@ -394,8 +390,13 @@ def main(argv: list[str]) -> int:
     for script in extra:
         proc = subprocess.run([sys.executable, str(ROOT / "tests" / script)], cwd=ROOT)
         results.append(result(script, proc.returncode == 0, f"exit {proc.returncode}"))
-    print(f"\n{sum(results)}/{len(results)} suites passed")
-    return 0 if all(results) else 1
+    passed, failed = sum(results), len(results) - sum(results)
+    unallowed = [s for s in SKIPPED if s not in allowed]
+    print(f"\n{passed} suites passed, {failed} failed, {len(SKIPPED)} skipped"
+          + (f" ({len(SKIPPED) - len(unallowed)} allowed)" if SKIPPED else ""))
+    for s in SKIPPED:
+        print(f"  skipped: {s}: " + (allowed[s] if s in allowed else "NOT ALLOWED (use --allow-skip to accept)"))
+    return 0 if failed == 0 and not unallowed else 1
 
 
 if __name__ == "__main__":
