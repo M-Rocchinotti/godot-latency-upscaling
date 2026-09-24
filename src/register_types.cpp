@@ -9,6 +9,7 @@
 #include "core/log.h"
 #include "godot/bootstrap.h"
 #include "godot/latency_upscaling.h"
+#include "godot/upscaler.h"
 
 #include <gdextension_interface.h>
 
@@ -41,6 +42,7 @@ void initialize(ModuleInitializationLevel level) {
 		return;
 	}
 	GDREGISTER_CLASS(lu::LatencyUpscaling);
+	GDREGISTER_INTERNAL_CLASS(lu::LatencyUpscalingEffect); // injected by the upscaler, never saved
 	g_singleton = memnew(lu::LatencyUpscaling);
 	Engine::get_singleton()->register_singleton(SINGLETON_NAME, g_singleton);
 	if (Engine::get_singleton()->is_editor_hint()) {
@@ -73,6 +75,12 @@ void on_frame() {
 	}
 }
 
+void on_shutdown() {
+	if (g_singleton != nullptr) {
+		g_singleton->on_shutdown();
+	}
+}
+
 } // namespace
 
 extern "C" {
@@ -84,6 +92,7 @@ GDExtensionBool GDE_EXPORT godot_latency_upscaling_init(GDExtensionInterfaceGetP
 	init.register_terminator(uninitialize);
 	init.register_startup_callback(on_startup);
 	init.register_frame_callback(on_frame);
+	init.register_shutdown_callback(on_shutdown);
 	// CORE: the earliest level, the only one that runs before the Vulkan device is created.
 	init.set_minimum_library_initialization_level(MODULE_INITIALIZATION_LEVEL_CORE);
 	return init.init();

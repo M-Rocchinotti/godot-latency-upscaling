@@ -143,6 +143,8 @@ void bootstrap_core() {
 	}
 	g_state.hidden_extensions = split_list(os->get_environment(ENV_TEST_HIDE_EXTENSIONS));
 	testing::set_faults(split_list(os->get_environment(ENV_TEST_FAULT)));
+	g_state.test_upscaler = os->get_environment(ENV_TEST_UPSCALER).strip_edges().utf8().get_data();
+	g_state.test_readback_frames = static_cast<int>(os->get_environment(ENV_TEST_READBACK_FRAMES).to_int());
 #endif
 	g_state.godot_version = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
 	// A RenderingServer only exists at CORE level when the extension is loaded into a running

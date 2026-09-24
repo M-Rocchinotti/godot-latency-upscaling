@@ -26,6 +26,8 @@ struct BootState {
 	bool reflex_enabled = false; // Reflex may modify this process' Vulkan device
 	std::string reflex_reason;
 	std::vector<std::string> hidden_extensions; // debug-build test knob
+	std::string test_upscaler; // debug-build test knob: "reference" runs the reference upscaler
+	int test_readback_frames = 0; // debug-build test knob: frames of UBO / velocity read-backs
 };
 
 void bootstrap_core();
@@ -39,6 +41,8 @@ inline constexpr const char *ENV_VERBOSE = "GODOT_LATENCY_UPSCALING_VERBOSE"; //
 inline constexpr const char *ENV_TEST_HIDE_EXTENSIONS = "GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS"; // comma list
 inline constexpr const char *ENV_TEST_GODOT_VERSION = "GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION"; // e.g. "4.8.0"
 inline constexpr const char *ENV_TEST_FAULT = "GODOT_LATENCY_UPSCALING_TEST_FAULT"; // comma list (see core/testing.h)
+inline constexpr const char *ENV_TEST_UPSCALER = "GODOT_LATENCY_UPSCALING_TEST_UPSCALER"; // "reference"
+inline constexpr const char *ENV_TEST_READBACK_FRAMES = "GODOT_LATENCY_UPSCALING_TEST_READBACK_FRAMES"; // e.g. "40"
 
 inline constexpr const char *PROJECT_SETTING_PREFIX = "latency_upscaling/";
 

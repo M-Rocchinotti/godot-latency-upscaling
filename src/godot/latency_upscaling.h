@@ -20,6 +20,22 @@ public:
 		REFLEX_MODE_ON = 1,
 		REFLEX_MODE_ON_BOOST = 2,
 	};
+	// Values match upscale::Quality / upscale::Preset and the dlss/* project settings.
+	enum DlssQuality {
+		DLSS_QUALITY_AUTO = 0,
+		DLSS_QUALITY_DLAA = 1,
+		DLSS_QUALITY_QUALITY = 2,
+		DLSS_QUALITY_BALANCED = 3,
+		DLSS_QUALITY_PERFORMANCE = 4,
+		DLSS_QUALITY_ULTRA_PERFORMANCE = 5,
+	};
+	enum DlssPreset {
+		DLSS_PRESET_DEFAULT = 0,
+		DLSS_PRESET_J = 1,
+		DLSS_PRESET_K = 2,
+		DLSS_PRESET_L = 3,
+		DLSS_PRESET_M = 4,
+	};
 
 	static LatencyUpscaling *get_singleton() { return singleton_; }
 
@@ -41,11 +57,29 @@ public:
 	void set_overlay_visible(bool visible);
 	bool is_overlay_visible() const;
 	godot::String get_version() const;
+	// DLSS Super Resolution / DLAA (Phase 2).
+	bool is_dlss_supported() const; // the DLSS backend can run in this process
+	bool is_dlss_active() const; // the main viewport is upscaled by DLSS now
+	godot::String get_dlss_status() const; // "active (...)", "off: ..." or "unavailable: ..."
+	void set_dlss_enabled(bool enabled);
+	bool is_dlss_enabled() const;
+	void set_dlss_quality(DlssQuality quality);
+	DlssQuality get_dlss_quality() const;
+	void set_dlss_preset(DlssPreset preset);
+	DlssPreset get_dlss_preset() const;
+#ifdef DEBUG_ENABLED
+	// Test hooks (debug builds only, tests/upscaler_tests.gd): upscaler conventions relative to
+	// Godot's (+1 = Godot's), a history reset, and N frames of UBO / velocity read-backs.
+	void _set_upscaler_test_conventions(double jitter_x, double jitter_y, double motion);
+	void _reset_upscaler_history();
+	void _request_upscaler_readbacks(int frames);
+#endif
 
 	// --- Engine wiring (not exposed) ---
 	void disconnect_frame_signals(); // SCENE deinitialisation
 	void on_startup(); // main loop exists: connects the frame signals, shows the overlay
 	void on_frame(); // GDExtension frame callback, end of every main-loop iteration
+	void on_shutdown(); // GDExtension shutdown callback: restores the viewport, frees GPU resources
 
 	static void register_project_settings(); // editor only
 
@@ -58,6 +92,9 @@ private:
 	void on_render_frame_begin(int64_t frame_id);
 	void on_render_frame_end(int64_t frame_id);
 	void apply_sleep_mode();
+	void configure_upscaler();
+	void run_upscaler_takeovers(); // render thread
+	void release_upscaler(); // render thread
 
 	static LatencyUpscaling *singleton_;
 	ReflexMode mode_ = REFLEX_MODE_ON;
@@ -72,3 +109,5 @@ private:
 } // namespace lu
 
 VARIANT_ENUM_CAST(lu::LatencyUpscaling::ReflexMode);
+VARIANT_ENUM_CAST(lu::LatencyUpscaling::DlssQuality);
+VARIANT_ENUM_CAST(lu::LatencyUpscaling::DlssPreset);

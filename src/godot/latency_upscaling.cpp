@@ -1,4 +1,5 @@
 #include "godot/latency_upscaling.h"
+#include "godot/upscaler.h"
 
 #include "core/log.h"
 #include "core/settings.h"
@@ -104,14 +105,44 @@ void LatencyUpscaling::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_overlay_visible", "visible"), &LatencyUpscaling::set_overlay_visible);
 	ClassDB::bind_method(D_METHOD("is_overlay_visible"), &LatencyUpscaling::is_overlay_visible);
 	ClassDB::bind_method(D_METHOD("get_version"), &LatencyUpscaling::get_version);
+	ClassDB::bind_method(D_METHOD("is_dlss_supported"), &LatencyUpscaling::is_dlss_supported);
+	ClassDB::bind_method(D_METHOD("is_dlss_active"), &LatencyUpscaling::is_dlss_active);
+	ClassDB::bind_method(D_METHOD("get_dlss_status"), &LatencyUpscaling::get_dlss_status);
+	ClassDB::bind_method(D_METHOD("set_dlss_enabled", "enabled"), &LatencyUpscaling::set_dlss_enabled);
+	ClassDB::bind_method(D_METHOD("is_dlss_enabled"), &LatencyUpscaling::is_dlss_enabled);
+	ClassDB::bind_method(D_METHOD("set_dlss_quality", "quality"), &LatencyUpscaling::set_dlss_quality);
+	ClassDB::bind_method(D_METHOD("get_dlss_quality"), &LatencyUpscaling::get_dlss_quality);
+	ClassDB::bind_method(D_METHOD("set_dlss_preset", "preset"), &LatencyUpscaling::set_dlss_preset);
+	ClassDB::bind_method(D_METHOD("get_dlss_preset"), &LatencyUpscaling::get_dlss_preset);
+#ifdef DEBUG_ENABLED
+	ClassDB::bind_method(D_METHOD("_set_upscaler_test_conventions", "jitter_x", "jitter_y", "motion"),
+			&LatencyUpscaling::_set_upscaler_test_conventions);
+	ClassDB::bind_method(D_METHOD("_reset_upscaler_history"), &LatencyUpscaling::_reset_upscaler_history);
+	ClassDB::bind_method(D_METHOD("_request_upscaler_readbacks", "frames"), &LatencyUpscaling::_request_upscaler_readbacks);
+#endif
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "reflex_mode", PROPERTY_HINT_ENUM, "Off,On,On + Boost"), "set_reflex_mode", "get_reflex_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reflex_fps_limit", PROPERTY_HINT_RANGE, "0,1000,1"), "set_reflex_fps_limit", "get_reflex_fps_limit");
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "overlay_visible"), "set_overlay_visible", "is_overlay_visible");
+	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dlss_enabled"), "set_dlss_enabled", "is_dlss_enabled");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "dlss_quality", PROPERTY_HINT_ENUM, "Auto,DLAA,Quality,Balanced,Performance,Ultra Performance"),
+			"set_dlss_quality", "get_dlss_quality");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "dlss_preset", PROPERTY_HINT_ENUM, "Default,J,K,L,M"), "set_dlss_preset", "get_dlss_preset");
 
 	BIND_ENUM_CONSTANT(REFLEX_MODE_OFF);
 	BIND_ENUM_CONSTANT(REFLEX_MODE_ON);
 	BIND_ENUM_CONSTANT(REFLEX_MODE_ON_BOOST);
+	BIND_ENUM_CONSTANT(DLSS_QUALITY_AUTO);
+	BIND_ENUM_CONSTANT(DLSS_QUALITY_DLAA);
+	BIND_ENUM_CONSTANT(DLSS_QUALITY_QUALITY);
+	BIND_ENUM_CONSTANT(DLSS_QUALITY_BALANCED);
+	BIND_ENUM_CONSTANT(DLSS_QUALITY_PERFORMANCE);
+	BIND_ENUM_CONSTANT(DLSS_QUALITY_ULTRA_PERFORMANCE);
+	BIND_ENUM_CONSTANT(DLSS_PRESET_DEFAULT);
+	BIND_ENUM_CONSTANT(DLSS_PRESET_J);
+	BIND_ENUM_CONSTANT(DLSS_PRESET_K);
+	BIND_ENUM_CONSTANT(DLSS_PRESET_L);
+	BIND_ENUM_CONSTANT(DLSS_PRESET_M);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -159,6 +190,7 @@ void LatencyUpscaling::disconnect_frame_signals() {
 }
 
 void LatencyUpscaling::on_startup() {
+	configure_upscaler();
 	connect_frame_signals();
 	if (boot_state().resolved.settings.overlay_enabled) {
 		set_overlay_visible(true);
@@ -171,6 +203,13 @@ void LatencyUpscaling::on_startup() {
 }
 
 void LatencyUpscaling::on_frame() {
+	Upscaler &upscaler = Upscaler::get();
+	upscaler.update();
+	if (upscaler.takeover_pending()) {
+		// Behind this iteration's _draw(): the buffers Godot configured for it are taken over
+		// before the next frame renders (research 2.2; see godot/upscaler.h).
+		RenderingServer::get_singleton()->call_on_render_thread(callable_mp(this, &LatencyUpscaling::run_upscaler_takeovers));
+	}
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
@@ -233,6 +272,111 @@ void LatencyUpscaling::on_render_frame_end(int64_t frame_id) {
 // ---------------------------------------------------------------------------------------------
 // API
 // ---------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// Upscaling (Phase 2)
+// ---------------------------------------------------------------------------------------------
+
+void LatencyUpscaling::configure_upscaler() {
+	const BootState &boot = boot_state();
+	const Settings &s = boot.resolved.settings;
+	UpscaleBackend backend = UpscaleBackend::None;
+	std::string reason;
+	if (boot.editor) {
+		reason = "not in the editor (games started from it use it)";
+	} else {
+		reason = "the DLSS backend is not available yet (Phase 2 in progress)";
+	}
+#ifdef DEBUG_ENABLED
+	if (boot.test_upscaler == "reference" && !boot.editor) {
+		backend = UpscaleBackend::Reference; // test backend (tests/upscaler_tests.gd)
+		reason.clear();
+	}
+#endif
+	Upscaler::get().configure(backend, reason, s.dlss_quality, s.dlss_preset, s.dlss_enabled);
+}
+
+void LatencyUpscaling::run_upscaler_takeovers() {
+	Upscaler::get().run_takeovers();
+}
+
+void LatencyUpscaling::release_upscaler() {
+	Upscaler::get().release_gpu_resources();
+}
+
+void LatencyUpscaling::on_shutdown() {
+	Upscaler::get().shutdown();
+	if (Engine::get_singleton()->has_singleton("RenderingServer")) {
+		RenderingServer *rs = RenderingServer::get_singleton();
+		rs->call_on_render_thread(callable_mp(this, &LatencyUpscaling::release_upscaler));
+		rs->force_sync();
+	}
+}
+
+bool LatencyUpscaling::is_dlss_supported() const {
+	return Upscaler::get().backend() == UpscaleBackend::Dlss;
+}
+
+bool LatencyUpscaling::is_dlss_active() const {
+	return is_dlss_supported() && Upscaler::get().is_active();
+}
+
+String LatencyUpscaling::get_dlss_status() const {
+	const Upscaler &u = Upscaler::get();
+	if (u.backend() == UpscaleBackend::None) {
+		return String::utf8(("unavailable: " + u.reason()).c_str());
+	}
+	if (!u.is_active()) {
+		return String::utf8(("off: " + u.reason()).c_str());
+	}
+	const Dictionary st = u.status();
+	const Vector2i render = st["render_size"];
+	const Vector2i target = st["target_size"];
+	return vformat("active (%s%s, %dx%d -> %dx%d)", st["resolved_quality"],
+			u.backend() == UpscaleBackend::Dlss ? String() : String(", ") + upscale_backend_name(u.backend()) + " backend",
+			render.x, render.y, target.x, target.y);
+}
+
+void LatencyUpscaling::set_dlss_enabled(bool enabled) {
+	Upscaler::get().set_enabled(enabled);
+}
+
+bool LatencyUpscaling::is_dlss_enabled() const {
+	return Upscaler::get().is_enabled();
+}
+
+void LatencyUpscaling::set_dlss_quality(DlssQuality quality) {
+	ERR_FAIL_COND_MSG(quality < DLSS_QUALITY_AUTO || quality > DLSS_QUALITY_ULTRA_PERFORMANCE,
+			"DLSS quality must be one of the DLSS_QUALITY_* constants.");
+	Upscaler::get().set_quality(static_cast<upscale::Quality>(quality));
+}
+
+LatencyUpscaling::DlssQuality LatencyUpscaling::get_dlss_quality() const {
+	return static_cast<DlssQuality>(Upscaler::get().quality());
+}
+
+void LatencyUpscaling::set_dlss_preset(DlssPreset preset) {
+	ERR_FAIL_COND_MSG(preset < DLSS_PRESET_DEFAULT || preset > DLSS_PRESET_M, "DLSS preset must be one of the DLSS_PRESET_* constants.");
+	Upscaler::get().set_preset(static_cast<upscale::Preset>(preset));
+}
+
+LatencyUpscaling::DlssPreset LatencyUpscaling::get_dlss_preset() const {
+	return static_cast<DlssPreset>(Upscaler::get().preset());
+}
+
+#ifdef DEBUG_ENABLED
+void LatencyUpscaling::_set_upscaler_test_conventions(double jitter_x, double jitter_y, double motion) {
+	Upscaler::get().set_test_conventions(static_cast<float>(jitter_x), static_cast<float>(jitter_y), static_cast<float>(motion));
+}
+
+void LatencyUpscaling::_reset_upscaler_history() {
+	Upscaler::get().request_history_reset();
+}
+
+void LatencyUpscaling::_request_upscaler_readbacks(int frames) {
+	Upscaler::get().request_readbacks(frames);
+}
+#endif
 
 String LatencyUpscaling::get_version() const {
 	return LU_VERSION;
@@ -400,6 +544,7 @@ Dictionary LatencyUpscaling::get_status() const {
 	entry(keys::DLSS_QUALITY, static_cast<int>(s.dlss_quality));
 	entry(keys::DLSS_PRESET, static_cast<int>(s.dlss_preset));
 	d["settings"] = settings;
+	d["upscaling"] = Upscaler::get().status();
 	d["warnings"] = to_packed(boot.resolved.warnings);
 	return d;
 }
