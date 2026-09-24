@@ -10,8 +10,11 @@ CONTAMINATED instead of silently mixing them in. Results: stdout and build/bench
 
 1. Latency, GPU-bound (demo scene, --load=6000, VSync off), modes Off, On, Boost, twice
    interleaved in one process: frame interval and simulation-start-to-GPU-end latency per frame
-   from vkGetLatencyTimingsNV (NVIDIA's "total game-to-render latency").
-2. Overhead, light scene (--load=0, VSync off), separate processes, interleaved twice:
+   from vkGetLatencyTimingsNV (NVIDIA's "total game-to-render latency"), plus the per-stage
+   timeline (where the present_end -> gpu_start gap is reported).
+2. The same, in exclusive fullscreen, to see whether leaving windowed (DWM) composition changes
+   the present_end -> gpu_start gap.
+3. Overhead, light scene (--load=0, VSync off), separate processes, interleaved twice:
    no addon | layer only (Reflex off the device) | Reflex Off (markers + sleep calls) | Reflex On.
 """
 from __future__ import annotations
@@ -74,6 +77,17 @@ def fmt(summary: dict) -> str:
     return f"{summary['mean']:6.2f} / {summary['median']:6.2f} / {summary['p95']:6.2f}"
 
 
+def print_stage_breakdown(run: dict) -> None:
+    """Per-stage timeline (mean/median/p95 ms) for the Reflex On result in a latency run."""
+    on = next((r for r in run["results"] if r["mode"] == "1" and r.get("stages_ms")), None)
+    if on is None:
+        return
+    print("  per-stage timeline, Reflex On (mean / median / p95 ms):")
+    for stage, summary in on["stages_ms"].items():
+        marker = "  <- Reflex sleep does not remove this" if stage == "present_end -> gpu_start" else ""
+        print(f"    {stage:<26}{fmt(summary):>26}{marker}")
+
+
 def main(argv: list[str]) -> int:
     wait = "--no-wait" not in argv
     report = {"date": time.strftime("%Y-%m-%d %H:%M"), "runs": []}
@@ -86,6 +100,17 @@ def main(argv: list[str]) -> int:
     print(f"{'mode':<12}{'frame interval':>26}{'sim start -> GPU end':>28}{'sleep':>9}")
     for r in latency["results"]:
         print(f"{names[r['mode']]:<12}{fmt(r['frame_ms']):>26}{fmt(r['latency_ms']):>28}{r['sleep_ms']:>9.2f}")
+    print_stage_breakdown(latency)
+
+    # Exclusive fullscreen: does leaving windowed (DWM) composition change the present_end -> gpu_start gap?
+    fs = measured("latency_fullscreen", ["--load=6000", "--modes=0,1,1", "--frames=600", "--window=exclusive"], {}, wait)
+    report["runs"].append(fs)
+    print("\nReflex latency, exclusive fullscreen (load 6000, VSync off); mean / median / p95 in ms"
+          + ("  [CONTAMINATED: GPU busy]" if fs["contaminated"] else ""))
+    print(f"{'mode':<12}{'frame interval':>26}{'sim start -> GPU end':>28}{'sleep':>9}")
+    for r in fs["results"]:
+        print(f"{names[r['mode']]:<12}{fmt(r['frame_ms']):>26}{fmt(r['latency_ms']):>28}{r['sleep_ms']:>9.2f}")
+    print_stage_breakdown(fs)
 
     variants = [
         ("no addon", ["--modes=-"], {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}),
