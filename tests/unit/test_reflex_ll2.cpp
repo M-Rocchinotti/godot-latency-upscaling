@@ -13,7 +13,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
+#include <future>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -36,16 +39,50 @@ VkQueue fake_queue() { return reinterpret_cast<VkQueue>(&g_queue_object); }
 template <typename Handle>
 Handle fake_handle(uintptr_t value) { return reinterpret_cast<Handle>(value); }
 
+// A fake driver call closed by a gate blocks until the test opens it, so the lock tests are
+// ordered by events, not by timing: a correct implementation passes however slow the machine is,
+// and the timeouts below only bound how long a failing (e.g. mutated) run takes.
+class Gate {
+public:
+	void close() {
+		std::lock_guard<std::mutex> lock(mutex_);
+		open_ = false;
+		entered_ = false;
+	}
+	void open() {
+		std::lock_guard<std::mutex> lock(mutex_);
+		open_ = true;
+		changed_.notify_all();
+	}
+	void pass() { // called by the fake driver function
+		std::unique_lock<std::mutex> lock(mutex_);
+		entered_ = true;
+		changed_.notify_all();
+		changed_.wait(lock, [this] { return open_; });
+	}
+	bool wait_until_entered() {
+		std::unique_lock<std::mutex> lock(mutex_);
+		return changed_.wait_for(lock, std::chrono::seconds(5), [this] { return entered_; });
+	}
+
+private:
+	std::mutex mutex_;
+	std::condition_variable changed_;
+	bool open_ = true;
+	bool entered_ = false;
+};
+
+Gate g_sleep_gate; // vkLatencySleepNV
+Gate g_sleep_mode_gate; // vkSetLatencySleepModeNV (called with the swapchain lock held exclusive)
 std::atomic<int> g_sleep_block_ms{ 0 };
-std::atomic<bool> g_in_sleep{ false };
 
 VKAPI_ATTR VkResult VKAPI_CALL fake_set_sleep_mode(VkDevice, VkSwapchainKHR, const VkLatencySleepModeInfoNV *) {
+	g_sleep_mode_gate.pass();
 	return VK_SUCCESS;
 }
 VKAPI_ATTR VkResult VKAPI_CALL fake_latency_sleep(VkDevice, VkSwapchainKHR, const VkLatencySleepInfoNV *) {
-	g_in_sleep = true;
+	g_sleep_gate.pass();
 	std::this_thread::sleep_for(std::chrono::milliseconds(g_sleep_block_ms.load()));
-	g_in_sleep = false;
 	return VK_SUCCESS;
 }
 VKAPI_ATTR void VKAPI_CALL fake_set_marker(VkDevice, VkSwapchainKHR, const VkSetLatencyMarkerInfoNV *) {}
@@ -152,20 +189,13 @@ struct Window {
 	}
 };
 
-// Runs sleep() on another thread with vkLatencySleepNV blocking for `block_ms`; returns once the
-// fake is inside vkLatencySleepNV.
-std::thread start_blocking_sleep(Ll2Device &device, int block_ms) {
-	g_in_sleep = false;
-	g_sleep_block_ms = block_ms;
-	std::thread sleeper([&device] { device.sleep(); });
-	while (!g_in_sleep) {
-		std::this_thread::yield();
-	}
-	return sleeper;
+template <typename Fn>
+std::future<void> run_async(Fn fn) {
+	return std::async(std::launch::async, fn);
 }
 
-double ms_since(Clock::time_point start) {
-	return std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+bool finishes(std::future<void> &f, std::chrono::milliseconds within) {
+	return f.wait_for(within) == std::future_status::ready;
 }
 
 } // namespace
@@ -219,28 +249,51 @@ TEST(ll2_other_windows_swapchains_pass_through) {
 
 TEST(ll2_present_hook_does_not_wait_for_the_sleep) {
 	Window window;
-	std::thread sleeper = start_blocking_sleep(window.device, 150);
-	const Clock::time_point start = Clock::now();
-	window.present(); // the render thread presents while the main thread is in vkLatencySleepNV
-	const double waited = ms_since(start);
-	sleeper.join();
-	CHECK(waited < 50.0); // a shared lock: no wait (the exclusive lock waited ~150 ms)
+	g_sleep_gate.close();
+	std::future<void> sleeper = run_async([&] { window.device.sleep(); });
+	CHECK(g_sleep_gate.wait_until_entered()); // the main thread is inside vkLatencySleepNV
+	// The render thread presents meanwhile: with the shared lock it must finish while the sleep is
+	// still blocked (with the lock taken exclusive it could only finish after the sleep).
+	std::future<void> present = run_async([&] { window.present(); });
+	const bool presented_during_sleep = finishes(present, std::chrono::seconds(3));
+	g_sleep_gate.open();
+	present.wait();
+	sleeper.wait();
+	CHECK(presented_during_sleep);
 	CHECK_EQ(window.device.state().counters.present_lock_waits_over_1ms, uint64_t(0));
-	if (waited >= 50.0) {
-		std::printf("    present waited %.1f ms behind vkLatencySleepNV\n", waited);
-	}
 }
 
 TEST(ll2_swapchain_destroy_waits_for_an_in_flight_sleep) {
 	Window window;
-	std::thread sleeper = start_blocking_sleep(window.device, 150);
-	const Clock::time_point start = Clock::now();
-	window.device.forget_swapchain(window.swapchain); // exclusive: must not free it under the sleep
-	const double waited = ms_since(start);
-	const bool sleep_still_running = g_in_sleep.load();
-	sleeper.join();
-	CHECK(waited > 100.0);
-	CHECK(!sleep_still_running);
+	g_sleep_gate.close();
+	std::future<void> sleeper = run_async([&] { window.device.sleep(); });
+	CHECK(g_sleep_gate.wait_until_entered());
+	// Exclusive: forgetting the swapchain (before the host frees it) must wait for the sleep.
+	std::future<void> destroy = run_async([&] { window.device.forget_swapchain(window.swapchain); });
+	const bool destroyed_during_sleep = finishes(destroy, std::chrono::milliseconds(300));
+	g_sleep_gate.open();
+	const bool destroyed_after_sleep = finishes(destroy, std::chrono::seconds(5));
+	sleeper.wait();
+	CHECK(!destroyed_during_sleep);
+	CHECK(destroyed_after_sleep);
+}
+
+TEST(ll2_present_lock_wait_counter_counts_a_forced_wait) {
+	// The counter the engine test relies on must be able to see a wait: hold the lock exclusive
+	// (a sleep-mode change blocked inside the driver) while the render thread presents.
+	Window window;
+	g_sleep_mode_gate.close();
+	std::future<void> mode_change = run_async([&] { window.device.set_sleep_mode(SleepMode{ ReflexMode::OnBoost, 0 }); });
+	CHECK(g_sleep_mode_gate.wait_until_entered());
+	std::future<void> present = run_async([&] { window.present(); });
+	const bool presented_while_held = finishes(present, std::chrono::milliseconds(200));
+	g_sleep_mode_gate.open();
+	present.wait();
+	mode_change.wait();
+	const Counters counters = window.device.state().counters;
+	CHECK(!presented_while_held);
+	CHECK(counters.present_lock_waits_over_1ms >= 1);
+	CHECK(counters.present_lock_wait_max_us >= 1000);
 }
 
 TEST(ll2_sleep_time_includes_the_blocking_vkLatencySleepNV_call) {

@@ -110,6 +110,8 @@ MUTATIONS = [
     ("R2 local devices patched like the main device", DISPATCH,
      "\t\tis_main = !L.main_device_created;", "\t\tis_main = true;", "reflex"),
     # --- own ---
+    ("lock: present-lock waits never counted", REFLEX,
+     "\t\tcounters_.present_lock_waits_over_1ms++;\n", "", "unit"),
     ("sleep: reported sleep time excludes vkLatencySleepNV", REFLEX,
      "	const double slept_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sleep_start).count();",
      "	const double slept_ms = 0.0;", "unit"),

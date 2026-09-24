@@ -16,7 +16,7 @@ Vulkan dispatch layer the addon installs in front of Godot at start-up.
 | NVIDIA Reflex Low Latency: Off / On / On + Boost | done | `VK_NV_low_latency2`, default On |
 | Reflex frame-rate limiter | done | driver-paced, replaces `Engine.max_fps` |
 | Latency markers (simulation, render submit, present, input, flash) | done | every frame, all modes |
-| Latency measurements (`vkGetLatencyTimingsNV`) | done | `LatencyUpscaling.get_latency_stats()` |
+| Latency measurements (`vkGetLatencyTimingsNV`) | done | the singleton's `get_latency_stats()` (reach it through `Engine`, see Usage) |
 | Reflex Flash Indicator marker on left clicks | done | the driver decides whether to draw it |
 | Small latency overlay | done | optional, off by default |
 | Clean fallback with a readable reason | done | wrong Godot version, other GPUs, other renderers, missing driver support |
