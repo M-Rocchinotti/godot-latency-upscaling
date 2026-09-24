@@ -32,6 +32,12 @@ namespace lu::vk {
 void register_feature(VulkanFeature *feature);
 void set_queue_hooks(QueueHooks *hooks);
 
+// Phase 2: send the host's Vulkan calls through `module` (a DLL exporting the Vulkan API in front of
+// the real loader: Streamline's sl.interposer.dll) instead of the real loader. Must be set at CORE
+// initialisation, before the host asks for vulkan-1.dll; the module must stay loaded. When it
+// lacks an entry point the layer needs, the real loader is used (snapshot().loader_override_problem).
+void set_loader_override(HMODULE module, const char *name);
+
 // Command-buffer interception (Phase 2). Must be enabled at CORE initialisation: the host resolves
 // its vkCmd* functions right after vkCreateInstance, and only then can they be hooked.
 void enable_command_interception();
@@ -69,6 +75,9 @@ struct LayerSnapshot {
 	std::vector<std::string> added_device_extensions;
 	std::string device_note; // e.g. the fallback to an unpatched vkCreateDevice
 	bool command_hooks_resolved = false; // the host resolved the vkCmd* hooks (command interception)
+	std::string loader_override; // e.g. "sl.interposer.dll" (set_loader_override)
+	bool loader_override_active = false; // the host's Vulkan calls go through it
+	std::string loader_override_problem;
 };
 LayerSnapshot snapshot();
 

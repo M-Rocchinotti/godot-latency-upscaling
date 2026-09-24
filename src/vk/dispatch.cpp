@@ -65,6 +65,9 @@ struct Layer {
 	std::atomic<bool> command_hooks_usable{ false };
 	std::atomic<bool> command_hooks_resolved{ false }; // the host resolved at least one of them
 	MarkerInterceptor interceptor;
+	// Phase 2: a module exporting the Vulkan API in front of the real loader (Streamline's
+	// interposer), set at CORE initialisation. Held for the process lifetime.
+	HMODULE loader_override = nullptr;
 	std::map<DispatchKey, InstanceInfo> instances;
 	bool main_device_created = false; // the first (presenting) device; later ones are local devices
 	LayerSnapshot snap;
@@ -79,6 +82,43 @@ Layer &layer() {
 template <typename Fn>
 Fn loader_export(HMODULE loader, const char *name) {
 	return reinterpret_cast<Fn>(reinterpret_cast<void *>(GetProcAddress(loader, name)));
+}
+
+// The entry points the layer calls, from a module exporting the Vulkan API (the real loader, or
+// an interposer in front of it). Returns whether everything the layer needs is there.
+bool fill_next(HMODULE module, Next &next, CommandFunctions &commands, bool &commands_complete) {
+	next.GetInstanceProcAddr = loader_export<PFN_vkGetInstanceProcAddr>(module, "vkGetInstanceProcAddr");
+	next.EnumerateInstanceExtensionProperties = loader_export<PFN_vkEnumerateInstanceExtensionProperties>(module, "vkEnumerateInstanceExtensionProperties");
+	next.CreateInstance = loader_export<PFN_vkCreateInstance>(module, "vkCreateInstance");
+	next.DestroyInstance = loader_export<PFN_vkDestroyInstance>(module, "vkDestroyInstance");
+	next.GetPhysicalDeviceProperties = loader_export<PFN_vkGetPhysicalDeviceProperties>(module, "vkGetPhysicalDeviceProperties");
+	next.GetPhysicalDeviceQueueFamilyProperties =
+			loader_export<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(module, "vkGetPhysicalDeviceQueueFamilyProperties");
+	next.GetPhysicalDeviceFeatures2 = loader_export<PFN_vkGetPhysicalDeviceFeatures2>(module, "vkGetPhysicalDeviceFeatures2");
+	next.EnumerateDeviceExtensionProperties = loader_export<PFN_vkEnumerateDeviceExtensionProperties>(module, "vkEnumerateDeviceExtensionProperties");
+	next.CreateDevice = loader_export<PFN_vkCreateDevice>(module, "vkCreateDevice");
+	next.DestroyDevice = loader_export<PFN_vkDestroyDevice>(module, "vkDestroyDevice");
+	next.GetDeviceProcAddr = loader_export<PFN_vkGetDeviceProcAddr>(module, "vkGetDeviceProcAddr");
+	next.QueueSubmit = loader_export<PFN_vkQueueSubmit>(module, "vkQueueSubmit");
+	next.CreateSwapchainKHR = loader_export<PFN_vkCreateSwapchainKHR>(module, "vkCreateSwapchainKHR");
+	next.DestroySwapchainKHR = loader_export<PFN_vkDestroySwapchainKHR>(module, "vkDestroySwapchainKHR");
+	next.QueuePresentKHR = loader_export<PFN_vkQueuePresentKHR>(module, "vkQueuePresentKHR");
+	next.DestroySurfaceKHR = loader_export<PFN_vkDestroySurfaceKHR>(module, "vkDestroySurfaceKHR");
+	next.BeginCommandBuffer = loader_export<PFN_vkBeginCommandBuffer>(module, "vkBeginCommandBuffer");
+	next.EndCommandBuffer = loader_export<PFN_vkEndCommandBuffer>(module, "vkEndCommandBuffer");
+	next.CmdBindPipeline = loader_export<PFN_vkCmdBindPipeline>(module, "vkCmdBindPipeline");
+	next.CmdBindDescriptorSets = loader_export<PFN_vkCmdBindDescriptorSets>(module, "vkCmdBindDescriptorSets");
+	next.CmdPushConstants = loader_export<PFN_vkCmdPushConstants>(module, "vkCmdPushConstants");
+	next.CmdDispatch = loader_export<PFN_vkCmdDispatch>(module, "vkCmdDispatch");
+	commands.bind_pipeline = next.CmdBindPipeline;
+	commands.bind_descriptor_sets = next.CmdBindDescriptorSets;
+	commands.push_constants = next.CmdPushConstants;
+	commands.dispatch = next.CmdDispatch;
+	commands_complete = commands.complete() && next.BeginCommandBuffer && next.EndCommandBuffer;
+	return next.GetInstanceProcAddr && next.EnumerateInstanceExtensionProperties && next.CreateInstance &&
+			next.DestroyInstance && next.GetPhysicalDeviceProperties && next.EnumerateDeviceExtensionProperties &&
+			next.CreateDevice && next.DestroyDevice && next.GetDeviceProcAddr && next.QueueSubmit &&
+			next.CreateSwapchainKHR && next.DestroySwapchainKHR && next.QueuePresentKHR && next.DestroySurfaceKHR;
 }
 
 bool contains(const std::vector<std::string> &list, const char *name) {
@@ -549,6 +589,15 @@ void set_queue_hooks(QueueHooks *hooks) {
 	layer().queue_hooks.store(hooks, std::memory_order_release);
 }
 
+void set_loader_override(HMODULE module, const char *name) {
+	Layer &L = layer();
+	std::lock_guard<std::mutex> lock(L.mutex);
+	if (!L.ready.load()) {
+		L.loader_override = module;
+		L.snap.loader_override = name != nullptr ? name : "";
+	}
+}
+
 void enable_command_interception() {
 	layer().command_hooks_wanted.store(true, std::memory_order_release);
 }
@@ -583,41 +632,24 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 		FreeLibrary(real); // the layer already holds a reference for the process lifetime
 	} else {
 		if (L.snap.loader_problem.empty()) {
+			// The exports come from the override module (Streamline's interposer) when one is set and
+			// complete, otherwise from the real loader.
 			Next next;
-			next.GetInstanceProcAddr = loader_export<PFN_vkGetInstanceProcAddr>(real, "vkGetInstanceProcAddr");
-			next.EnumerateInstanceExtensionProperties = loader_export<PFN_vkEnumerateInstanceExtensionProperties>(real, "vkEnumerateInstanceExtensionProperties");
-			next.CreateInstance = loader_export<PFN_vkCreateInstance>(real, "vkCreateInstance");
-			next.DestroyInstance = loader_export<PFN_vkDestroyInstance>(real, "vkDestroyInstance");
-			next.GetPhysicalDeviceProperties = loader_export<PFN_vkGetPhysicalDeviceProperties>(real, "vkGetPhysicalDeviceProperties");
-			next.GetPhysicalDeviceQueueFamilyProperties =
-					loader_export<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(real, "vkGetPhysicalDeviceQueueFamilyProperties");
-			next.GetPhysicalDeviceFeatures2 = loader_export<PFN_vkGetPhysicalDeviceFeatures2>(real, "vkGetPhysicalDeviceFeatures2");
-			next.EnumerateDeviceExtensionProperties = loader_export<PFN_vkEnumerateDeviceExtensionProperties>(real, "vkEnumerateDeviceExtensionProperties");
-			next.CreateDevice = loader_export<PFN_vkCreateDevice>(real, "vkCreateDevice");
-			next.DestroyDevice = loader_export<PFN_vkDestroyDevice>(real, "vkDestroyDevice");
-			next.GetDeviceProcAddr = loader_export<PFN_vkGetDeviceProcAddr>(real, "vkGetDeviceProcAddr");
-			next.QueueSubmit = loader_export<PFN_vkQueueSubmit>(real, "vkQueueSubmit");
-			next.CreateSwapchainKHR = loader_export<PFN_vkCreateSwapchainKHR>(real, "vkCreateSwapchainKHR");
-			next.DestroySwapchainKHR = loader_export<PFN_vkDestroySwapchainKHR>(real, "vkDestroySwapchainKHR");
-			next.QueuePresentKHR = loader_export<PFN_vkQueuePresentKHR>(real, "vkQueuePresentKHR");
-			next.DestroySurfaceKHR = loader_export<PFN_vkDestroySurfaceKHR>(real, "vkDestroySurfaceKHR");
-			next.BeginCommandBuffer = loader_export<PFN_vkBeginCommandBuffer>(real, "vkBeginCommandBuffer");
-			next.EndCommandBuffer = loader_export<PFN_vkEndCommandBuffer>(real, "vkEndCommandBuffer");
-			next.CmdBindPipeline = loader_export<PFN_vkCmdBindPipeline>(real, "vkCmdBindPipeline");
-			next.CmdBindDescriptorSets = loader_export<PFN_vkCmdBindDescriptorSets>(real, "vkCmdBindDescriptorSets");
-			next.CmdPushConstants = loader_export<PFN_vkCmdPushConstants>(real, "vkCmdPushConstants");
-			next.CmdDispatch = loader_export<PFN_vkCmdDispatch>(real, "vkCmdDispatch");
 			CommandFunctions commands;
-			commands.bind_pipeline = next.CmdBindPipeline;
-			commands.bind_descriptor_sets = next.CmdBindDescriptorSets;
-			commands.push_constants = next.CmdPushConstants;
-			commands.dispatch = next.CmdDispatch;
-			const bool commands_complete = commands.complete() && next.BeginCommandBuffer && next.EndCommandBuffer;
-			bool complete = next.GetInstanceProcAddr && next.EnumerateInstanceExtensionProperties &&
-					next.CreateInstance && next.DestroyInstance && next.GetPhysicalDeviceProperties &&
-					next.EnumerateDeviceExtensionProperties && next.CreateDevice && next.DestroyDevice &&
-					next.GetDeviceProcAddr && next.QueueSubmit && next.CreateSwapchainKHR && next.DestroySwapchainKHR &&
-					next.QueuePresentKHR && next.DestroySurfaceKHR;
+			bool commands_complete = false;
+			bool complete = false;
+			bool from_override = false;
+			if (L.loader_override != nullptr) {
+				complete = from_override = fill_next(L.loader_override, next, commands, commands_complete);
+				if (!complete) {
+					L.snap.loader_override_problem = L.snap.loader_override + " does not export the Vulkan entry points the layer needs";
+					problem = L.snap.loader_override_problem + "; Vulkan goes to the real loader";
+				}
+			}
+			if (!complete) {
+				next = Next();
+				complete = fill_next(real, next, commands, commands_complete);
+			}
 #ifdef DEBUG_ENABLED
 			// Fault injection: pretend the loader is missing entry points so the pure pass-through
 			// safety net is exercised (GODOT_LATENCY_UPSCALING_TEST_FAULT=loader_incomplete).
@@ -628,6 +660,7 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 			if (complete) {
 				L.real_loader = real; // this reference keeps the loader loaded for the process lifetime
 				L.next = next;
+				L.snap.loader_override_active = from_override;
 				if (commands_complete) {
 					L.interceptor.set_next(commands);
 					L.command_hooks_usable.store(true, std::memory_order_release);
@@ -647,6 +680,9 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 		}
 	}
 	lock.unlock();
+	if (!problem.empty()) {
+		log::warning("%s", problem.c_str());
+	}
 	// The host receives this DLL. The reference taken here balances the FreeLibrary volk issues
 	// in volkFinalize; the DLL is pinned anyway (hook/loader_hook.cpp).
 	HMODULE self = nullptr;

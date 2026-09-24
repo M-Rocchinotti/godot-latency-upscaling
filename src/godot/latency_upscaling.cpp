@@ -500,6 +500,9 @@ Dictionary LatencyUpscaling::get_status() const {
 	vulkan["device_extensions"] = to_packed(layer.device_extensions);
 	vulkan["added_device_extensions"] = to_packed(layer.added_device_extensions);
 	vulkan["note"] = String::utf8(layer.device_note.c_str());
+	vulkan["loader_override"] = String::utf8(layer.loader_override.c_str()); // "sl.interposer.dll" with DLSS
+	vulkan["loader_override_active"] = layer.loader_override_active;
+	vulkan["loader_override_problem"] = String::utf8(layer.loader_override_problem.c_str());
 	d["vulkan"] = vulkan;
 
 	const reflex::ReflexFeature::Status rs_status = reflex::ReflexFeature::get().status();

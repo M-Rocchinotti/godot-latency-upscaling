@@ -27,6 +27,7 @@ struct BootState {
 	std::string reflex_reason;
 	std::string dlss_runtime_dir; // where the NVIDIA runtime for DLSS is looked for (UTF-8)
 	std::vector<std::string> dlss_runtime_missing; // its Super Resolution files not found there
+	bool dlss_streamline = false; // the NVIDIA runtime is loaded and Vulkan goes through Streamline
 	std::vector<std::string> hidden_extensions; // debug-build test knob
 	// Debug-build test knob: "reference" runs the reference upscaler through RenderingDevice,
 	// "native" records it natively into Godot's command buffer (marker interception).
@@ -47,6 +48,7 @@ inline constexpr const char *ENV_TEST_GODOT_VERSION = "GODOT_LATENCY_UPSCALING_T
 inline constexpr const char *ENV_TEST_FAULT = "GODOT_LATENCY_UPSCALING_TEST_FAULT"; // comma list (see core/testing.h)
 inline constexpr const char *ENV_TEST_UPSCALER = "GODOT_LATENCY_UPSCALING_TEST_UPSCALER"; // "reference" / "native"
 inline constexpr const char *ENV_TEST_READBACK_FRAMES = "GODOT_LATENCY_UPSCALING_TEST_READBACK_FRAMES"; // e.g. "40"
+inline constexpr const char *ENV_TEST_FORCE_STREAMLINE = "GODOT_LATENCY_UPSCALING_TEST_FORCE_STREAMLINE"; // "1"
 
 inline constexpr const char *PROJECT_SETTING_PREFIX = "latency_upscaling/";
 

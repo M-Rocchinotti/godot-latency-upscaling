@@ -1,19 +1,20 @@
 // The interface a DLSS Super Resolution / DLAA runtime backend implements (Streamline, loaded from
-// the NVIDIA runtime the developer fetched). DlssFeature (dlss_feature.h) drives it from the Vulkan
-// layer; the Upscaler (godot/upscaler.h) records evaluate() at its marker dispatch.
+// the NVIDIA runtime the developer fetched: dlss/streamline.h). DlssFeature (dlss_feature.h) drives
+// it from the Vulkan layer; the Upscaler (godot/upscaler.h) has it evaluate at its marker dispatch.
 //
 //   1. Vulkan requirements  -> before vkCreateInstance / vkCreateDevice: the backend's instance and
-//                              device extensions, feature bits and extra queues (the runtime reports
-//                              them; they go through vk::DeviceRequest like Reflex's).
+//                              device extensions, feature bits and extra queues (they go through
+//                              vk::DeviceRequest like Reflex's; Streamline adds its own in its
+//                              vkCreateDevice, see streamline.h).
 //   2. The FSR2 slot        -> godot/upscaler.h: render size, jitter, mip bias, TAA-off from Godot's
 //                              FSR2 mode; the buffers re-configured to "no upscaler"; the target-size
 //                              "color_upscaled" texture DLSS writes.
 //   3. Command recording    -> the reference pipeline's dispatch is the marker; the layer's
 //                              MarkerInterceptor hands the command buffer to evaluate() and re-binds
-//                              Godot's state afterwards (Streamline's rule for manual hooking).
+//                              Godot's state afterwards (Streamline's rule for manual state handling).
 #pragma once
 
-#include "dlss/jitter.h"
+#include "upscale/quality.h"
 #include "vk/vk_feature.h"
 
 #include <cstdint>
@@ -22,31 +23,52 @@
 
 namespace lu::dlss {
 
-enum class QualityMode { DLAA, Quality, Balanced, Performance, UltraPerformance };
-
 struct ImageSize {
 	uint32_t width = 0;
 	uint32_t height = 0;
 };
 
-// Native images of one view, all owned by Godot's RenderSceneBuffersRD for the frame.
+// One image as Vulkan knows it (Streamline needs the full description in Vulkan).
+struct EvaluateImage {
+	VkImage image = VK_NULL_HANDLE;
+	VkImageView view = VK_NULL_HANDLE;
+	VkFormat format = VK_FORMAT_UNDEFINED;
+	uint32_t width = 0;
+	uint32_t height = 0;
+	VkImageUsageFlags usage = 0;
+	VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED; // the layout it is in when evaluate() runs
+	bool valid() const { return image != VK_NULL_HANDLE && view != VK_NULL_HANDLE && width > 0 && height > 0; }
+};
+
+// Everything one evaluation needs: Godot's images of one view and the frame's camera state.
 struct EvaluateInputs {
-	VkImage color = VK_NULL_HANDLE; // render size, linear HDR, SHADER_READ_ONLY_OPTIMAL
-	VkImageView color_view = VK_NULL_HANDLE;
-	VkImage depth = VK_NULL_HANDLE; // render size, reverse Z
-	VkImageView depth_view = VK_NULL_HANDLE;
-	VkImage velocity = VK_NULL_HANDLE; // render size, current -> previous, clip * 0.5 units
-	VkImageView velocity_view = VK_NULL_HANDLE;
-	VkImage output = VK_NULL_HANDLE; // target size "color_upscaled", GENERAL (storage)
-	VkImageView output_view = VK_NULL_HANDLE;
-	VkFormat color_format = VK_FORMAT_UNDEFINED;
-	VkFormat output_format = VK_FORMAT_UNDEFINED;
-	ImageSize render_size;
-	ImageSize target_size;
-	JitterPixels jitter; // render-resolution pixels, [-0.5, 0.5]
-	float motion_vector_scale_x = 0.0f; // converts Godot's velocity texels to render pixels
-	float motion_vector_scale_y = 0.0f;
-	bool reset_history = false; // camera cut (Godot has no signal: heuristic)
+	uint32_t viewport = 0; // one id per view (render target)
+	EvaluateImage color; // render size, linear HDR
+	EvaluateImage depth; // render size, reverse Z
+	EvaluateImage velocity; // render size, current -> previous, UV units
+	EvaluateImage output; // target size ("color_upscaled")
+	upscale::Quality mode = upscale::Quality::Quality; // concrete (Auto resolved)
+	upscale::Preset preset = upscale::Preset::Default;
+	float jitter_x = 0.0f; // render pixels, as Godot hands it to FSR2 (taa_jitter * render size / 2)
+	float jitter_y = 0.0f;
+	float mvec_scale_x = 1.0f; // velocity is in UV units: already normalised
+	float mvec_scale_y = 1.0f;
+	bool reset = false; // no history (first frame, resize, cut)
+	bool depth_inverted = true; // Godot renders reverse Z
+	// Row-major, without jitter.
+	float view_to_clip[4][4] = {};
+	float clip_to_view[4][4] = {};
+	float clip_to_prev_clip[4][4] = {};
+	float prev_clip_to_clip[4][4] = {};
+	float camera_pos[3] = {};
+	float camera_up[3] = {};
+	float camera_right[3] = {};
+	float camera_forward[3] = {};
+	float camera_near = 0.0f;
+	float camera_far = 0.0f;
+	float camera_fov_y = 0.0f; // radians
+	float camera_aspect = 0.0f;
+	bool orthographic = false;
 };
 
 class UpscalerProvider {
@@ -64,13 +86,13 @@ public:
 	virtual bool initialize(const vk::DeviceContext &context, std::string &reason) = 0;
 	virtual void shutdown() = 0;
 
-	// Render size DLSS wants for a target size and quality mode (drives Viewport.scaling_3d_scale).
-	virtual ImageSize optimal_render_size(ImageSize target, QualityMode mode) const = 0;
+	// Render size DLSS wants for a target size and a concrete mode; false when it cannot say.
+	virtual bool optimal_render_size(ImageSize target, upscale::Quality mode, ImageSize &render) const = 0;
 
 	// Records the upscale into the host's command buffer, called from inside the Vulkan layer's
-	// vkCmdDispatch interception of the marker pipeline. The caller restores Godot's pipeline,
-	// descriptor-set and push-constant state afterwards (Streamline's rule for manual hooking).
-	virtual bool evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &inputs) = 0;
+	// vkCmdDispatch interception of the marker pipeline. false (with `error`) when nothing was
+	// recorded. The caller restores Godot's pipeline, descriptor-set and push-constant state.
+	virtual bool evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &inputs, std::string &error) = 0;
 };
 
 } // namespace lu::dlss

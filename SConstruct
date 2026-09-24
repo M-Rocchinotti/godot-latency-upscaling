@@ -33,7 +33,7 @@ if env["platform"] != "windows" or env["arch"] != "x86_64":
 
 godot_cpp_env = env
 env = godot_cpp_env.Clone()  # our flags must not change how godot-cpp itself is compiled
-env.Append(CPPPATH=["src/", "thirdparty/Vulkan-Headers/include/"])
+env.Append(CPPPATH=["src/", "thirdparty/Vulkan-Headers/include/", "thirdparty/streamline/include/"])
 # All Vulkan entry points are resolved at run time through the hooked loader; the extension
 # must never link against (and so implicitly load) vulkan-1.dll itself.
 env.Append(CPPDEFINES=["VK_NO_PROTOTYPES", "WIN32_LEAN_AND_MEAN"])
@@ -48,6 +48,7 @@ PURE_SOURCES = [
     "src/core/settings.cpp",
     "src/core/testing.cpp",
     "src/dlss/dlss_feature.cpp",
+    "src/dlss/dlss_recorder.cpp",
     "src/dlss/jitter.cpp",
     "src/dlss/runtime_files.cpp",
     "src/hook/iat_patch.cpp",

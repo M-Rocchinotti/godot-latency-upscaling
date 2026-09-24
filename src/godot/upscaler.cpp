@@ -1,9 +1,11 @@
 #include "godot/upscaler.h"
 
 #include "core/log.h"
+#include "dlss/dlss_feature.h"
 #include "dlss/jitter.h"
 #include "godot/bootstrap.h"
 #include "godot/reference_upscaler_glsl.h"
+#include "upscale/image_usage.h"
 #include "upscale/reference_params.h"
 #include "upscale/upscale_feature.h"
 #include "vk/dispatch.h"
@@ -118,7 +120,9 @@ Upscaler &Upscaler::get() {
 void Upscaler::configure(UpscaleBackend backend, const std::string &reason, upscale::Quality quality,
 		upscale::Preset preset, bool enabled, bool native) {
 	backend_ = backend;
-	native_requested_ = native;
+	native_requested_ = native || backend == UpscaleBackend::Dlss; // DLSS records at the marker too
+	dlss_provider_ = backend == UpscaleBackend::Dlss ? dlss::DlssFeature::get().backend() : nullptr;
+	dlss_recorder_.set_provider(dlss_provider_);
 	backend_reason_ = reason;
 	quality_ = quality;
 	preset_ = preset;
@@ -203,6 +207,8 @@ void Upscaler::update() {
 		// renderer_viewport.cpp: log2(min(scale, 1)) + the viewport's own bias.
 		snapshot_.mipmap_bias = std::log2(std::fmin(scale, 1.0f)) + root->get_texture_mipmap_bias();
 		snapshot_.anisotropic_filtering = static_cast<int>(root->get_anisotropic_filtering_level());
+		snapshot_.quality = resolved_quality_;
+		snapshot_.preset = preset_;
 	}
 
 	// 2. The current camera carries our effect, merged with the effects it already had.
@@ -299,6 +305,13 @@ Dictionary Upscaler::status() const {
 	native["missing_job"] = static_cast<int64_t>(recorder.missing_job);
 	native["not_created"] = static_cast<int64_t>(recorder.not_created);
 	d["native"] = native;
+	const dlss::DlssRecorderStats evaluated = dlss_recorder_.stats();
+	Dictionary dlss_frames;
+	dlss_frames["evaluated"] = static_cast<int64_t>(evaluated.evaluated);
+	dlss_frames["missing_job"] = static_cast<int64_t>(evaluated.missing_job);
+	dlss_frames["failed"] = static_cast<int64_t>(evaluated.failed);
+	dlss_frames["last_error"] = String::utf8(evaluated.last_error.c_str());
+	d["dlss_frames"] = dlss_frames;
 	return d;
 }
 
@@ -338,7 +351,7 @@ void Upscaler::render(RenderData *data) {
 	if (mode != RenderingServer::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL || !rb->has_texture(buffers_context(), upscaled_name())) {
 		return;
 	}
-	if (backend_ == UpscaleBackend::Reference) {
+	if (backend_ == UpscaleBackend::Reference || backend_ == UpscaleBackend::Dlss) {
 		dispatch_reference(rb.ptr(), data->get_render_scene_data(), views_[rt]);
 	}
 }
@@ -413,10 +426,131 @@ bool Upscaler::ensure_pipeline() {
 		set_error("reference upscaler pipeline could not be created");
 		return false;
 	}
-	if (native_requested_) {
+	if (backend_ == UpscaleBackend::Dlss) {
+		ensure_dlss_marker();
+	} else if (native_requested_) {
 		ensure_native(bytecode);
 	}
 	return true;
+}
+
+// DLSS: the reference pipeline is the marker; its dispatch is replaced by DLSS's evaluation. When
+// DLSS cannot evaluate a frame, the marker runs as recorded: the reference upscaler fills the output.
+void Upscaler::ensure_dlss_marker() {
+	std::string error;
+	if (!vk::command_interception_active()) {
+		error = "Godot's vkCmd* functions are not hooked (the command hooks were not enabled before the Vulkan instance)";
+	} else if (dlss_provider_ == nullptr) {
+		error = "no DLSS runtime backend";
+	} else {
+		RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+		const uint64_t marker = rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_COMPUTE_PIPELINE, pipeline_, 0);
+		if (marker == 0 || !vk::add_marker(reinterpret_cast<VkPipeline>(marker), &dlss_recorder_)) {
+			error = "the marker pipeline could not be registered";
+		} else {
+			marker_ = marker;
+		}
+	}
+	if (!error.empty()) {
+		set_error("DLSS cannot record: " + error + "; the reference upscaler runs instead");
+		std::lock_guard<std::mutex> lock(stats_mutex_);
+		native_error_ = error;
+	}
+}
+
+namespace {
+
+dlss::EvaluateImage evaluate_image(RenderingDevice *rd, const RID &texture, VkImageLayout layout) {
+	dlss::EvaluateImage image;
+	image.image = reinterpret_cast<VkImage>(rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE, texture, 0));
+	image.view = reinterpret_cast<VkImageView>(rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_VIEW, texture, 0));
+	image.format = static_cast<VkFormat>(rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_DATA_FORMAT, texture, 0));
+	const Ref<RDTextureFormat> format = rd->texture_get_format(texture);
+	if (format.is_valid()) {
+		image.width = format->get_width();
+		image.height = format->get_height();
+		image.usage = upscale::vk_image_usage(static_cast<uint32_t>(format->get_usage_bits()));
+	}
+	image.layout = layout;
+	return image;
+}
+
+// Row-major copy of a Godot (column-major) projection.
+void row_major(const Projection &m, float out[4][4]) {
+	for (int r = 0; r < 4; ++r) {
+		for (int c = 0; c < 4; ++c) {
+			out[r][c] = static_cast<float>(m.columns[c][r]);
+		}
+	}
+}
+
+// The projection without the TAA jitter Godot folded into it (clip xy offset by jitter * w).
+Projection without_jitter(const Projection &jittered, float ndc_x, float ndc_y) {
+	Projection p = jittered;
+	for (int c = 0; c < 4; ++c) {
+		p.columns[c][0] -= ndc_x * p.columns[c][3];
+		p.columns[c][1] -= ndc_y * p.columns[c][3];
+	}
+	return p;
+}
+
+} // namespace
+
+void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, RenderSceneData *scene, ViewState &view,
+		const Snapshot &snap, float jitter_x, float jitter_y) {
+	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+	if (view.viewport_id == 0) {
+		view.viewport_id = next_viewport_id_++;
+	}
+	dlss::EvaluateInputs in;
+	in.viewport = view.viewport_id;
+	// The layouts Godot's render graph gives the marker's uniform set (sampled / storage).
+	in.color = evaluate_image(rd, rb->get_color_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	in.depth = evaluate_image(rd, rb->get_depth_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	in.velocity = evaluate_image(rd, rb->get_velocity_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	in.output = evaluate_image(rd, rb->get_texture(buffers_context(), upscaled_name()), VK_IMAGE_LAYOUT_GENERAL);
+	in.mode = snap.quality;
+	in.preset = snap.preset;
+	// As Godot hands its jitter to FSR2 (render pixels); the tests can change the convention.
+	in.jitter_x = jitter_x * JITTER_SIGN_X * snap.jitter_sign_x;
+	in.jitter_y = jitter_y * JITTER_SIGN_Y * snap.jitter_sign_y;
+	in.mvec_scale_x = snap.motion_sign; // velocity is already in UV units
+	in.mvec_scale_y = snap.motion_sign;
+	in.reset = view.reset;
+	in.depth_inverted = true;
+
+	const Vector2i internal = rb->get_internal_size();
+	const Projection jittered = scene->get_cam_projection();
+	const float ndc_x = internal.x > 0 ? 2.0f * jitter_x / static_cast<float>(internal.x) : 0.0f;
+	const float ndc_y = internal.y > 0 ? 2.0f * jitter_y / static_cast<float>(internal.y) : 0.0f;
+	const Projection projection = without_jitter(jittered, ndc_x, ndc_y);
+	const Transform3D transform = scene->get_cam_transform();
+	const Projection clip_to_view = projection.inverse();
+	row_major(projection, in.view_to_clip);
+	row_major(clip_to_view, in.clip_to_view);
+	// clip -> previous clip = previous view-to-clip * previous world-to-view * view-to-world * clip-to-view.
+	const Projection previous = view.have_previous_camera ? view.previous_projection : projection;
+	const Transform3D previous_transform = view.have_previous_camera ? view.previous_transform : transform;
+	const Projection clip_to_prev = previous * Projection(previous_transform.affine_inverse() * transform) * clip_to_view;
+	row_major(clip_to_prev, in.clip_to_prev_clip);
+	row_major(clip_to_prev.inverse(), in.prev_clip_to_clip);
+	const Basis &basis = transform.basis;
+	const Vector3 axes[4] = { transform.origin, basis.get_column(1), basis.get_column(0), -basis.get_column(2) };
+	float *targets[4] = { in.camera_pos, in.camera_up, in.camera_right, in.camera_forward };
+	for (int i = 0; i < 4; ++i) {
+		targets[i][0] = static_cast<float>(axes[i].x);
+		targets[i][1] = static_cast<float>(axes[i].y);
+		targets[i][2] = static_cast<float>(axes[i].z);
+	}
+	in.camera_near = static_cast<float>(projection.get_z_near());
+	in.camera_far = static_cast<float>(projection.get_z_far());
+	in.camera_aspect = static_cast<float>(projection.get_aspect());
+	in.camera_fov_y = static_cast<float>(Math::deg_to_rad(Projection::get_fovy(projection.get_fov(), static_cast<real_t>(1.0 / projection.get_aspect()))));
+	in.orthographic = projection.is_orthogonal();
+	view.previous_projection = projection;
+	view.previous_transform = transform;
+	view.have_previous_camera = true;
+	dlss_recorder_.set_job(job, in);
 }
 
 // Registers the reference pipeline as the marker and creates its native twin from the same SPIR-V.
@@ -607,6 +741,11 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 			job_counter_ = 1; // 0 means "no job"
 		}
 		params.job = job_counter_;
+		if (backend_ == UpscaleBackend::Dlss) {
+			set_dlss_job(params.job, rb, scene, view, snap, jitter_x, jitter_y);
+		}
+	}
+	if (marker_.load() != 0 && backend_ != UpscaleBackend::Dlss) {
 		auto view_of = [&](const RID &texture) {
 			return reinterpret_cast<VkImageView>(rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_VIEW, texture, 0));
 		};

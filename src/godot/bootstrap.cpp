@@ -3,7 +3,9 @@
 #include "core/log.h"
 #include "core/testing.h"
 #include "dlss/dlss_feature.h"
+#include "dlss/gpu_precheck.h"
 #include "dlss/runtime_files.h"
+#include "dlss/streamline.h"
 #include "hook/loader_hook.h"
 #include "reflex/reflex_ll2.h"
 #include "upscale/upscale_feature.h"
@@ -14,12 +16,56 @@
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include <algorithm>
+
 using namespace godot;
 
 namespace lu {
 namespace {
 
 BootState g_state;
+
+// Loads Streamline when a GPU can run DLSS (or `force`): a temporary instance lists the GPUs, the
+// addon's own checks come first, Streamline's verdict second. Returns the backend with the host's
+// Vulkan routed through Streamline, or nullptr with `reason`.
+dlss::UpscalerProvider *load_streamline(const std::wstring &runtime_dir, bool force, std::string &reason) {
+	dlss::Streamline &streamline = dlss::Streamline::get();
+	bool load_failed = false;
+	std::string error;
+	const std::vector<dlss::AdapterVerdict> verdicts = dlss::check_adapters(
+			[&](const vk::PhysicalDeviceCaps &caps, std::string &why) {
+				why = dlss::check_device(caps, g_state.hidden_extensions);
+				if (!why.empty() && !force) {
+					return false;
+				}
+				if (load_failed || (!streamline.loaded() && !streamline.load(runtime_dir, why))) {
+					load_failed = true;
+					return false;
+				}
+				std::string unsupported;
+				const bool supported = streamline.adapter_supported(caps.handle, unsupported);
+				if (why.empty()) {
+					why = unsupported;
+				}
+				return supported || force;
+			},
+			error);
+	const auto accepted = std::find_if(verdicts.begin(), verdicts.end(), [](const dlss::AdapterVerdict &v) { return v.accepted; });
+	if (accepted == verdicts.end()) {
+		streamline.unload();
+		if (!error.empty()) {
+			reason = error;
+		} else if (verdicts.empty()) {
+			reason = "Vulkan reports no GPU";
+		} else {
+			reason = verdicts.front().reason; // the first GPU is the one Godot picks by default
+		}
+		return nullptr;
+	}
+	vk::set_loader_override(streamline.interposer(), "sl.interposer.dll");
+	log::info("DLSS: NVIDIA runtime loaded for %s; Vulkan goes through Streamline", accepted->name.c_str());
+	return &streamline;
+}
 
 void godot_log_sink(log::Level level, const char *message) {
 	switch (level) {
@@ -186,27 +232,41 @@ void bootstrap_core() {
 			vk::set_queue_hooks(&reflex);
 		}
 	}
-	// Phase 2, DLSS: the presenting device is checked (NVIDIA, driver, NGX extensions) so the API can
-	// say why DLSS is unavailable. The runtime backend (Streamline, from the NVIDIA runtime the
-	// developer fetched) is not part of this build yet: nothing is requested from the device and no
-	// NVIDIA file is loaded; the runtime folder is only checked for the files' existence.
+	// Phase 2, DLSS. The runtime (Streamline + DLSS, fetched by the developer after accepting NVIDIA's
+	// licences) is only loaded when its files are there and a GPU passes the checks; then the host's
+	// Vulkan calls go through Streamline's interposer (see dlss/streamline.h). Otherwise nothing of
+	// NVIDIA's is loaded and the API reports why DLSS is unavailable.
 	if (g_state.hook_installed && !g_state.editor) {
 		const dlss::RuntimeFiles runtime = dlss::check_runtime_files(dlss::default_runtime_dir());
 		g_state.dlss_runtime_dir = dlss::to_utf8(runtime.dir);
 		g_state.dlss_runtime_missing = runtime.missing;
 		std::string no_backend;
-		if (runtime.present()) {
-			no_backend = "the NVIDIA runtime is installed, but this build of the addon has no DLSS runtime backend yet";
-		} else {
+		dlss::UpscalerProvider *backend = nullptr;
+		if (!settings.dlss_enabled) {
+			const auto it = g_state.resolved.source_of.find(keys::DLSS_ENABLED);
+			no_backend = "disabled by " + (it != g_state.resolved.source_of.end() ? it->second : std::string("settings")) +
+					" at startup (the NVIDIA runtime is only loaded when DLSS is enabled when the game starts)";
+		} else if (!runtime.present()) {
 			std::string missing;
 			for (const std::string &name : runtime.missing) {
 				missing += (missing.empty() ? "" : ", ") + name;
 			}
 			no_backend = "the NVIDIA DLSS runtime is not installed (" + g_state.dlss_runtime_dir + " lacks " + missing +
 					"): get it with Project > Tools > \"Latency & Upscaling: Get the NVIDIA DLSS Runtime\" or tools/fetch_nvidia_sdk.py";
+		} else {
+			bool force = false;
+#ifdef DEBUG_ENABLED
+			// Tests: route through Streamline even without a DLSS-capable GPU (its pass-through path).
+			force = os->get_environment(ENV_TEST_FORCE_STREAMLINE) == "1";
+#endif
+			backend = load_streamline(runtime.dir, force, no_backend);
 		}
-		dlss::DlssFeature::get().configure(nullptr, no_backend, g_state.hidden_extensions);
+		g_state.dlss_streamline = backend != nullptr;
+		dlss::DlssFeature::get().configure(backend, no_backend, g_state.hidden_extensions);
 		vk::register_feature(&dlss::DlssFeature::get());
+		if (backend != nullptr) {
+			vk::enable_command_interception(); // DLSS evaluates at the upscaler's marker dispatch
+		}
 	}
 
 	// Phase 2: recording an upscaler into Godot's command buffer needs the vkCmd* hooks, which

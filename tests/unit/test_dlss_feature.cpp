@@ -68,8 +68,11 @@ public:
 		return init_ok;
 	}
 	void shutdown() override { shut_down++; }
-	ImageSize optimal_render_size(ImageSize target, QualityMode) const override { return target; }
-	bool evaluate(VkCommandBuffer, const EvaluateInputs &) override { return false; }
+	bool optimal_render_size(ImageSize target, upscale::Quality, ImageSize &render) const override {
+		render = target;
+		return true;
+	}
+	bool evaluate(VkCommandBuffer, const EvaluateInputs &, std::string &) override { return false; }
 };
 
 vk::DeviceContext context_for(VkDevice device) {

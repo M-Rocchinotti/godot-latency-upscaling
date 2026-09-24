@@ -23,6 +23,7 @@
 // natively instead (the images named by the push constants' job id). DLSS takes that slot later.
 #pragma once
 
+#include "dlss/dlss_recorder.h"
 #include "upscale/quality.h"
 
 #include <godot_cpp/classes/compositor.hpp>
@@ -118,6 +119,8 @@ private:
 		float jitter_sign_x = 1.0f; // test conventions (debug); 1 = Godot's
 		float jitter_sign_y = 1.0f;
 		float motion_sign = 1.0f;
+		upscale::Quality quality = upscale::Quality::Quality; // resolved (never Auto)
+		upscale::Preset preset = upscale::Preset::Default;
 	};
 	struct ViewState { // render thread only
 		godot::RID history[2];
@@ -130,6 +133,10 @@ private:
 		uint64_t frames_since_reset = 0; // including the reset frame
 		bool calibrated = false;
 		int64_t phase_offset = 0; // Godot phase = (frames + phase_offset) % phase_count
+		uint32_t viewport_id = 0; // DLSS viewport handle
+		bool have_previous_camera = false; // DLSS: last frame's camera, for the reprojection matrices
+		godot::Projection previous_projection; // without jitter
+		godot::Transform3D previous_transform;
 	};
 	struct Stats { // render thread writes, status() reads (under stats_mutex_)
 		uint64_t frames_upscaled = 0;
@@ -151,6 +158,9 @@ private:
 
 	bool ensure_pipeline(); // render thread
 	void ensure_native(const godot::PackedByteArray &spirv); // render thread, after the pipeline exists
+	void ensure_dlss_marker(); // render thread, after the pipeline exists
+	void set_dlss_job(uint32_t job, godot::RenderSceneBuffersRD *rb, godot::RenderSceneData *scene, ViewState &view,
+			const Snapshot &snap, float jitter_x, float jitter_y);
 	bool ensure_velocity_probe(); // render thread, debug
 	void dispatch_reference(godot::RenderSceneBuffersRD *rb, godot::RenderSceneData *scene, ViewState &view);
 	void track_jitter(godot::RenderSceneData *scene, ViewState &view, int render_width, int target_width,
@@ -185,6 +195,9 @@ private:
 	std::atomic<uint64_t> marker_{ 0 }; // VkPipeline registered as the marker (0: none)
 	std::string native_error_; // guarded by stats_mutex_
 	uint32_t job_counter_ = 0;
+	dlss::UpscalerProvider *dlss_provider_ = nullptr; // set by configure() for the DLSS backend
+	dlss::DlssRecorder dlss_recorder_; // registered with the layer: must live as long as the process
+	uint32_t next_viewport_id_ = 1;
 	std::map<uint64_t, ViewState> views_; // by render-target RID id
 	std::map<uint64_t, godot::Ref<godot::RenderSceneBuffersRD>> pending_; // to take over
 	std::atomic<bool> takeover_pending_{ false };

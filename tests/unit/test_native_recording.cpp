@@ -446,3 +446,23 @@ TEST(upscale_feature_destroys_the_native_pipeline_with_its_device) {
 	std::string reason;
 	CHECK(!feature.native_ready(reason));
 }
+
+// --- Godot texture usage -> Vulkan image usage (what Streamline is told about each image) ---------
+
+#include "upscale/image_usage.h"
+
+TEST(image_usage_matches_godots_vulkan_driver) {
+	using namespace lu::upscale;
+	CHECK_EQ(vk_image_usage(0), 0u);
+	// Godot's colour buffer: sampling, colour attachment, storage, copies.
+	const uint32_t color = RD_USAGE_SAMPLING | RD_USAGE_COLOR_ATTACHMENT | RD_USAGE_STORAGE | RD_USAGE_CAN_COPY_FROM | RD_USAGE_CAN_COPY_TO;
+	CHECK_EQ(vk_image_usage(color), static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+													VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+													VK_IMAGE_USAGE_TRANSFER_DST_BIT));
+	CHECK_EQ(vk_image_usage(RD_USAGE_DEPTH_STENCIL_ATTACHMENT | RD_USAGE_SAMPLING),
+			static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
+	CHECK_EQ(vk_image_usage(RD_USAGE_DEPTH_RESOLVE_ATTACHMENT), static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT));
+	CHECK_EQ(vk_image_usage(RD_USAGE_CAN_UPDATE), static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_TRANSFER_DST_BIT));
+	CHECK_EQ(vk_image_usage(RD_USAGE_INPUT_ATTACHMENT), static_cast<VkImageUsageFlags>(VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT));
+	CHECK_EQ(vk_image_usage(RD_USAGE_CPU_READ | RD_USAGE_STORAGE_ATOMIC | RD_USAGE_TRANSIENT), 0u); // no image usage of their own
+}
