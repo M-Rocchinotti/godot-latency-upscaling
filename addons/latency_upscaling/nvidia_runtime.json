@@ -22,6 +22,16 @@
 		"sl.dlss.dll",
 		"nvngx_dlss.dll"
 	],
+	"export_files": [
+		"sl.interposer.dll",
+		"sl.common.dll",
+		"sl.dlss.dll",
+		"nvngx_dlss.dll",
+		"nvngx_dlss.license.txt",
+		"license.txt",
+		"3rd-party-licenses.md"
+	],
+	"export_folder": "nvidia",
 	"target": "res://addons/latency_upscaling/bin/nvidia",
 	"acceptance_record": "licence_acceptance.json",
 	"licences": [

@@ -9,7 +9,8 @@ extends EditorPlugin
 ## - Project > Tools > "Latency & Upscaling: Print Status";
 ## - the NVIDIA runtime for DLSS: when the plugin is enabled and DLSS is on but the runtime is
 ##   missing, a dialog shows NVIDIA's licences and downloads the runtime only after the developer
-##   accepted them (also under Project > Tools > "Latency & Upscaling: Get the NVIDIA DLSS Runtime").
+##   accepted them (also under Project > Tools > "Latency & Upscaling: Get the NVIDIA DLSS Runtime");
+##   Windows exports then carry it in nvidia/ beside the game (nvidia_runtime_export.gd).
 
 const EXTENSION_PATH := "res://addons/latency_upscaling/latency_upscaling.gdextension"
 const SINGLETON := "LatencyUpscaling"
@@ -18,19 +19,26 @@ const MENU_RUNTIME := "Latency & Upscaling: Get the NVIDIA DLSS Runtime..."
 const DLSS_ENABLED_SETTING := "latency_upscaling/dlss/enabled"
 const Runtime := preload("res://addons/latency_upscaling/nvidia_runtime.gd")
 const RuntimeDialog := preload("res://addons/latency_upscaling/nvidia_runtime_dialog.gd")
+const RuntimeExport := preload("res://addons/latency_upscaling/nvidia_runtime_export.gd")
 
 var _runtime_dialog: ConfirmationDialog
+var _runtime_export: EditorExportPlugin
 
 
 func _enter_tree() -> void:
 	add_tool_menu_item(MENU_ITEM, _print_status)
 	add_tool_menu_item(MENU_RUNTIME, _show_runtime_dialog)
+	_runtime_export = RuntimeExport.new()
+	add_export_plugin(_runtime_export)
 	_report_status.call_deferred()
 
 
 func _exit_tree() -> void:
 	remove_tool_menu_item(MENU_ITEM)
 	remove_tool_menu_item(MENU_RUNTIME)
+	if _runtime_export != null:
+		remove_export_plugin(_runtime_export)
+		_runtime_export = null
 	if _runtime_dialog != null:
 		_runtime_dialog.queue_free()
 		_runtime_dialog = null

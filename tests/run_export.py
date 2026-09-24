@@ -62,7 +62,10 @@ def build_release() -> bool:
 def export() -> tuple[int, str]:
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     for stale in EXPORT_DIR.glob("*"):
-        stale.unlink()
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        else:
+            stale.unlink()
     code = subprocess.run([sys.executable, str(RUNNER), "--timeout", "300", "--log", "export",
                            "--headless", "--export-release", "Windows Desktop", "build/export/demo.exe"],
                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -133,6 +136,21 @@ def main() -> int:
         ok = a.get("hook", {}).get("installed") is True and not a.get("hook", {}).get("active")  # headless: installed, not active
         check("A defaults: hook installed in exported game", a.get("hook", {}).get("installed") is True,
               f"hook={a.get('hook')}" if "error" in a else "installed")
+        # The NVIDIA runtime (when fetched here) travels with the export, beside the executable, where
+        # the exported game finds it.
+        manifest = json.loads((ROOT / "addons" / "latency_upscaling" / "nvidia_runtime.json").read_text(encoding="utf-8"))
+        runtime = ROOT / "addons" / "latency_upscaling" / "bin" / "nvidia"
+        if all((runtime / f).exists() for f in manifest["super_resolution_files"]):
+            shipped = EXPORT_DIR / manifest["export_folder"]
+            missing = [f for f in manifest["export_files"] if not (shipped / f).exists()]
+            extra = sorted(p.name for p in shipped.glob("*") if p.name not in manifest["export_files"]) if shipped.exists() else []
+            dlss = a.get("upscaling", {}).get("dlss", {})
+            check("A defaults: the NVIDIA runtime ships in nvidia/ beside the game, and the game finds it",
+                  not missing and not extra and dlss.get("runtime_missing") == [] and
+                  str(dlss.get("runtime_dir", "")).replace("/", "\\").lower() == str(shipped).lower(),
+                  f"missing {missing}, unexpected {extra}, game sees {dlss.get('runtime_dir')!r} missing {dlss.get('runtime_missing')}")
+        else:
+            print("SKIP  A defaults: NVIDIA runtime export (the runtime is not fetched here)")
 
         # B: enabled=false with the editor plugin removed from project.godot, re-export
         original = set_project("\n[latency_upscaling]\n\ngeneral/enabled=false\n", disable_plugin=True)

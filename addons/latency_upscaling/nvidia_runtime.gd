@@ -51,6 +51,20 @@ static func is_installed(dir: String = "") -> bool:
 	return missing_files(dir).is_empty()
 
 
+## What a Windows export ships next to the game (the Super Resolution DLLs and NVIDIA's licence
+## files), as paths inside `dir`, and the folder they go to beside the executable.
+static func export_files(dir: String = "") -> PackedStringArray:
+	var folder := dir if dir != "" else target_dir()
+	var files := PackedStringArray()
+	for name: String in manifest().get("export_files", []):
+		files.append(folder.path_join(name))
+	return files
+
+
+static func export_folder() -> String:
+	return str(manifest().get("export_folder", "nvidia"))
+
+
 ## The recorded acceptance ({} when the runtime was never installed through this addon).
 static func acceptance(dir: String = "") -> Dictionary:
 	var folder := dir if dir != "" else target_dir()

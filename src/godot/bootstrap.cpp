@@ -25,6 +25,36 @@ namespace {
 
 BootState g_state;
 
+// Whether this run will render with Vulkan (Forward+ / Mobile on the Vulkan driver, with a window),
+// judged from the command line and the project settings at CORE initialisation.
+bool vulkan_rendering_expected(std::string &why) {
+	const PackedStringArray args = OS::get_singleton()->get_cmdline_args();
+	String method = ProjectSettings::get_singleton()->get_setting("rendering/renderer/rendering_method", "forward_plus");
+	String driver = ProjectSettings::get_singleton()->get_setting("rendering/rendering_device/driver.windows", "vulkan");
+	for (int i = 0; i < args.size(); ++i) {
+		const String arg = args[i];
+		const String next = i + 1 < args.size() ? args[i + 1] : String();
+		if (arg == "--headless" || (arg == "--display-driver" && next == "headless")) {
+			why = "headless: no Vulkan device, nothing to upscale";
+			return false;
+		}
+		if (arg == "--rendering-method") {
+			method = next;
+		} else if (arg == "--rendering-driver") {
+			driver = next;
+		}
+	}
+	if (method == "gl_compatibility" || method == "dummy") {
+		why = std::string("the ") + method.utf8().get_data() + " renderer does not use Vulkan";
+		return false;
+	}
+	if (driver != "vulkan") {
+		why = std::string("the ") + driver.utf8().get_data() + " rendering driver is not Vulkan";
+		return false;
+	}
+	return true;
+}
+
 // Loads Streamline when a GPU can run DLSS (or `force`): a temporary instance lists the GPUs, the
 // addon's own checks come first, Streamline's verdict second. Returns the backend with the host's
 // Vulkan routed through Streamline, or nullptr with `reason`.
@@ -253,6 +283,8 @@ void bootstrap_core() {
 			}
 			no_backend = "the NVIDIA DLSS runtime is not installed (" + g_state.dlss_runtime_dir + " lacks " + missing +
 					"): get it with Project > Tools > \"Latency & Upscaling: Get the NVIDIA DLSS Runtime\" or tools/fetch_nvidia_sdk.py";
+		} else if (!vulkan_rendering_expected(no_backend)) {
+			// Nothing to upscale: the NVIDIA runtime stays unloaded.
 		} else {
 			bool force = false;
 #ifdef DEBUG_ENABLED
