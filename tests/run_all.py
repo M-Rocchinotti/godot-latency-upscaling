@@ -10,8 +10,8 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
   unit tests                  C++ tests of the pure modules (no GPU)
   import                      headless import, creates .godot/extension_list.cfg
   reflex                      hook loaded, extensions enabled on Godot's device, markers, sleep,
-                              timings, modes, frame-rate limit, swapchain recreation, minimised
-                              window, overlay
+                              timings, modes, frame-rate limit (present-lock bound), swapchain
+                              recreation, minimised window, local device, second window, overlay
   reflex (separate render ...) the same with Godot's separate render thread
   pass-through                a rendered frame is identical with and without the hook
   fallback: ...               forced failure cases give a clean status and no crash

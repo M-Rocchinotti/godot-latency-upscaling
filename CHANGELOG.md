@@ -28,17 +28,28 @@ Phase 0 (repository and build) and Phase 1 (Vulkan hook layer and NVIDIA Reflex)
 - Safety: refuses Godot versions other than 4.7.x; stays dormant when added to a running editor
   (restart to activate); passes through on other GPUs, drivers and renderers with a readable
   reason; the DLL pins itself so it is never unloaded under Godot's function pointers.
-- No-op stub libraries for the platforms the hook does not support (Linux, macOS, Windows arm64):
-  the singleton registers with a "not supported on this platform" status instead of Godot
-  reporting a missing GDExtension library.
+- Platforms: Windows x86_64 only. Exports to other platforms exclude the addon with the export
+  preset filter `addons/latency_upscaling/*` (documented; without it Godot prints its harmless "No
+  GDExtension library found" messages). README examples reach the singleton through `Engine`, so
+  scripts written from them parse and run on every platform. A cross-platform no-op stub is kept in
+  `stub/` as experimental and is not shipped.
 - Editor plugin: status report and a Tools menu entry.
 - Build: `build.cmd` / `tools/build.py` (venv with pinned SCons 4.11.1, MSVC via developer prompt
   or dev-shell script), godot-cpp 10.0.0 and Vulkan-Headers v1.4.357 as submodules; a packaging
-  script (`tools/package.py`) that builds the distributable addon zip.
-- Demo scene with a GPU-load control; tests: C++ unit tests, headed Reflex integration tests
-  (both render-thread models, editor with Reflex), pixel-identical pass-through test, an export
-  test, forced-fault fallback tests (bogus device extension, failing swapchain), editor and
-  late-load tests, Vulkan validation-layer run, benchmark, mutation checks.
+  script (`tools/package.py`) that builds the release zip with both the debug DLL (editor, games
+  run from it, debug exports) and the release DLL (release exports). Only release zips are
+  installable; GitHub's "Download ZIP" has no DLLs.
+- Demo scene with a GPU-load control; tests: C++ unit tests (including fake-driver tests of the
+  Reflex device and proxy tests against the real loader), headed Reflex integration tests (both
+  render-thread models, editor with Reflex, a second native window), pixel-identical pass-through
+  test, an export test, forced-fault fallback tests (bogus device extension, failing swapchain,
+  loader without entry points), editor and late-load tests, Vulkan validation-layer run, a release
+  zip installed into a fresh project (editor, game from the editor, debug and release export), the
+  README examples run without the extension and in filtered Windows and Linux exports, benchmark,
+  and mutation checks including the reviewers' mutations. Skipped checks are reported separately and
+  fail the run unless explicitly allowed.
+- The reported Reflex sleep time includes the time `vkLatencySleepNV` itself blocks (under a
+  frame-rate cap the driver sleeps inside the call).
 - Phase 2 groundwork: `UpscalerProvider` interface, CPU reproduction of Godot's camera jitter,
   `tools/fetch_nvidia_sdk.py` dry-run stub for the NVIDIA binaries (nothing is downloaded).
 

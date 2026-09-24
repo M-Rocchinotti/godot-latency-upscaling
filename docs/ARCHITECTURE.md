@@ -142,16 +142,28 @@ are unavailable ("created without them"). The host never sees a failure the addo
 "Pass-through" is tested, not assumed: `tests/run_all.py` renders a frame without the addon, with
 the layer in front but nothing added, and with Reflex active, and requires identical pixels.
 
-**Test coverage of the layer.** `dispatch.cpp` and `loader_hook.cpp` sit on the live Vulkan loader
-and the host's import table, which a unit test cannot faithfully mock, so they are covered by the
-Godot suites (`reflex`, `pass-through`, `fallback`, `editor`), by fault-driven fallback cases (a
-debug-only `GODOT_LATENCY_UPSCALING_TEST_FAULT` switch forces the device-extension, swapchain and
-loader-incomplete failure paths) and by mutation checks (`tests/run_mutations.py`) that remove each
-retry, the version check and the window-tracking guard and confirm a suite then fails. The pure
-decisions are unit-tested directly: IAT patching and `select_chain_target` in `test_iat_patch.cpp`.
+**Test coverage of the layer.** Three levels, each claim backed by a mutation in
+`tests/run_mutations.py` that a suite really catches:
+
+- *Godot suites* (`reflex` in both thread models, `pass-through`, `fallback`, `editor`, `validation`)
+  run the real engine and driver. A debug-only `GODOT_LATENCY_UPSCALING_TEST_FAULT` switch forces
+  the device-extension, first-swapchain and loader-incomplete failure paths; a real second native
+  window checks that only the main window is tracked.
+- *Fake-driver unit tests* (`test_reflex_ll2.cpp`) drive `Ll2Device` where the engine cannot:
+  Godot 4.7 never passes `oldSwapchain` (it releases the old swapchain first), so only a fake create
+  that fails shows the retry drops the retired handle; and Godot's separate render thread usually
+  presents *before* the main thread's frame callback sleeps, so an engine run sees the present hook
+  blocked behind the sleep only occasionally (1-17 of 60 capped presents with the lock taken
+  exclusively), while a fake `vkLatencySleepNV` that blocks shows it every time. The engine run
+  still asserts the bound (no present waits > 1 ms under the cap).
+- *Unit tests against the real loader* (`test_dispatch.cpp`) check that the proxy keeps the
+  loader's null answers for hooked names; `test_iat_patch.cpp` covers IAT patching and
+  `select_chain_target`.
+
 One path is defensive only: `ReflexFeature::destroy_surface` clears the tracked surface so a new
 window can be tracked afresh — a single-window Godot game never destroys and recreates its main
-surface mid-session, so it cannot be exercised from a test and is verified by code review.
+surface mid-session, so no test can observe it; `run_mutations.py` lists that mutation as
+review-only instead of claiming it.
 
 ## 4. Reflex (Phase 1)
 

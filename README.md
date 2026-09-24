@@ -235,11 +235,18 @@ or when the CPU is the bottleneck, there is little to gain (NVIDIA's own support
 overlay. Hold the right mouse button to look around.
 
 ```
-python tests/run_all.py                # all suites (headed runs open windows), about 10 minutes
+python tests/run_all.py                # all suites (headed runs open windows), about 25 minutes
 python tests/run_all.py --only reflex  # suites whose name contains a word
+python tests/run_package.py            # build the release zip, install it into a fresh project
+python tests/run_portable.py           # README examples without the extension, filtered exports
+python tests/run_export.py             # settings reach an exported game without the plugin
 python tests/run_benchmark.py          # latency Off / On / Boost and hook overhead (idle GPU)
 python tests/run_mutations.py          # mutation checks: the tests catch re-introduced bugs
 ```
+
+`run_all.py` reports skipped checks as SKIP, never as PASS, and fails on any skip that is not
+explicitly allowed (only two are, each with its reason: Godot 4.7.2's own D3D12 crash here, and its
+crash with a second native window under the separate render thread).
 
 Engine path: `GODOT_BIN` or one line in `tools/.godot_path` (use the `_console.exe`). Vulkan SDK for
 the validation suite: `VULKAN_SDK` or `tools/.vulkan_sdk_path`. In an elevated shell the Vulkan
@@ -262,6 +269,11 @@ interleaved in one process. Latency = simulation start to GPU render end per fra
 | Off | 12.49 / 12.46 / 13.03 | 50.07 / 50.03 / 51.11 | 50.91 / 50.92 / 51.83 | 0.04 |
 | On | 13.01 / 12.67 / 14.70 | 40.81 / 40.59 / 43.25 | 41.30 / 41.06 / 43.78 | 10.1 |
 | On + Boost | 12.70 / 12.61 / 13.46 | 40.85 / 40.76 / 42.25 | 43.61 / 43.82 / 45.34 | 10.1 |
+
+The sleep column was measured before 0.1.0's fix of the sleep timer and counts only the
+semaphore wait after `vkLatencySleepNV`; the addon now also counts the time the call itself
+blocks (under a frame-rate cap this driver sleeps inside the call, which the old timer reported
+as ~0 ms). Latency and frame intervals are unaffected.
 
 Reflex On cuts the latency by about 9 ms (18 %, from about 4.0 to 3.2 frames) for about 7 % more
 frame time; Boost is the same within noise on this GPU. The ideal of about one frame is not reached
@@ -308,11 +320,12 @@ The layer alone is below the run-to-run noise (about 0.1 ms). The Reflex calls c
 
 | Path | Contents |
 |---|---|
-| `addons/latency_upscaling/` | the addon: `.gdextension`, `bin/` (built DLLs and stubs), editor plugin, latency overlay, licences |
+| `addons/latency_upscaling/` | the addon: `.gdextension`, `bin/` (the built debug and release DLLs), editor plugin, latency overlay, licences |
 | `src/` | C++ sources: `hook/` (loader hook), `vk/` (dispatch layer), `reflex/`, `godot/` (singleton, bootstrap), `dlss/` (Phase 2 interfaces), `core/` |
 | `demo/` | demo scene (the repository root is the Godot project hosting demo and tests) |
-| `tests/` | GDScript integration tests, Python runners, `unit/` C++ unit tests |
-| `tools/` | `build.py`, `godot.py` (engine runner), `fetch_nvidia_sdk.py` (Phase 2 stub) |
+| `tests/` | GDScript integration tests, Python runners (`run_all.py`, `run_mutations.py`, `run_package.py`, `run_portable.py`, `run_export.py`, `run_benchmark.py`), `unit/` C++ unit tests |
+| `tools/` | `build.py`, `godot.py` (engine runner), `package.py` (release zip), `fetch_nvidia_sdk.py` (Phase 2 stub) |
+| `stub/` | experimental cross-platform no-op library, **not shipped** (see `stub/README.md`) |
 | `thirdparty/` | `godot-cpp` 10.0.0 and `Vulkan-Headers` v1.4.357 (git submodules) |
 | `docs/ARCHITECTURE.md` | how it works, marker placement, safety net, Phase 2 design |
 
