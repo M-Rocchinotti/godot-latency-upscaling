@@ -1,0 +1,24 @@
+# Normalize line endings
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.jpg binary
+*.dll binary
+
+# "Download ZIP" / Asset Library archives contain only the addon and the licences.
+/.gitattributes export-ignore
+/.gitignore export-ignore
+/.gitmodules export-ignore
+/demo export-ignore
+/docs export-ignore
+/src export-ignore
+/tests export-ignore
+/thirdparty export-ignore
+/tools export-ignore
+/SConstruct export-ignore
+/build.cmd export-ignore
+/project.godot export-ignore
+/icon.svg export-ignore
+/README.md export-ignore
+/CHANGELOG.md export-ignore

@@ -1,0 +1,52 @@
+# Godot cache and imports
+.godot/
+*.translation
+
+# Python virtual environment created by tools/build.py
+.venv/
+__pycache__/
+*.pyc
+
+# Build output (objects, unit-test binaries, logs, captures, pip cache)
+build/
+.sconsign*.dblite
+*.obj
+*.o
+*.exp
+*.ilk
+*.pdb
+*.lib
+compile_commands.json
+msvc_capture.log
+
+# Built addon libraries. Released as build artefacts, never committed.
+addons/nvidia_dlss/bin/*
+!addons/nvidia_dlss/bin/.gitkeep
+
+# NVIDIA binaries: the NVIDIA RTX SDKs licence forbids redistributing them stand-alone,
+# so they must never enter this repository (see THIRD_PARTY_NOTICES.md).
+nvngx_*.dll
+sl.*.dll
+*.dll
+
+# Machine-local configuration for the tools
+tools/.godot_path
+tools/.devshell_path
+tools/.vulkan_sdk_path
+
+# Exports
+export/
+export_presets.cfg
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+*.log
+*.tmp
+
+# Secrets
+.env
+*.env
