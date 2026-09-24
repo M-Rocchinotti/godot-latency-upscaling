@@ -20,6 +20,9 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
   editor: addon added ...     the addon loaded into a running editor stays dormant, no crash
   validation                  Vulkan validation layers (LunarG SDK) report nothing with the hook
   archive                     `git archive` ships only the addon and the licences
+  portable api                the README examples parse and run with the extension loaded, removed,
+                              without a library for the platform, and in filtered (incl. Linux)
+                              exports (tests/run_portable.py)
   package                     the release zip (both DLLs) installed into a fresh project: editor,
                               game run from the editor, debug and release export (tests/run_package.py)
 
@@ -343,6 +346,15 @@ def suite_archive() -> bool:
                   unexpected[:10] + missing + stale)
 
 
+def suite_portable() -> bool:
+    # README examples with the extension loaded / removed / without a library, filtered exports.
+    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "run_portable.py")], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    lines = proc.stdout.splitlines()
+    summary = next((l for l in lines if l.startswith("portable test:")), "no summary")
+    return result("portable api", proc.returncode == 0, summary, [l for l in lines if l.startswith("FAIL")])
+
+
 def suite_package() -> bool:
     # Builds the release zip (both DLLs) and installs it into a fresh project: editor, game from the
     # editor, debug export, release export (tests/run_package.py).
@@ -365,6 +377,7 @@ SUITES = [
     ("late load", suite_editor_late_load),
     ("validation", suite_validation),
     ("archive", suite_archive),
+    ("portable api", suite_portable),
     ("package", suite_package),
 ]
 
