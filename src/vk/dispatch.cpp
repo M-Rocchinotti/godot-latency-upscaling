@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/testing.h"
 #include "vk/device_patch.h"
+#include "vk/marker_interceptor.h"
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +34,13 @@ struct Next {
 	PFN_vkDestroySwapchainKHR DestroySwapchainKHR = nullptr;
 	PFN_vkQueuePresentKHR QueuePresentKHR = nullptr;
 	PFN_vkDestroySurfaceKHR DestroySurfaceKHR = nullptr;
+	// Command-buffer interception (Phase 2, only handed out when enabled).
+	PFN_vkBeginCommandBuffer BeginCommandBuffer = nullptr;
+	PFN_vkEndCommandBuffer EndCommandBuffer = nullptr;
+	PFN_vkCmdBindPipeline CmdBindPipeline = nullptr;
+	PFN_vkCmdBindDescriptorSets CmdBindDescriptorSets = nullptr;
+	PFN_vkCmdPushConstants CmdPushConstants = nullptr;
+	PFN_vkCmdDispatch CmdDispatch = nullptr;
 };
 
 struct InstanceInfo {
@@ -50,6 +58,12 @@ struct Layer {
 	// changed afterwards: read without the lock.
 	std::vector<VulkanFeature *> features;
 	std::atomic<QueueHooks *> queue_hooks{ nullptr };
+	// The vkCmd* hooks: requested at CORE initialisation (enable_command_interception), usable
+	// once the loader provided every command function.
+	std::atomic<bool> command_hooks_wanted{ false };
+	std::atomic<bool> command_hooks_usable{ false };
+	std::atomic<bool> command_hooks_resolved{ false }; // the host resolved at least one of them
+	MarkerInterceptor interceptor;
 	std::map<DispatchKey, InstanceInfo> instances;
 	bool main_device_created = false; // the first (presenting) device; later ones are local devices
 	LayerSnapshot snap;
@@ -381,13 +395,47 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_QueuePresentKHR(VkQueue queue, const VkPrese
 	return hooks != nullptr ? hooks->queue_present(queue, info, L.next.QueuePresentKHR) : L.next.QueuePresentKHR(queue, info);
 }
 
+VKAPI_ATTR VkResult VKAPI_CALL hook_BeginCommandBuffer(VkCommandBuffer command_buffer, const VkCommandBufferBeginInfo *info) {
+	Layer &L = layer();
+	L.interceptor.forget(command_buffer);
+	return L.next.BeginCommandBuffer(command_buffer, info);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL hook_EndCommandBuffer(VkCommandBuffer command_buffer) {
+	Layer &L = layer();
+	L.interceptor.forget(command_buffer);
+	return L.next.EndCommandBuffer(command_buffer);
+}
+
+VKAPI_ATTR void VKAPI_CALL hook_CmdBindPipeline(VkCommandBuffer command_buffer, VkPipelineBindPoint bind_point, VkPipeline pipeline) {
+	layer().interceptor.bind_pipeline(command_buffer, bind_point, pipeline);
+}
+
+VKAPI_ATTR void VKAPI_CALL hook_CmdBindDescriptorSets(VkCommandBuffer command_buffer, VkPipelineBindPoint bind_point,
+		VkPipelineLayout layout, uint32_t first_set, uint32_t set_count, const VkDescriptorSet *sets,
+		uint32_t dynamic_offset_count, const uint32_t *dynamic_offsets) {
+	layer().interceptor.bind_descriptor_sets(command_buffer, bind_point, layout, first_set, set_count, sets,
+			dynamic_offset_count, dynamic_offsets);
+}
+
+VKAPI_ATTR void VKAPI_CALL hook_CmdPushConstants(VkCommandBuffer command_buffer, VkPipelineLayout layout,
+		VkShaderStageFlags stages, uint32_t offset, uint32_t size, const void *values) {
+	layer().interceptor.push_constants(command_buffer, layout, stages, offset, size, values);
+}
+
+VKAPI_ATTR void VKAPI_CALL hook_CmdDispatch(VkCommandBuffer command_buffer, uint32_t x, uint32_t y, uint32_t z) {
+	layer().interceptor.dispatch(command_buffer, x, y, z);
+}
+
 // Which names the layer answers itself. `device_level` hooks are also returned by
-// vkGetDeviceProcAddr; `queue` hooks only matter when a QueueHooks owner is installed.
+// vkGetDeviceProcAddr; `queue` hooks only matter when a QueueHooks owner is installed; `command`
+// hooks only when command interception was enabled (and the loader provides those functions).
 struct HookEntry {
 	const char *name;
 	PFN_vkVoidFunction hook;
 	bool device_level;
 	bool queue;
+	bool command;
 };
 
 PFN_vkVoidFunction find_hook(const char *name, bool device_scope);
@@ -424,24 +472,37 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hook_GetDeviceProcAddr(VkDevice device,
 
 PFN_vkVoidFunction find_hook(const char *name, bool device_scope) {
 	static const HookEntry table[] = {
-		{ "vkGetInstanceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&lu_proxy_vkGetInstanceProcAddr), false, false },
-		{ "vkCreateInstance", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateInstance), false, false },
-		{ "vkDestroyInstance", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyInstance), false, false },
-		{ "vkCreateDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateDevice), false, false },
-		{ "vkGetDeviceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&hook_GetDeviceProcAddr), true, false },
-		{ "vkDestroyDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyDevice), true, false },
-		{ "vkCreateSwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateSwapchainKHR), true, true },
-		{ "vkDestroySwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySwapchainKHR), true, true },
-		{ "vkDestroySurfaceKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySurfaceKHR), false, true },
-		{ "vkQueueSubmit", reinterpret_cast<PFN_vkVoidFunction>(&hook_QueueSubmit), true, true },
-		{ "vkQueuePresentKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_QueuePresentKHR), true, true },
+		{ "vkGetInstanceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&lu_proxy_vkGetInstanceProcAddr), false, false, false },
+		{ "vkCreateInstance", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateInstance), false, false, false },
+		{ "vkDestroyInstance", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyInstance), false, false, false },
+		{ "vkCreateDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateDevice), false, false, false },
+		{ "vkGetDeviceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&hook_GetDeviceProcAddr), true, false, false },
+		{ "vkDestroyDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyDevice), true, false, false },
+		{ "vkCreateSwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateSwapchainKHR), true, true, false },
+		{ "vkDestroySwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySwapchainKHR), true, true, false },
+		{ "vkDestroySurfaceKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySurfaceKHR), false, true, false },
+		{ "vkQueueSubmit", reinterpret_cast<PFN_vkVoidFunction>(&hook_QueueSubmit), true, true, false },
+		{ "vkQueuePresentKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_QueuePresentKHR), true, true, false },
+		{ "vkBeginCommandBuffer", reinterpret_cast<PFN_vkVoidFunction>(&hook_BeginCommandBuffer), true, false, true },
+		{ "vkEndCommandBuffer", reinterpret_cast<PFN_vkVoidFunction>(&hook_EndCommandBuffer), true, false, true },
+		{ "vkCmdBindPipeline", reinterpret_cast<PFN_vkVoidFunction>(&hook_CmdBindPipeline), true, false, true },
+		{ "vkCmdBindDescriptorSets", reinterpret_cast<PFN_vkVoidFunction>(&hook_CmdBindDescriptorSets), true, false, true },
+		{ "vkCmdPushConstants", reinterpret_cast<PFN_vkVoidFunction>(&hook_CmdPushConstants), true, false, true },
+		{ "vkCmdDispatch", reinterpret_cast<PFN_vkVoidFunction>(&hook_CmdDispatch), true, false, true },
 	};
-	const bool have_queue_hooks = layer().queue_hooks.load(std::memory_order_acquire) != nullptr;
+	Layer &L = layer();
+	const bool have_queue_hooks = L.queue_hooks.load(std::memory_order_acquire) != nullptr;
+	const bool have_command_hooks =
+			L.command_hooks_wanted.load(std::memory_order_acquire) && L.command_hooks_usable.load(std::memory_order_acquire);
 	for (const HookEntry &entry : table) {
-		if ((device_scope && !entry.device_level) || (entry.queue && !have_queue_hooks)) {
+		if ((device_scope && !entry.device_level) || (entry.queue && !have_queue_hooks) ||
+				(entry.command && !have_command_hooks)) {
 			continue;
 		}
 		if (std::strcmp(entry.name, name) == 0) {
+			if (entry.command) {
+				L.command_hooks_resolved.store(true, std::memory_order_release);
+			}
 			return entry.hook;
 		}
 	}
@@ -464,6 +525,27 @@ void register_feature(VulkanFeature *feature) {
 
 void set_queue_hooks(QueueHooks *hooks) {
 	layer().queue_hooks.store(hooks, std::memory_order_release);
+}
+
+void enable_command_interception() {
+	layer().command_hooks_wanted.store(true, std::memory_order_release);
+}
+
+bool command_interception_active() {
+	const Layer &L = layer();
+	return L.command_hooks_usable.load(std::memory_order_acquire) && L.command_hooks_resolved.load(std::memory_order_acquire);
+}
+
+bool add_marker(VkPipeline pipeline, MarkerRecorder *recorder) {
+	return layer().interceptor.add_marker(pipeline, recorder);
+}
+
+void remove_marker(VkPipeline pipeline) {
+	layer().interceptor.remove_marker(pipeline);
+}
+
+InterceptorStats interceptor_stats() {
+	return layer().interceptor.stats();
 }
 
 HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
@@ -495,6 +577,18 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 			next.DestroySwapchainKHR = loader_export<PFN_vkDestroySwapchainKHR>(real, "vkDestroySwapchainKHR");
 			next.QueuePresentKHR = loader_export<PFN_vkQueuePresentKHR>(real, "vkQueuePresentKHR");
 			next.DestroySurfaceKHR = loader_export<PFN_vkDestroySurfaceKHR>(real, "vkDestroySurfaceKHR");
+			next.BeginCommandBuffer = loader_export<PFN_vkBeginCommandBuffer>(real, "vkBeginCommandBuffer");
+			next.EndCommandBuffer = loader_export<PFN_vkEndCommandBuffer>(real, "vkEndCommandBuffer");
+			next.CmdBindPipeline = loader_export<PFN_vkCmdBindPipeline>(real, "vkCmdBindPipeline");
+			next.CmdBindDescriptorSets = loader_export<PFN_vkCmdBindDescriptorSets>(real, "vkCmdBindDescriptorSets");
+			next.CmdPushConstants = loader_export<PFN_vkCmdPushConstants>(real, "vkCmdPushConstants");
+			next.CmdDispatch = loader_export<PFN_vkCmdDispatch>(real, "vkCmdDispatch");
+			CommandFunctions commands;
+			commands.bind_pipeline = next.CmdBindPipeline;
+			commands.bind_descriptor_sets = next.CmdBindDescriptorSets;
+			commands.push_constants = next.CmdPushConstants;
+			commands.dispatch = next.CmdDispatch;
+			const bool commands_complete = commands.complete() && next.BeginCommandBuffer && next.EndCommandBuffer;
 			bool complete = next.GetInstanceProcAddr && next.EnumerateInstanceExtensionProperties &&
 					next.CreateInstance && next.DestroyInstance && next.GetPhysicalDeviceProperties &&
 					next.EnumerateDeviceExtensionProperties && next.CreateDevice && next.DestroyDevice &&
@@ -510,6 +604,10 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 			if (complete) {
 				L.real_loader = real; // this reference keeps the loader loaded for the process lifetime
 				L.next = next;
+				if (commands_complete) {
+					L.interceptor.set_next(commands);
+					L.command_hooks_usable.store(true, std::memory_order_release);
+				}
 				L.ready.store(true, std::memory_order_release);
 			} else {
 				L.snap.loader_problem = "the Vulkan loader does not export the entry points the layer needs";
@@ -538,7 +636,9 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 LayerSnapshot snapshot() {
 	Layer &L = layer();
 	std::lock_guard<std::mutex> lock(L.mutex);
-	return L.snap;
+	LayerSnapshot s = L.snap;
+	s.command_hooks_resolved = L.command_hooks_resolved.load(std::memory_order_acquire);
+	return s;
 }
 
 } // namespace lu::vk

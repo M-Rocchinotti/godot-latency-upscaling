@@ -9,10 +9,15 @@
 //   vkGetDeviceProcAddr                      - keep returning the hooks for device functions
 //   vkCreateSwapchainKHR / vkDestroySwapchainKHR, vkQueueSubmit, vkQueuePresentKHR
 //                                            - forwarded to the QueueHooks owner (Reflex)
+//   vkBeginCommandBuffer / vkEndCommandBuffer, vkCmdBindPipeline, vkCmdBindDescriptorSets,
+//   vkCmdPushConstants, vkCmdDispatch
+//                                            - only when command interception is enabled: the
+//                                              upscaler's marker dispatch (marker_interceptor.h)
 // Each hook ends in the loader's own exported trampoline for that function, so validation
 // layers, overlays and the driver see the calls exactly as without the hook.
 #pragma once
 
+#include "vk/marker_interceptor.h"
 #include "vk/queue_hooks.h"
 #include "vk/vk_feature.h"
 
@@ -26,6 +31,15 @@ namespace lu::vk {
 // Registration happens at CORE initialisation, before the host creates a Vulkan instance.
 void register_feature(VulkanFeature *feature);
 void set_queue_hooks(QueueHooks *hooks);
+
+// Command-buffer interception (Phase 2). Must be enabled at CORE initialisation: the host resolves
+// its vkCmd* functions right after vkCreateInstance, and only then can they be hooked.
+void enable_command_interception();
+// Enabled, the loader provides the functions, and the host resolved them through the layer.
+bool command_interception_active();
+bool add_marker(VkPipeline pipeline, MarkerRecorder *recorder); // see MarkerInterceptor::add_marker
+void remove_marker(VkPipeline pipeline);
+InterceptorStats interceptor_stats();
 
 // Repeats the host's original LoadLibrary* call (same function, same arguments) so the real
 // loader is found exactly where the host would have found it.
@@ -54,6 +68,7 @@ struct LayerSnapshot {
 	std::vector<std::string> device_extensions;
 	std::vector<std::string> added_device_extensions;
 	std::string device_note; // e.g. the fallback to an unpatched vkCreateDevice
+	bool command_hooks_resolved = false; // the host resolved the vkCmd* hooks (command interception)
 };
 LayerSnapshot snapshot();
 

@@ -57,6 +57,7 @@ PURE_SOURCES = [
     "src/upscale/quality.cpp",
     "src/vk/device_patch.cpp",
     "src/vk/dispatch.cpp",
+    "src/vk/marker_interceptor.cpp",
     "src/vk/vk_feature.cpp",
 ]
 
