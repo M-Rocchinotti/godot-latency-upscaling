@@ -192,6 +192,10 @@ FALLBACKS = [
      lambda s: s["hook"]["active"] and s["reflex"]["supported"] and not s["reflex"]["active"]
      and "without it" in s["reflex"]["reason"],
      "swapchain retried without latency mode; Reflex reports the fallback, no crash"),
+    ("loader missing entry points", [], {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "loader_incomplete"},
+     lambda s: s["hook"]["installed"] and not s["hook"]["active"] and "does not export" in s["hook"]["reason"]
+     and s["vulkan"]["loader_intercepted"] and not s["reflex"]["supported"],
+     "Vulkan passes through the real loader untouched; the game still runs"),
 ]
 
 

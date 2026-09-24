@@ -495,11 +495,18 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 			next.DestroySwapchainKHR = loader_export<PFN_vkDestroySwapchainKHR>(real, "vkDestroySwapchainKHR");
 			next.QueuePresentKHR = loader_export<PFN_vkQueuePresentKHR>(real, "vkQueuePresentKHR");
 			next.DestroySurfaceKHR = loader_export<PFN_vkDestroySurfaceKHR>(real, "vkDestroySurfaceKHR");
-			const bool complete = next.GetInstanceProcAddr && next.EnumerateInstanceExtensionProperties &&
+			bool complete = next.GetInstanceProcAddr && next.EnumerateInstanceExtensionProperties &&
 					next.CreateInstance && next.DestroyInstance && next.GetPhysicalDeviceProperties &&
 					next.EnumerateDeviceExtensionProperties && next.CreateDevice && next.DestroyDevice &&
 					next.GetDeviceProcAddr && next.QueueSubmit && next.CreateSwapchainKHR && next.DestroySwapchainKHR &&
 					next.QueuePresentKHR && next.DestroySurfaceKHR;
+#ifdef DEBUG_ENABLED
+			// Fault injection: pretend the loader is missing entry points so the pure pass-through
+			// safety net is exercised (GODOT_LATENCY_UPSCALING_TEST_FAULT=loader_incomplete).
+			if (testing::fault("loader_incomplete")) {
+				complete = false;
+			}
+#endif
 			if (complete) {
 				L.real_loader = real; // this reference keeps the loader loaded for the process lifetime
 				L.next = next;
