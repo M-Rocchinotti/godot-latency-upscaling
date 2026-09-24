@@ -24,6 +24,7 @@ struct Next {
 	PFN_vkCreateInstance CreateInstance = nullptr;
 	PFN_vkDestroyInstance DestroyInstance = nullptr;
 	PFN_vkGetPhysicalDeviceProperties GetPhysicalDeviceProperties = nullptr;
+	PFN_vkGetPhysicalDeviceQueueFamilyProperties GetPhysicalDeviceQueueFamilyProperties = nullptr; // for queue requests
 	PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2 = nullptr; // loaders >= 1.1
 	PFN_vkEnumerateDeviceExtensionProperties EnumerateDeviceExtensionProperties = nullptr;
 	PFN_vkCreateDevice CreateDevice = nullptr;
@@ -164,6 +165,7 @@ VKAPI_ATTR void VKAPI_CALL hook_DestroyInstance(VkInstance instance, const VkAll
 PhysicalDeviceCaps query_caps(const InstanceInfo &inst, VkPhysicalDevice physical_device) {
 	const Next &next = layer().next;
 	PhysicalDeviceCaps caps;
+	caps.instance = inst.instance;
 	caps.handle = physical_device;
 	VkPhysicalDeviceProperties props{};
 	next.GetPhysicalDeviceProperties(physical_device, &props);
@@ -179,6 +181,13 @@ PhysicalDeviceCaps query_caps(const InstanceInfo &inst, VkPhysicalDevice physica
 	next.EnumerateDeviceExtensionProperties(physical_device, nullptr, &count, extensions.data());
 	for (uint32_t i = 0; i < count; ++i) {
 		caps.extensions[extensions[i].extensionName] = extensions[i].specVersion;
+	}
+	if (next.GetPhysicalDeviceQueueFamilyProperties != nullptr) {
+		uint32_t family_count = 0;
+		next.GetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, nullptr);
+		caps.queue_families.resize(family_count);
+		next.GetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, caps.queue_families.data());
+		caps.queue_families.resize(family_count);
 	}
 
 	// Feature queries need Vulkan 1.1 on the instance or VK_KHR_get_physical_device_properties2.
@@ -260,18 +269,21 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 		VulkanFeature *feature;
 		bool accepted;
 		std::string reason;
+		size_t first_queue; // this feature's queue requests within request.queues
+		size_t queue_count;
 	};
 	std::vector<Decision> decisions;
 	for (VulkanFeature *feature : L.features) {
 		DeviceRequest own;
-		Decision d{ feature, false, {} };
+		Decision d{ feature, false, {}, request.queues.size(), 0 };
 		d.accepted = feature->request_device(caps, own, d.reason);
 		if (d.accepted) {
 			for (const std::string &name : own.extensions) {
 				request.add_extension(name.c_str());
 			}
-			request.features.timeline_semaphore |= own.features.timeline_semaphore;
-			request.features.present_id |= own.features.present_id;
+			request.features.merge(own.features);
+			request.queues.insert(request.queues.end(), own.queues.begin(), own.queues.end());
+			d.queue_count = own.queues.size();
 		}
 		decisions.push_back(d);
 	}
@@ -287,16 +299,20 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 	std::vector<std::string> added;
 	std::string note;
 	bool patch_applied = false;
+	bool patch_failed = false; // the device had to be created without the features' additions
+	std::vector<QueueAssignment> queues;
 	VkResult result;
 	if (!request.empty()) {
-		DeviceCreatePatch patch(*info, request);
+		DeviceCreatePatch patch(*info, request, caps.queue_families);
 		result = L.next.CreateDevice(physical_device, patch.get(), allocator, device);
 		patch.restore();
 		if (result == VK_SUCCESS) {
 			patch_applied = true;
 			enabled = patch.enabled_extensions();
 			added = patch.added_extensions();
+			queues = patch.queue_assignments();
 		} else {
+			patch_failed = true;
 			char buffer[200];
 			std::snprintf(buffer, sizeof(buffer),
 					"vkCreateDevice with the addon's extensions failed (VkResult %d); the device was created without them", result);
@@ -331,6 +347,7 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 	context.instance = inst.instance;
 	context.physical_device = physical_device;
 	context.device = *device;
+	context.get_instance_proc_addr = L.next.GetInstanceProcAddr;
 	context.get_device_proc_addr = L.next.GetDeviceProcAddr;
 	context.caps = caps;
 	context.enabled_extensions = enabled;
@@ -338,7 +355,12 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 		context.enabled_features = request.features;
 	}
 	for (const Decision &d : decisions) {
-		const bool usable = d.accepted && patch_applied;
+		const bool usable = d.accepted && !patch_failed;
+		context.queues.clear();
+		for (size_t i = 0; i < d.queue_count && d.first_queue + i < queues.size(); ++i) {
+			context.queues.push_back(queues[d.first_queue + i]);
+		}
+		context.queues.resize(d.queue_count); // unassigned entries when the patch was not applied
 		d.feature->on_device_created(context, usable, d.accepted ? note : d.reason);
 	}
 	return result;
@@ -567,6 +589,8 @@ HMODULE on_loader_requested(LoadRealLoader load_real, const void *request) {
 			next.CreateInstance = loader_export<PFN_vkCreateInstance>(real, "vkCreateInstance");
 			next.DestroyInstance = loader_export<PFN_vkDestroyInstance>(real, "vkDestroyInstance");
 			next.GetPhysicalDeviceProperties = loader_export<PFN_vkGetPhysicalDeviceProperties>(real, "vkGetPhysicalDeviceProperties");
+			next.GetPhysicalDeviceQueueFamilyProperties =
+					loader_export<PFN_vkGetPhysicalDeviceQueueFamilyProperties>(real, "vkGetPhysicalDeviceQueueFamilyProperties");
 			next.GetPhysicalDeviceFeatures2 = loader_export<PFN_vkGetPhysicalDeviceFeatures2>(real, "vkGetPhysicalDeviceFeatures2");
 			next.EnumerateDeviceExtensionProperties = loader_export<PFN_vkEnumerateDeviceExtensionProperties>(real, "vkEnumerateDeviceExtensionProperties");
 			next.CreateDevice = loader_export<PFN_vkCreateDevice>(real, "vkCreateDevice");

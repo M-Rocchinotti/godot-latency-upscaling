@@ -180,3 +180,145 @@ TEST(device_request_ignores_duplicate_extensions) {
 	CHECK_EQ(r.extensions.size(), static_cast<size_t>(2));
 	CHECK(!r.empty());
 }
+
+// --- buffer device address (NGX lists it among its runtime requirements) --------------------------
+
+TEST(device_patch_sets_buffer_device_address_where_the_host_chains_it) {
+	GodotLikeChain godot;
+	godot.bda.bufferDeviceAddress = VK_FALSE;
+	DeviceRequest request;
+	request.features.buffer_device_address = true;
+	{
+		DeviceCreatePatch patch(godot.info, request);
+		CHECK(patch.changed());
+		CHECK(godot.bda.bufferDeviceAddress == VK_TRUE); // Godot's own structure, set in place
+		CHECK_EQ(count_chain(patch.get()->pNext).at(VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES), 1);
+	}
+	CHECK(godot.bda.bufferDeviceAddress == VK_FALSE); // restored
+
+	// Without one in the host's chain, the patch prepends its own.
+	godot.v11.pNext = &godot.float16;
+	DeviceCreatePatch patch(godot.info, request);
+	auto *bda = reinterpret_cast<const VkPhysicalDeviceBufferDeviceAddressFeatures *>(
+			find_in_chain(patch.get()->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES));
+	CHECK(bda != nullptr && bda->bufferDeviceAddress == VK_TRUE && bda != &godot.bda);
+}
+
+// --- queues (Streamline's Frame Generation asks for an optical-flow queue, for instance) ---------
+
+namespace {
+
+// An NVIDIA-like layout: graphics+compute+transfer (16), compute+transfer (8), transfer (2),
+// video decode (4), optical flow (1).
+std::vector<VkQueueFamilyProperties> nvidia_like_families() {
+	std::vector<VkQueueFamilyProperties> f(5);
+	f[0].queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
+	f[0].queueCount = 16;
+	f[1].queueFlags = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
+	f[1].queueCount = 8;
+	f[2].queueFlags = VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
+	f[2].queueCount = 2;
+	f[3].queueFlags = VK_QUEUE_VIDEO_DECODE_BIT_KHR | VK_QUEUE_TRANSFER_BIT;
+	f[3].queueCount = 4;
+	f[4].queueFlags = VK_QUEUE_OPTICAL_FLOW_BIT_NV;
+	f[4].queueCount = 1;
+	return f;
+}
+
+// What Godot creates: one graphics queue (family 0).
+struct GodotQueues {
+	float priorities[1] = { 1.0f };
+	VkDeviceQueueCreateInfo main{};
+	GodotLikeChain chain;
+	GodotQueues() {
+		main.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+		main.queueFamilyIndex = 0;
+		main.queueCount = 1;
+		main.pQueuePriorities = priorities;
+		chain.info.queueCreateInfoCount = 1;
+		chain.info.pQueueCreateInfos = &main;
+	}
+};
+
+const VkDeviceQueueCreateInfo *entry_for(const VkDeviceCreateInfo *info, uint32_t family) {
+	for (uint32_t i = 0; i < info->queueCreateInfoCount; ++i) {
+		if (info->pQueueCreateInfos[i].queueFamilyIndex == family) {
+			return &info->pQueueCreateInfos[i];
+		}
+	}
+	return nullptr;
+}
+
+} // namespace
+
+TEST(device_patch_places_queues_in_the_most_specific_family) {
+	GodotQueues godot;
+	DeviceRequest request;
+	request.queues.push_back({ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 1 });
+	request.queues.push_back({ VK_QUEUE_COMPUTE_BIT, 1 });
+	request.queues.push_back({ VK_QUEUE_GRAPHICS_BIT, 1 });
+	DeviceCreatePatch patch(godot.chain.info, request, nvidia_like_families());
+	CHECK(patch.changed());
+	const std::vector<QueueAssignment> &q = patch.queue_assignments();
+	CHECK_EQ(q.size(), static_cast<size_t>(3));
+	// Optical flow: its own family. Compute: the async-compute family, not the graphics one.
+	CHECK(q[0].assigned && q[0].family == 4 && q[0].first_index == 0 && q[0].count == 1);
+	CHECK(q[1].assigned && q[1].family == 1 && q[1].first_index == 0);
+	// Graphics shares Godot's family: after Godot's queue 0, so Godot's queue is unchanged.
+	CHECK(q[2].assigned && q[2].family == 0 && q[2].first_index == 1);
+
+	const VkDeviceCreateInfo *out = patch.get();
+	CHECK_EQ(out->queueCreateInfoCount, 3u);
+	const VkDeviceQueueCreateInfo *graphics = entry_for(out, 0);
+	CHECK(graphics != nullptr && graphics->queueCount == 2 && graphics->pQueuePriorities != godot.priorities);
+	CHECK(graphics != nullptr && graphics->pQueuePriorities[0] == 1.0f && graphics->pQueuePriorities[1] == 1.0f);
+	const VkDeviceQueueCreateInfo *flow = entry_for(out, 4);
+	CHECK(flow != nullptr && flow->queueCount == 1 && flow->sType == VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO);
+	// Godot's own array is untouched.
+	CHECK_EQ(godot.main.queueCount, 1u);
+	CHECK(godot.main.pQueuePriorities == godot.priorities);
+	CHECK(godot.chain.info.pQueueCreateInfos == &godot.main);
+}
+
+TEST(device_patch_keeps_the_hosts_priorities_and_counts_its_queues) {
+	GodotQueues godot;
+	float host_priorities[2] = { 1.0f, 0.25f };
+	godot.main.queueFamilyIndex = 1; // a host that already uses two compute queues
+	godot.main.queueCount = 2;
+	godot.main.pQueuePriorities = host_priorities;
+	DeviceRequest request;
+	request.queues.push_back({ VK_QUEUE_COMPUTE_BIT, 2 });
+	DeviceCreatePatch patch(godot.chain.info, request, nvidia_like_families());
+	const QueueAssignment &a = patch.queue_assignments()[0];
+	CHECK(a.assigned && a.family == 1 && a.first_index == 2 && a.count == 2);
+	const VkDeviceQueueCreateInfo *compute = entry_for(patch.get(), 1);
+	CHECK(compute != nullptr && compute->queueCount == 4);
+	CHECK(compute != nullptr && compute->pQueuePriorities[0] == 1.0f && compute->pQueuePriorities[1] == 0.25f);
+}
+
+TEST(device_patch_leaves_queue_requests_it_cannot_serve_unassigned) {
+	GodotQueues godot;
+	DeviceRequest request;
+	request.queues.push_back({ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 2 }); // only one exists
+	request.queues.push_back({ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 1 });
+	request.queues.push_back({ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 1 }); // the one is taken now
+	std::vector<VkQueueFamilyProperties> families = nvidia_like_families();
+	DeviceCreatePatch patch(godot.chain.info, request, families);
+	const std::vector<QueueAssignment> &q = patch.queue_assignments();
+	CHECK(!q[0].assigned);
+	CHECK(q[1].assigned && q[1].family == 4);
+	CHECK(!q[2].assigned);
+	CHECK_EQ(entry_for(patch.get(), 4)->queueCount, 1u);
+
+	// A family the host created with flags (e.g. protected) is never extended.
+	godot.main.flags = VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT;
+	DeviceRequest graphics;
+	graphics.queues.push_back({ VK_QUEUE_GRAPHICS_BIT, 1 });
+	DeviceCreatePatch flagged(godot.chain.info, graphics, families);
+	CHECK(!flagged.queue_assignments()[0].assigned);
+	CHECK(!flagged.changed());
+
+	// Without the queue families nothing can be placed.
+	DeviceCreatePatch blind(godot.chain.info, graphics);
+	CHECK(!blind.queue_assignments()[0].assigned);
+}

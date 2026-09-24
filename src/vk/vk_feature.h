@@ -13,6 +13,7 @@ namespace lu::vk {
 
 // What the physical device offers, gathered once per vkCreateDevice.
 struct PhysicalDeviceCaps {
+	VkInstance instance = VK_NULL_HANDLE; // the instance the device is enumerated from
 	VkPhysicalDevice handle = VK_NULL_HANDLE;
 	uint32_t vendor_id = 0;
 	uint32_t device_id = 0;
@@ -24,6 +25,7 @@ struct PhysicalDeviceCaps {
 	std::map<std::string, uint32_t> extensions; // name -> spec version
 	bool timeline_semaphore_feature = false;
 	bool present_id_feature = false;
+	std::vector<VkQueueFamilyProperties> queue_families;
 
 	bool has_extension(const char *extension) const { return extension_version(extension) != 0; }
 	uint32_t extension_version(const char *extension) const; // 0 = not offered
@@ -35,10 +37,12 @@ struct DeviceContext {
 	VkInstance instance = VK_NULL_HANDLE;
 	VkPhysicalDevice physical_device = VK_NULL_HANDLE;
 	VkDevice device = VK_NULL_HANDLE;
+	PFN_vkGetInstanceProcAddr get_instance_proc_addr = nullptr;
 	PFN_vkGetDeviceProcAddr get_device_proc_addr = nullptr;
 	PhysicalDeviceCaps caps;
 	std::vector<std::string> enabled_extensions; // final list the device was created with
 	DeviceFeatureRequest enabled_features; // bits the patch turned on (or the host already had)
+	std::vector<QueueAssignment> queues; // this feature's own queue requests, in order
 	bool has_enabled_extension(const char *name) const;
 };
 
