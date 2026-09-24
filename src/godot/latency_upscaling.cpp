@@ -4,6 +4,7 @@
 #include "core/log.h"
 #include "core/settings.h"
 #include "core/version.h"
+#include "dlss/dlss_feature.h"
 #include "godot/bootstrap.h"
 #include "reflex/latency_stats.h"
 #include "reflex/reflex_ll2.h"
@@ -285,8 +286,15 @@ void LatencyUpscaling::configure_upscaler() {
 	std::string reason;
 	if (boot.editor) {
 		reason = "not in the editor (games started from it use it)";
+	} else if (!boot.hook_installed) {
+		reason = boot.hook_reason;
 	} else {
-		reason = "the DLSS backend is not available yet (Phase 2 in progress)";
+		const dlss::DlssDeviceStatus dlss_status = dlss::DlssFeature::get().status();
+		if (dlss_status.available) {
+			backend = UpscaleBackend::Dlss;
+		} else {
+			reason = dlss_status.reason;
+		}
 	}
 #ifdef DEBUG_ENABLED
 	if ((boot.test_upscaler == "reference" || boot.test_upscaler == "native") && !boot.editor) {
@@ -552,7 +560,21 @@ Dictionary LatencyUpscaling::get_status() const {
 	entry(keys::DLSS_QUALITY, static_cast<int>(s.dlss_quality));
 	entry(keys::DLSS_PRESET, static_cast<int>(s.dlss_preset));
 	d["settings"] = settings;
-	d["upscaling"] = Upscaler::get().status();
+	Dictionary upscaling = Upscaler::get().status();
+	Dictionary dlss;
+	const dlss::DlssDeviceStatus dlss_status = dlss::DlssFeature::get().status();
+	dlss["device_checked"] = dlss_status.device_seen;
+	dlss["available"] = dlss_status.available;
+	dlss["reason"] = String::utf8(dlss_status.reason.c_str());
+	dlss["tensor_core_hint"] = dlss_status.tensor_core_hint;
+	dlss["runtime_dir"] = String::utf8(boot.dlss_runtime_dir.c_str());
+	PackedStringArray runtime_missing;
+	for (const std::string &name : boot.dlss_runtime_missing) {
+		runtime_missing.push_back(String::utf8(name.c_str()));
+	}
+	dlss["runtime_missing"] = runtime_missing;
+	upscaling["dlss"] = dlss;
+	d["upscaling"] = upscaling;
 	d["warnings"] = to_packed(boot.resolved.warnings);
 	return d;
 }

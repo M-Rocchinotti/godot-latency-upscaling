@@ -1,25 +1,20 @@
-// Phase 2 design: the interface a DLSS Super Resolution / DLAA backend implements.
+// The interface a DLSS Super Resolution / DLAA runtime backend implements (Streamline, loaded from
+// the NVIDIA runtime the developer fetched). DlssFeature (dlss_feature.h) drives it from the Vulkan
+// layer; the Upscaler (godot/upscaler.h) records evaluate() at its marker dispatch.
 //
-// Nothing in Phase 1 implements or calls this. It fixes the contract between the three parts
-// the research (RESEARCH.md §2.2-2.4) identified, so that Phase 2 can be built and reviewed
-// piece by piece:
-//
-//   1. Vulkan requirements  -> collected before vkCreateInstance / vkCreateDevice by the hook
-//                              (vk::DeviceRequest; NGX reports its extensions at run time).
-//   2. The FSR2 slot        -> the viewport runs in Scaling3DMode FSR2 (Godot computes render
-//                              size, jitter, mip bias, TAA-off), then its RenderSceneBuffersRD is
-//                              re-configured with SCALING_3D_MODE_METALFX_TEMPORAL, which maps to
-//                              "no upscaler" on Vulkan, and a target-size "color_upscaled"
-//                              texture is created. Tonemapping then reads DLSS's output.
-//   3. Command recording    -> a POST_TRANSPARENT CompositorEffect dispatches a marker compute
-//                              pipeline; the Vulkan layer recognises that vkCmdDispatch and
-//                              records evaluate() on the same VkCommandBuffer instead.
-//
-// See docs/ARCHITECTURE.md ("Phase 2") for the sequence and the open risks.
+//   1. Vulkan requirements  -> before vkCreateInstance / vkCreateDevice: the backend's instance and
+//                              device extensions, feature bits and extra queues (the runtime reports
+//                              them; they go through vk::DeviceRequest like Reflex's).
+//   2. The FSR2 slot        -> godot/upscaler.h: render size, jitter, mip bias, TAA-off from Godot's
+//                              FSR2 mode; the buffers re-configured to "no upscaler"; the target-size
+//                              "color_upscaled" texture DLSS writes.
+//   3. Command recording    -> the reference pipeline's dispatch is the marker; the layer's
+//                              MarkerInterceptor hands the command buffer to evaluate() and re-binds
+//                              Godot's state afterwards (Streamline's rule for manual hooking).
 #pragma once
 
 #include "dlss/jitter.h"
-#include "vk/device_patch.h"
+#include "vk/vk_feature.h"
 
 #include <cstdint>
 #include <string>
@@ -59,14 +54,14 @@ public:
 	virtual ~UpscalerProvider() = default;
 
 	// Before vkCreateInstance / vkCreateDevice: what the backend needs enabled. Returning
-	// false (with a reason) disables the upscaler without affecting Reflex.
+	// false (with a reason) disables DLSS without affecting Reflex; it must then leave the
+	// request untouched.
 	virtual bool request_instance_extensions(std::vector<std::string> &extensions, std::string &reason) = 0;
-	virtual bool request_device(VkPhysicalDevice physical_device, vk::DeviceRequest &request, std::string &reason) = 0;
+	virtual bool request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &request, std::string &reason) = 0;
 
-	// After the host's device exists (NGX / Streamline initialisation needs it).
-	virtual bool initialize(VkInstance instance, VkPhysicalDevice physical_device, VkDevice device,
-			PFN_vkGetInstanceProcAddr get_instance_proc_addr, PFN_vkGetDeviceProcAddr get_device_proc_addr,
-			std::string &reason) = 0;
+	// After the host's device exists (the runtime is initialised on it). `context.queues` holds the
+	// queues request_device() asked for.
+	virtual bool initialize(const vk::DeviceContext &context, std::string &reason) = 0;
 	virtual void shutdown() = 0;
 
 	// Render size DLSS wants for a target size and quality mode (drives Viewport.scaling_3d_scale).

@@ -47,7 +47,9 @@ PURE_SOURCES = [
     "src/core/log.cpp",
     "src/core/settings.cpp",
     "src/core/testing.cpp",
+    "src/dlss/dlss_feature.cpp",
     "src/dlss/jitter.cpp",
+    "src/dlss/runtime_files.cpp",
     "src/hook/iat_patch.cpp",
     "src/hook/loader_name.cpp",
     "src/reflex/frame_sequencer.cpp",
@@ -104,3 +106,14 @@ probe_env["LIBS"] = ["kernel32"]
 probe_env.VariantDir("build/obj/vk_probe", "tools/vk_probe", duplicate=False)
 vk_probe = probe_env.Program("build/tools/vk_probe.exe", ["build/obj/vk_probe/vk_probe.cpp"])
 Alias("vk_probe", vk_probe)
+
+# sl_probe: Streamline's DLSS requirements and support verdict for this machine, without a window
+# (tools/sl_probe/). Compiles against the vendored Streamline headers (MIT, thirdparty/streamline);
+# loads the NVIDIA runtime the developer fetched at run time, never at link time.
+sl_env = env.Clone()
+sl_env["LIBS"] = ["kernel32", "wintrust", "crypt32"]
+sl_env.Append(CPPPATH=["thirdparty/streamline/include/"])
+sl_env.Append(CXXFLAGS=["/EHsc"])
+sl_env.VariantDir("build/obj/sl_probe", "tools/sl_probe", duplicate=False)
+sl_probe = sl_env.Program("build/tools/sl_probe.exe", ["build/obj/sl_probe/sl_probe.cpp"])
+Alias("sl_probe", sl_probe)

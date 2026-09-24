@@ -25,6 +25,8 @@ struct BootState {
 	std::vector<std::string> patched_imports;
 	bool reflex_enabled = false; // Reflex may modify this process' Vulkan device
 	std::string reflex_reason;
+	std::string dlss_runtime_dir; // where the NVIDIA runtime for DLSS is looked for (UTF-8)
+	std::vector<std::string> dlss_runtime_missing; // its Super Resolution files not found there
 	std::vector<std::string> hidden_extensions; // debug-build test knob
 	// Debug-build test knob: "reference" runs the reference upscaler through RenderingDevice,
 	// "native" records it natively into Godot's command buffer (marker interception).

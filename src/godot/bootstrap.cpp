@@ -2,6 +2,8 @@
 
 #include "core/log.h"
 #include "core/testing.h"
+#include "dlss/dlss_feature.h"
+#include "dlss/runtime_files.h"
 #include "hook/loader_hook.h"
 #include "reflex/reflex_ll2.h"
 #include "upscale/upscale_feature.h"
@@ -184,6 +186,29 @@ void bootstrap_core() {
 			vk::set_queue_hooks(&reflex);
 		}
 	}
+	// Phase 2, DLSS: the presenting device is checked (NVIDIA, driver, NGX extensions) so the API can
+	// say why DLSS is unavailable. The runtime backend (Streamline, from the NVIDIA runtime the
+	// developer fetched) is not part of this build yet: nothing is requested from the device and no
+	// NVIDIA file is loaded; the runtime folder is only checked for the files' existence.
+	if (g_state.hook_installed && !g_state.editor) {
+		const dlss::RuntimeFiles runtime = dlss::check_runtime_files(dlss::default_runtime_dir());
+		g_state.dlss_runtime_dir = dlss::to_utf8(runtime.dir);
+		g_state.dlss_runtime_missing = runtime.missing;
+		std::string no_backend;
+		if (runtime.present()) {
+			no_backend = "the NVIDIA runtime is installed, but this build of the addon has no DLSS runtime backend yet";
+		} else {
+			std::string missing;
+			for (const std::string &name : runtime.missing) {
+				missing += (missing.empty() ? "" : ", ") + name;
+			}
+			no_backend = "the NVIDIA DLSS runtime is not installed (" + g_state.dlss_runtime_dir + " lacks " + missing +
+					"): get it with Project > Tools > \"Latency & Upscaling: Get the NVIDIA DLSS Runtime\" or tools/fetch_nvidia_sdk.py";
+		}
+		dlss::DlssFeature::get().configure(nullptr, no_backend, g_state.hidden_extensions);
+		vk::register_feature(&dlss::DlssFeature::get());
+	}
+
 	// Phase 2: recording an upscaler into Godot's command buffer needs the vkCmd* hooks, which
 	// must be in place before Godot resolves its Vulkan functions, i.e. now. Only the native test
 	// backend uses it so far (DLSS joins in the DLSS step).
