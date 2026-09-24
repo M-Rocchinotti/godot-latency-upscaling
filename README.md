@@ -132,7 +132,7 @@ latency"), `input_sample_to_gpu_end_ms`, `render_submit_start_to_gpu_end_ms`, `s
 
 **What the addon does automatically:** installs its Vulkan layer before Godot creates the device,
 enables `VK_NV_low_latency2` where supported, puts the window swapchain in latency mode, sleeps
-before input sampling every frame, sends the latency markers, stamps present IDs, and falls back
+before input sampling after every presented frame, sends the latency markers, stamps present IDs, and falls back
 cleanly everywhere else. **What it cannot do by itself:** switch Reflex in a game's own settings
 menu (call `reflex_mode`), and activate inside an editor it was added to while running (restart).
 
@@ -167,7 +167,7 @@ mostly affects the light-scene numbers.
 interleaved in one process. Latency = simulation start to GPU render end per frame, from
 `vkGetLatencyTimingsNV` (NVIDIA's "total game-to-render latency"). Mean / median / p95:
 
-| Mode | Frame interval (ms) | Latency, round 1 (ms) | Latency, round 2 (ms) | Reflex sleep (ms) |
+| Mode | Frame interval, round 1 (ms) | Latency, round 1 (ms) | Latency, round 2 (ms) | Reflex sleep (ms) |
 |---|---|---|---|---|
 | Off | 12.49 / 12.47 / 14.06 | 49.90 / 49.96 / 51.07 | 50.60 / 50.73 / 51.80 | 0.03 |
 | On | 13.40 / 13.07 / 15.54 | 40.84 / 40.66 / 43.58 | 41.61 / 41.50 / 44.37 | 10.9 |
