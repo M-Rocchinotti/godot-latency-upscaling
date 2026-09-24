@@ -486,7 +486,7 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 		if (caps.vendor_id != NVIDIA_VENDOR_ID) {
 			reason = format("'%s' (vendor 0x%04X) is not an NVIDIA GPU", caps.name.c_str(), caps.vendor_id);
 		} else {
-			reason = "the NVIDIA driver does not expose VK_NV_low_latency2 (driver 551.70 or newer is needed)";
+			reason = "the NVIDIA driver does not expose VK_NV_low_latency2 (update the NVIDIA graphics driver)";
 		}
 		return false;
 	}
