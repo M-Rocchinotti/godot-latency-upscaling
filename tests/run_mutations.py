@@ -37,6 +37,10 @@ DISPATCH = "src/vk/dispatch.cpp"
 SINGLETON = "src/godot/latency_upscaling.cpp"
 BOOT = "src/godot/bootstrap.cpp"
 ENTRY = "src/register_types.cpp"
+UPSCALER = "src/godot/upscaler.cpp"
+REF_GLSL = "src/godot/reference_upscaler_glsl.h"
+INTERCEPTOR = "src/vk/marker_interceptor.cpp"
+NATIVE = "src/upscale/native_reference.cpp"
 
 # (name, file, original text, mutated text, suite: "unit" or a tests/run_all.py --only word)
 MUTATIONS = [
@@ -128,6 +132,37 @@ MUTATIONS = [
      "} else if (major != 4 || minor != 7) {", "} else if (false) {", "fallback"),
     ("safety: late load not dormant", ENTRY,
      "\tif (lu::boot_state().late_load) {", "\tif (false) {", "late load"),
+    # --- Phase 2: the FSR2 slot and its conventions (tests/upscaler_tests.gd) ---
+    ("upscale: jitter sign X inverted", UPSCALER,
+     "constexpr float JITTER_SIGN_X = 1.0f;", "constexpr float JITTER_SIGN_X = -1.0f;", "upscaler"),
+    ("upscale: motion vectors ignored", REF_GLSL,
+     "\tvec2 velocity = texture(velocity_tex, uv).xy * params.motion_sign;",
+     "\tvec2 velocity = texture(velocity_tex, uv).xy * 0.0;", "upscaler"),
+    ("upscale: takeover leaves Godot's FSR2 in place", UPSCALER,
+     "\t\tconfig->set_scaling_3d_mode(RenderingServer::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL);",
+     "\t\tconfig->set_scaling_3d_mode(RenderingServer::VIEWPORT_SCALING_3D_MODE_FSR2);", "upscaler"),
+    # --- Phase 2: command-buffer interception (marker dispatch replaced by the native recording) ---
+    ("interceptor: marker dispatch also runs (fake driver)", INTERCEPTOR,
+     "\trestore(command_buffer, state);\n}", "\trestore(command_buffer, state);\n\tnext_.dispatch(command_buffer, x, y, z);\n}", "unit"),
+    ("interceptor: marker dispatch also runs (image test)", INTERCEPTOR,
+     "\trestore(command_buffer, state);\n}", "\trestore(command_buffer, state);\n\tnext_.dispatch(command_buffer, x, y, z);\n}",
+     "upscaler"),
+    ("interceptor: host state not re-bound", INTERCEPTOR,
+     "\trestore(command_buffer, state);\n}", "\t(void)state;\n}", "unit"),
+    ("interceptor: dynamic offsets dropped on re-bind", INTERCEPTOR,
+     "\t\t\t\tstatic_cast<uint32_t>(bind.dynamic_offsets.size()),", "\t\t\t\t0u,", "unit"),
+    ("interceptor: marker still tracked after another compute pipeline", INTERCEPTOR,
+     "\t\tif (tracked_.erase(command_buffer) != 0) {", "\t\tif (false) {", "unit"),
+    ("native: sampled images declared GENERAL (fake device)", NATIVE,
+     "infos[i].imageLayout = sampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;",
+     "infos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;", "unit"),
+    ("native: sampled images declared GENERAL (validation layer)", NATIVE,
+     "infos[i].imageLayout = sampled ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;",
+     "infos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;", "validation"),
+    ("native: job id not sent with the marker", UPSCALER,
+     "\t\tparams.job = job_counter_;", "\t\tparams.job = 0;", "upscaler"),
+    ("native: command hooks not enabled before the instance", "src/godot/bootstrap.cpp",
+     "\t\tvk::enable_command_interception();\n", "", "upscaler"),
 ]
 
 

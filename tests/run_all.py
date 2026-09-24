@@ -15,8 +15,10 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
   reflex (separate render ...) the same with Godot's separate render thread
   pass-through                a rendered frame is identical with and without the hook (also for a
                               project that uses Godot's FSR2, with the addon's upscaler inactive)
-  upscaler                    Phase 2 plumbing with the reference upscaler: FSR2 slot, jitter vs
+  upscaler (reference)        Phase 2 plumbing with the reference upscaler: FSR2 slot, jitter vs
                               Godot's UBO, image quality and conventions, velocity, motion
+  upscaler (native)           the same, recorded natively into Godot's command buffer by the
+                              layer's marker interception; equals Godot's own recording bit for bit
   fallback: ...               forced failure cases give a clean status and no crash
   editor                      the editor opens the project with the addon, no errors
   editor with Reflex enabled  enable_in_editor (environment override): Reflex in the editor process
@@ -247,6 +249,16 @@ FALLBACKS = [
      and s["vulkan"]["loader_intercepted"] and not s["reflex"]["supported"],
      "Vulkan passes through the real loader untouched; the game still runs",
      [r"the Vulkan loader does not export"]),
+    # Phase 2: native recording without VK_KHR_push_descriptor falls back to Godot recording the
+    # reference upscaler itself (the marker is never registered), and the device gets nothing added.
+    ("native upscaler without push descriptors", [],
+     {HIDE: "VK_KHR_push_descriptor", "GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "native",
+      "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"},
+     lambda s: s["upscaling"]["active"] and s["upscaling"]["frames_upscaled"] > 20 and not s["upscaling"]["native"]["active"]
+     and "VK_KHR_push_descriptor" in s["upscaling"]["native"]["error"] and s["upscaling"]["native"]["marker_dispatches"] == 0
+     and "VK_KHR_push_descriptor" not in s["vulkan"]["added_device_extensions"] and s["reflex"]["supported"],
+     "Godot records the reference upscaler itself; nothing intercepted, push descriptors not added, Reflex unaffected",
+     [r"native recording unavailable"], "res://tests/upscaler_run.gd"),
 ]
 
 
@@ -255,8 +267,9 @@ def suite_fallbacks() -> bool:
     for entry in FALLBACKS:
         name, args, env, predicate, expectation = entry[:5]
         expected_warnings = entry[5] if len(entry) > 5 else []  # warnings the case provokes on purpose
+        script = entry[6] if len(entry) > 6 else "res://tests/print_status.gd"
         log = "test_fallback_" + re.sub(r"\W+", "_", name)
-        code, out = godot(args + ["--script", "res://tests/print_status.gd", "--", "--frames=30"], log, env)
+        code, out = godot(args + ["--script", script, "--", "--frames=60"], log, env)
         status = status_of(out)
         if not status and args:
             # The engine itself may not run in this configuration on this machine (Godot 4.7.2's
@@ -340,6 +353,9 @@ def suite_validation() -> bool:
          {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}),
         ("reference upscaler", ["--gpu-validation", "--verbose", "--script", "res://tests/upscaler_run.gd", "--", "--frames=240"],
          {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "reference", "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}),
+        # ... and recorded natively into Godot's command buffer (push descriptors, re-bound state).
+        ("native upscaler", ["--gpu-validation", "--verbose", "--script", "res://tests/upscaler_run.gd", "--", "--frames=240"],
+         {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "native", "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}),
     ):
         code, out = godot(args, f"test_validation_{name.replace(' ', '_')}", {**env_base, **extra}, timeout=600, medium=True)
         messages = [l.strip() for l in out.splitlines() if VALIDATION_LINE.search(l)]
@@ -349,18 +365,23 @@ def suite_validation() -> bool:
     fault_code, fault_ids, _ = runs["swapchain fault"]
     fsr2_ids = runs["fsr2 baseline"][1]
     up_code, up_ids, up_out = runs["reference upscaler"]
+    native_code, native_ids, native_out = runs["native upscaler"]
     tests_ok = re.search(r"reflex tests: \d+ passed, 0 failed", hook_out) is not None
     layer_seen = "VK_LAYER_KHRONOS_validation" in hook_out
     upscaled = re.search(r'"frames_upscaled":(\d+)', up_out)
     upscaler_ran = upscaled is not None and int(upscaled.group(1)) > 100
+    substituted = re.search(r'"substituted":(\d+)', native_out)
+    native_ran = substituted is not None and int(substituted.group(1)) > 100
     # Anything either the normal or the fallback-retry run reports more often than the run without
     # the addon is attributed to the addon; for the upscaler, more often than Godot's own FSR2 path.
     new = sorted(((hook_ids | fault_ids) - base_ids).elements())
-    new += sorted((up_ids - (base_ids | fsr2_ids)).elements())
-    ok = hook_code == 0 and fault_code == 0 and up_code == 0 and upscaler_ran and tests_ok and layer_seen and not new
+    new += sorted(((up_ids | native_ids) - (base_ids | fsr2_ids)).elements())
+    ok = (hook_code == 0 and fault_code == 0 and up_code == 0 and native_code == 0 and upscaler_ran and native_ran and tests_ok
+          and layer_seen and not new)
     detail = (f"validation layer {'active' if layer_seen else 'NOT active'}; message IDs hook {dict(hook_ids)}, "
               f"swapchain-fault {dict(fault_ids)}, reference upscaler {dict(up_ids)} "
-              f"({upscaled.group(1) if upscaled else 0} frames upscaled), baseline {dict(base_ids)}, "
+              f"({upscaled.group(1) if upscaled else 0} frames upscaled), native upscaler {dict(native_ids)} "
+              f"({substituted.group(1) if substituted else 0} dispatches recorded natively), baseline {dict(base_ids)}, "
               f"FSR2 baseline {dict(fsr2_ids)}, caused by the addon {len(new)}")
     return result("validation", ok, detail, [f"caused by the addon: {n}" for n in new])
 
@@ -386,16 +407,21 @@ def suite_archive() -> bool:
 
 def suite_upscaler() -> bool:
     # Phase 2 plumbing with the reference upscaler (debug builds): the FSR2 slot, jitter against
-    # Godot's own UBO, still-image quality and conventions, velocity sign/scale, motion.
-    code, out = godot(["--script", "res://tests/upscaler_tests.gd"], "test_upscaler",
-                      {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "reference",
-                       "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}, timeout=600)
-    summary = re.search(r"upscaler tests: (\d+) passed, (\d+) failed", out)
-    fails = [l for l in out.splitlines() if l.startswith("FAIL")]
-    problems = problems_in(out)
-    ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
-    measured = [l for l in out.splitlines() if l.startswith(("STILL ", "VELOCITY ", "MOTION "))]
-    return result("upscaler", ok, summary.group(0) if summary else f"exit {code}, no summary", fails + problems + measured)
+    # Godot's own UBO, still-image quality and conventions, velocity sign/scale, motion. Once
+    # recorded by Godot (RenderingDevice), once natively by the layer's marker interception.
+    all_ok = True
+    for backend in ("reference", "native"):
+        code, out = godot(["--script", "res://tests/upscaler_tests.gd"], f"test_upscaler_{backend}",
+                          {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": backend,
+                           "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}, timeout=600)
+        summary = re.search(r"upscaler tests: (\d+) passed, (\d+) failed", out)
+        fails = [l for l in out.splitlines() if l.startswith("FAIL")]
+        problems = problems_in(out)
+        ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
+        measured = [l for l in out.splitlines() if l.startswith(("STILL ", "VELOCITY ", "MOTION "))]
+        all_ok &= result(f"upscaler ({backend})", ok, summary.group(0) if summary else f"exit {code}, no summary",
+                         fails + problems + measured)
+    return all_ok
 
 
 def suite_portable() -> bool:

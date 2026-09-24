@@ -4,6 +4,9 @@ extends SceneTree
 ##     python tools/godot.py --env GODOT_LATENCY_UPSCALING_TEST_UPSCALER=reference \
 ##         --env "GODOT_LATENCY_UPSCALING_SETTINGS=dlss/quality=4" --script res://tests/upscaler_tests.gd
 ##
+## With GODOT_LATENCY_UPSCALING_TEST_UPSCALER=native every check below runs on the native path: the
+## layer replaces the reference pipeline's dispatch in Godot's command buffer with its own recording.
+##
 ## A procedural, static scene with fine detail (a checkerboard floor, thin bars) at 1280x720,
 ## upscaled from Performance (2x per axis). Checks:
 ##   slot        the viewport runs in the FSR2 slot, Godot's buffers are taken over once, output is
@@ -16,17 +19,22 @@ extends SceneTree
 ##   velocity    a camera yaw / pitch of known size gives the expected centre velocity: current ->
 ##               previous, UV units, Y down (the convention DLSS and FSR2 expect)
 ##   motion      with the camera moving, correct motion vectors beat flipped ones
-## Ends "upscaler tests: <passed> passed, <failed> failed". Captures go to build/upscaler/.
+##   native      (native backend) every marker dispatch is replaced by the native recording, which
+##               equals Godot's own recording of the same shader from the same jitter phase, and is
+##               what reaches the screen; (reference backend) nothing is intercepted
+## Ends "upscaler tests: <passed> passed, <failed> failed". Captures go to build/upscaler/ (native
+## backend: build/upscaler_native/).
 
 const SIZE := Vector2i(1280, 720)
 const CONVERGE_FRAMES := 96
-const OUT_DIR := "res://build/upscaler"
+var OUT_DIR := "res://build/upscaler"
 
 var _lu: Object
 var _camera: Camera3D
 var _passed := 0
 var _failed := 0
 var _results := {}
+var _truth: Image # the supersampled still, from _test_still
 
 
 func _initialize() -> void:
@@ -34,6 +42,8 @@ func _initialize() -> void:
 	DisplayServer.window_set_size(SIZE)
 	_build_scene()
 	_lu = Engine.get_singleton("LatencyUpscaling") if Engine.has_singleton("LatencyUpscaling") else null
+	if OS.get_environment("GODOT_LATENCY_UPSCALING_TEST_UPSCALER") == "native":
+		OUT_DIR = "res://build/upscaler_native"
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT_DIR))
 	_run.call_deferred()
 
@@ -174,6 +184,7 @@ func _run() -> void:
 	await _test_still()
 	await _test_velocity()
 	await _test_motion()
+	await _test_native()
 	_finish()
 
 
@@ -224,6 +235,7 @@ func _test_still() -> void:
 	var truth := await _native(Viewport.SCALING_3D_MODE_BILINEAR, 2.0, 12, "truth_ssaa2x")
 	var bilinear := await _native(Viewport.SCALING_3D_MODE_BILINEAR, 0.5, 8, "bilinear_0.5")
 	var fsr2 := await _native(Viewport.SCALING_3D_MODE_FSR2, 0.5, CONVERGE_FRAMES, "fsr2_0.5")
+	_truth = truth
 	var reference := await _upscaled(1, 1, 1, "reference")
 	var no_jitter := await _upscaled(0, 0, 1, "reference_jitter_ignored")
 	var flip_x := await _upscaled(-1, 1, 1, "reference_jitter_flip_x")
@@ -319,3 +331,85 @@ func _test_motion() -> void:
 	var detail := "PSNR dB under camera motion: correct vectors %.2f, flipped %.2f" % [p["correct"], p["flipped"]]
 	print("MOTION " + detail)
 	_check("Godot's motion vectors, used as current -> previous, beat flipped ones", p["correct"] > p["flipped"] + 2.0, detail)
+
+
+# --- native recording -------------------------------------------------------------------------------
+
+func _native_status() -> Dictionary:
+	return _status().get("native", {})
+
+
+# Converges the still scene from a history reset at jitter phase 0 and captures exactly `frames`
+# frames after it, so two runs see the same jitter sequence and can be compared bit for bit.
+func _converged_at_phase(native_mode: int, frames: int, name: String) -> Image:
+	_lu.dlss_enabled = true
+	_lu._set_upscaler_test_conventions(1, 1, 1)
+	_lu._set_upscaler_test_native_mode(native_mode)
+	await _frames(4)
+	_lu._reset_upscaler_history(0)
+	for i in 200:
+		await process_frame
+		var since: int = _status()["frames_since_reset"]
+		if since == frames and _status()["jitter"]["phase"] == (frames - 1) % int(_status()["jitter"]["phase_count"]):
+			return _capture(name)
+		if since > frames:
+			break
+	return null
+
+
+func _test_native() -> void:
+	var n := _native_status()
+	if not n.get("requested", false):
+		# The reference backend: Godot records the reference dispatch and the layer hooks nothing.
+		_check("reference backend: no command hooks, nothing intercepted",
+				not n.get("command_hooks", true) and not n.get("active", true) and n.get("marker_dispatches", -1) == 0, "%s" % n)
+		return
+	_check("native recording active: vkCmd* hooks resolved, marker registered", n["active"] and n["command_hooks"] and n["error"] == "",
+			"%s" % n)
+
+	# Every upscaled frame's marker dispatch is replaced; nothing falls back to Godot's recording.
+	_lu._set_upscaler_test_native_mode(0)
+	_lu.dlss_enabled = true # the motion test's truth capture left it off
+	for i in 120:
+		if _status()["active"] and _status()["frames_since_reset"] > 2:
+			break
+		await process_frame
+	var s0 := _status()
+	var n0: Dictionary = s0["native"]
+	await _frames(30)
+	var s1 := _status()
+	var n1: Dictionary = s1["native"]
+	var frames: int = s1["frames_upscaled"] - s0["frames_upscaled"]
+	var substituted: int = n1["substituted"] - n0["substituted"]
+	var recorded: int = n1["recorded"] - n0["recorded"]
+	_check("every upscaled frame is recorded natively in Godot's command buffer",
+			frames >= 25 and abs(substituted - frames) <= 1 and recorded == substituted and n1["declined"] == 0
+			and n1["untracked"] == 0 and n1["missing_job"] == 0 and n1["not_created"] == 0,
+			"%d frames upscaled, %d substituted, %d recorded; %s" % [frames, substituted, recorded, n1])
+
+	# Same shader, same images, same push constants, same jitter phase: the native recording and
+	# Godot's own recording of the marker (the recorder declines) must give the same image.
+	var native_image := await _converged_at_phase(0, CONVERGE_FRAMES, "native_phase_aligned")
+	var declined_before: int = _native_status()["declined"]
+	var godot_image := await _converged_at_phase(1, CONVERGE_FRAMES, "godot_recorded_phase_aligned")
+	var declined: int = _native_status()["declined"] - declined_before
+	_check("recorder declined: Godot's own dispatch of the marker ran", declined >= CONVERGE_FRAMES, "%d declined" % declined)
+	var both := native_image != null and godot_image != null
+	var same := _psnr(native_image, godot_image) if both else 0.0
+	var identical := both and native_image.get_data() == godot_image.get_data()
+	_results["native_vs_godot_psnr"] = same
+	_check("native recording equals Godot's recording of the same shader (phase-aligned)", both and (identical or same >= 60.0),
+			"identical %s, PSNR %.2f dB" % [identical, same])
+
+	# The displayed image is the native recording (the marker dispatch did not also run): a change
+	# made only in the native recording (jitter x negated) must show.
+	var negated := await _converged_at_phase(2, CONVERGE_FRAMES, "native_negated_jitter_x")
+	_lu._set_upscaler_test_native_mode(0)
+	if native_image == null or negated == null or _truth == null:
+		_check("the displayed image is the native recording", false, "a capture is missing")
+		return
+	var p_native := _psnr(native_image, _truth)
+	var p_negated := _psnr(negated, _truth)
+	_results["native_psnr"] = {"native": p_native, "native_negated_jitter_x": p_negated}
+	_check("the displayed image is the native recording (a native-only jitter flip shows)", p_native > p_negated + 1.0,
+			"PSNR dB vs truth: native %.2f, native with jitter x negated %.2f" % [p_native, p_negated])
