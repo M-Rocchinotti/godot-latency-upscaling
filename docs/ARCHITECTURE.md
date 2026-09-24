@@ -253,15 +253,18 @@ GTX 1080 (Pascal), driver 582.28, Windows 10 19045, HAGS on. The numbers are in 
   from about 50 ms to about 41 ms (about 4.0 to 3.2 frames) at about 7 % more frame time; On +
   Boost is the same within noise. The per-stage timeline from `vkGetLatencyTimingsNV` shows the
   dominant interval is between the present call finishing and the GPU starting the next frame
-  (present_end -> gpu_start, about 28 ms with Reflex On), which the Reflex sleep does not remove.
-  Its cause is not established. Candidates: the render graph waits on `COLOR_ATTACHMENT_OUTPUT`
-  before each frame's work (`rendering_device_driver_vulkan.cpp:3204`) together with windowed
-  (DWM-composited) presentation; and/or Pascal itself. Whether an RTX GPU reaches the usual
-  one-frame latency is untested (NVIDIA's Streamline 2.14 dropped Vulkan Reflex before Turing,
-  which suggests Pascal is not a target). Note: this remainder was previously attributed to
-  Godot's frame queue with `frame_queue_size = 1` as evidence; that was wrong. Godot clamps the
-  queue to at least two frames (`MAX(2U, ...)` in `rendering_device.cpp`), so setting it to 1 has
-  no effect and the "measures the same" result proves nothing.
+  (present_end -> gpu_start, about 27 ms with Reflex On; the other stages together are ~2 ms plus
+  ~12.5 ms of GPU render), which the Reflex sleep does not remove. Its cause is not established.
+  Two candidates were considered: windowed (DWM-composited) presentation, and Pascal / the render
+  graph's wait on `COLOR_ATTACHMENT_OUTPUT` before each frame's work
+  (`rendering_device_driver_vulkan.cpp:3204`). The exclusive-fullscreen benchmark rules out the
+  first: the gap does not shrink (about 30 ms there), so leaving windowed composition does not
+  remove it. Whether an RTX GPU reaches the usual one-frame latency is untested (NVIDIA's
+  Streamline 2.14 dropped Vulkan Reflex before Turing, which suggests Pascal is not a target).
+  Note: this remainder was previously attributed to Godot's frame queue with `frame_queue_size = 1`
+  as evidence; that was wrong. Godot clamps the queue to at least two frames (`MAX(2U, ...)` in
+  `rendering_device.cpp`), so setting it to 1 has no effect and the "measures the same" result
+  proves nothing.
 - Without the swapchain latency structure or without submission tags, the sleep and the reports
   on this driver behave the same, so those structures are guarded by unit tests
   (`reflex/ll2_patches.cpp`) rather than by run-time checks.

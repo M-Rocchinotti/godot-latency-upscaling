@@ -171,23 +171,32 @@ interleaved in one process. Latency = simulation start to GPU render end per fra
 
 | Mode | Frame interval, round 1 (ms) | Latency, round 1 (ms) | Latency, round 2 (ms) | Reflex sleep (ms) |
 |---|---|---|---|---|
-| Off | 12.49 / 12.47 / 14.06 | 49.90 / 49.96 / 51.07 | 50.60 / 50.73 / 51.80 | 0.03 |
-| On | 13.40 / 13.07 / 15.54 | 40.84 / 40.66 / 43.58 | 41.61 / 41.50 / 44.37 | 10.9 |
-| On + Boost | 13.16 / 13.00 / 15.11 | 40.62 / 40.53 / 43.02 | 42.76 / 42.76 / 45.66 | 11.2 |
+| Off | 12.49 / 12.46 / 13.03 | 50.07 / 50.03 / 51.11 | 50.91 / 50.92 / 51.83 | 0.04 |
+| On | 13.01 / 12.67 / 14.70 | 40.81 / 40.59 / 43.25 | 41.30 / 41.06 / 43.78 | 10.1 |
+| On + Boost | 12.70 / 12.61 / 13.46 | 40.85 / 40.76 / 42.25 | 43.61 / 43.82 / 45.34 | 10.1 |
 
 Reflex On cuts the latency by about 9 ms (18 %, from about 4.0 to 3.2 frames) for about 7 % more
 frame time; Boost is the same within noise on this GPU. The ideal of about one frame is not reached
-on Pascal. The per-stage timeline from `vkGetLatencyTimingsNV` (printed by `run_benchmark.py`)
-shows why: with Reflex On the dominant interval is between the present call finishing and the GPU
-starting the next frame — **present_end -> gpu_start, about 28 ms** — which the Reflex sleep does
-not remove.
+on Pascal. The per-stage timeline from `vkGetLatencyTimingsNV` (printed by `run_benchmark.py`) shows
+where the time goes with Reflex On (mean / median / p95 ms, windowed):
 
-The cause of this gap is not established. Candidates: the render graph's wait on
-`COLOR_ATTACHMENT_OUTPUT` before each frame's work (`rendering_device_driver_vulkan.cpp:3204`)
-together with windowed (DWM-composited) presentation; and/or Pascal itself. An exclusive-fullscreen
-run is included in the benchmark to test the composition theory. NVIDIA's own Streamline 2.14 no
-longer offers Vulkan Reflex before Turing; RTX GPUs are expected to do better but were not available
-for testing.
+| Stage | ms | | Stage | ms |
+|---|---|---|---|---|
+| simulation | 0.5 / 0 / 1 | | present call | 0.2 / 0 / 1 |
+| render submit | 0.7 / 1 / 1 | | **present_end -> gpu_start** | **27.0 / 26.7 / 29.8** |
+| submit -> present | 0.0 | | gpu render | 12.5 / 12.6 / 12.9 |
+
+The dominant interval is **present_end -> gpu_start (about 27 ms)** — the wait between the present
+call finishing and the GPU starting the next frame — which the Reflex sleep does not remove.
+
+**The cause is not established.** Two candidates were considered: (a) windowed (DWM-composited)
+presentation, and (b) Pascal / the render graph's wait on `COLOR_ATTACHMENT_OUTPUT` before each
+frame's work (`rendering_device_driver_vulkan.cpp:3204`). The benchmark measures an
+**exclusive-fullscreen** run to test (a): the gap does **not** shrink — it is about **30 ms** there
+(overall latency about 46 ms, at the higher fullscreen resolution) — so leaving windowed composition
+does not remove it and (a) is ruled out as the cause. That leaves the Pascal / render-graph
+explanation (b). NVIDIA's own Streamline 2.14 no longer offers Vulkan Reflex before Turing; RTX GPUs
+are expected to do better but were not available for testing.
 
 > An earlier version of this note blamed Godot's frame queue and cited `frame_queue_size = 1` as
 > evidence. That was wrong: Godot clamps the queue depth to at least two frames (`MAX(2U, ...)` in
