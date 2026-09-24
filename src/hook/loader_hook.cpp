@@ -90,11 +90,15 @@ bool patch_one(HMODULE exe, HMODULE kernel32, const char *function, Fn hook, std
 	if (slots.empty()) {
 		return false;
 	}
-	// Chain to what the slot held before (another hook, if one was installed first). Until this
-	// store, `next` is kernel32's own function, which is equally correct.
-	if (slots.front().original != nullptr) {
-		next.store(reinterpret_cast<Fn>(slots.front().original));
+	// Chain to what the slots held before (another hook, if one was installed first). Until this
+	// store, `next` is kernel32's own function, which is equally correct. A single shared hook has
+	// one chain target, so if the slots held different originals we chain to the real export.
+	bool mismatch = false;
+	void *target = select_chain_target(slots, real, &mismatch);
+	if (mismatch) {
+		log::warning("import slots for %s held different originals; chaining %s to the real loader export", function, function);
 	}
+	next.store(reinterpret_cast<Fn>(target));
 	for (const IatSlot &slot : slots) {
 		result.patched.push_back(slot.dll + "!" + function);
 	}

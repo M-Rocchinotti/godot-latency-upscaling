@@ -30,4 +30,12 @@ std::vector<IatSlot> patch_imports(HMODULE module, const char *function, void *r
 // Writes the original pointers back.
 void restore_imports(const std::vector<IatSlot> &slots);
 
+// The chain target for a set of freshly patched slots. A single shared hook has one `next`
+// pointer, so it cannot chain each slot to its own original; when every slot held the same
+// non-null original (the value present before this patch, e.g. an earlier hook), that value is
+// returned. If the slots held different originals — an unusual partial pre-hook — no single value
+// is correct, so `real` (the terminal loader export) is returned and, when given, *mismatch is set.
+// Slots that held null are ignored; if none held a value, `real` is returned.
+void *select_chain_target(const std::vector<IatSlot> &slots, void *real, bool *mismatch = nullptr);
+
 } // namespace lu::hook

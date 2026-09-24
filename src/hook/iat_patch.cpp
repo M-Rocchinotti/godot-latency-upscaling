@@ -107,4 +107,27 @@ void restore_imports(const std::vector<IatSlot> &slots) {
 	}
 }
 
+void *select_chain_target(const std::vector<IatSlot> &slots, void *real, bool *mismatch) {
+	if (mismatch != nullptr) {
+		*mismatch = false;
+	}
+	void *common = nullptr;
+	bool have = false;
+	for (const IatSlot &slot : slots) {
+		if (slot.original == nullptr) {
+			continue;
+		}
+		if (!have) {
+			common = slot.original;
+			have = true;
+		} else if (slot.original != common) {
+			if (mismatch != nullptr) {
+				*mismatch = true;
+			}
+			return real;
+		}
+	}
+	return have ? common : real;
+}
+
 } // namespace lu::hook

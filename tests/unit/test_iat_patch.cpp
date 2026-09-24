@@ -61,3 +61,43 @@ TEST(iat_patch_rejects_null_arguments) {
 	CHECK(patch_imports(nullptr, "LoadLibraryA", nullptr, reinterpret_cast<void *>(&fake_process_id), &error).empty());
 	CHECK(!error.empty());
 }
+
+TEST(select_chain_target_uses_the_common_original) {
+	int a = 0, b = 0;
+	std::vector<IatSlot> slots(3);
+	slots[0].original = &a;
+	slots[1].original = &a;
+	slots[2].original = &a;
+	bool mismatch = true;
+	CHECK_EQ(select_chain_target(slots, &b, &mismatch), static_cast<void *>(&a));
+	CHECK(!mismatch);
+}
+
+TEST(select_chain_target_falls_back_to_real_on_mismatch) {
+	int a = 0, b = 0, real = 0;
+	std::vector<IatSlot> slots(2);
+	slots[0].original = &a;
+	slots[1].original = &b;
+	bool mismatch = false;
+	CHECK_EQ(select_chain_target(slots, &real, &mismatch), static_cast<void *>(&real));
+	CHECK(mismatch);
+}
+
+TEST(select_chain_target_ignores_null_originals) {
+	int a = 0, real = 0;
+	std::vector<IatSlot> slots(3);
+	slots[0].original = nullptr;
+	slots[1].original = &a;
+	slots[2].original = nullptr;
+	bool mismatch = true;
+	CHECK_EQ(select_chain_target(slots, &real, &mismatch), static_cast<void *>(&a));
+	CHECK(!mismatch);
+}
+
+TEST(select_chain_target_defaults_to_real_when_all_null) {
+	int real = 0;
+	std::vector<IatSlot> slots(2); // both originals null
+	bool mismatch = true;
+	CHECK_EQ(select_chain_target(slots, &real, &mismatch), static_cast<void *>(&real));
+	CHECK(!mismatch);
+}
