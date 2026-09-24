@@ -19,6 +19,10 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
                               Godot's UBO, image quality and conventions, velocity, motion
   upscaler (native)           the same, recorded natively into Godot's command buffer by the
                               layer's marker interception; equals Godot's own recording bit for bit
+  nvidia runtime              fetching the NVIDIA runtime: tools/fetch_nvidia_sdk.py and the editor
+                              dialog (licence acceptance, lock file, archive handling) with synthetic
+                              archives; NVIDIA's real archive against the lock when a copy is in
+                              build/cache/nvidia/ (nothing is downloaded)
   fallback: ...               forced failure cases give a clean status and no crash
   editor                      the editor opens the project with the addon, no errors
   editor with Reflex enabled  enable_in_editor (environment override): Reflex in the editor process
@@ -113,6 +117,30 @@ def suite_unit_tests() -> bool:
     failures = [l for l in run.stdout.splitlines() if l.startswith("FAIL") or l.startswith("    ")]
     return result("unit tests", run.returncode == 0 and summary is not None,
                   summary.group(0) if summary else "no summary", failures)
+
+
+RUNTIME_ZIP_CACHE = ROOT / "build" / "cache" / "nvidia"
+
+
+def suite_nvidia_runtime() -> bool:
+    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "test_fetch_nvidia_sdk.py")], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    py_summary = re.search(r"Ran (\d+) tests", proc.stderr)
+    all_ok = result("nvidia runtime: fetch tool", proc.returncode == 0,
+                    f"{py_summary.group(1) if py_summary else '?'} Python tests",
+                    [l for l in proc.stderr.splitlines() if l.startswith(("FAIL:", "ERROR:"))])
+    manifest = json.loads((ROOT / "addons" / "latency_upscaling" / "nvidia_runtime.json").read_text(encoding="utf-8"))
+    cached = RUNTIME_ZIP_CACHE / manifest["asset"]
+    env = {"GODOT_LATENCY_UPSCALING_TEST_RUNTIME_ZIP": str(cached)} if cached.exists() else {}
+    code, out = godot(["--headless", "--script", "res://tests/nvidia_runtime_tests.gd"], "test_nvidia_runtime", env, timeout=300)
+    summary = re.search(r"nvidia runtime tests: (\d+) passed, (\d+) failed", out)
+    problems = problems_in(out)
+    all_ok &= result("nvidia runtime: editor dialog", code == 0 and summary is not None and summary.group(2) == "0" and not problems,
+                     summary.group(0) if summary else f"exit {code}, no summary",
+                     [l for l in out.splitlines() if l.startswith("FAIL")] + problems)
+    if not cached.exists():
+        skip("nvidia runtime: real archive", f"no copy of {manifest['asset']} in {RUNTIME_ZIP_CACHE}")
+    return all_ok
 
 
 def suite_import() -> bool:
@@ -450,6 +478,7 @@ SUITES = [
     ("reflex render thread", suite_reflex_render_thread),
     ("pass-through", suite_pass_through),
     ("upscaler", suite_upscaler),
+    ("nvidia runtime", suite_nvidia_runtime),
     ("fallback", suite_fallbacks),
     ("editor", suite_editor),
     ("editor reflex", suite_editor_with_reflex),

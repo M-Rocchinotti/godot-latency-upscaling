@@ -1,0 +1,39 @@
+{
+	"comment": "Where the NVIDIA runtime for DLSS comes from. Read by the editor plugin (nvidia_runtime.gd) and tools/fetch_nvidia_sdk.py. Nothing listed here is part of this addon: the files are fetched from NVIDIA's release on the developer's machine, after the developer accepted NVIDIA's licences.",
+	"repository": "NVIDIA-RTX/Streamline",
+	"tag": "v2.14.1",
+	"asset": "streamline-sdk-v2.14.1.zip",
+	"files": [
+		"bin/x64/sl.interposer.dll",
+		"bin/x64/sl.common.dll",
+		"bin/x64/sl.dlss.dll",
+		"bin/x64/sl.dlss_g.dll",
+		"bin/x64/sl.reflex.dll",
+		"bin/x64/sl.pcl.dll",
+		"bin/x64/nvngx_dlss.dll",
+		"bin/x64/nvngx_dlssg.dll",
+		"bin/x64/nvngx_dlss.license.txt",
+		"license.txt",
+		"3rd-party-licenses.md"
+	],
+	"super_resolution_files": [
+		"sl.interposer.dll",
+		"sl.common.dll",
+		"sl.dlss.dll",
+		"nvngx_dlss.dll"
+	],
+	"target": "res://addons/latency_upscaling/bin/nvidia",
+	"acceptance_record": "licence_acceptance.json",
+	"licences": [
+		{
+			"name": "NVIDIA RTX SDKs licence (DLSS runtime, nvngx_*.dll)",
+			"page": "https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt",
+			"text": "https://raw.githubusercontent.com/NVIDIA/DLSS/main/LICENSE.txt"
+		},
+		{
+			"name": "Streamline licence (MIT, sl.*.dll)",
+			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/main/license.txt",
+			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/main/license.txt"
+		}
+	]
+}
