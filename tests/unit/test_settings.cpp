@@ -4,7 +4,7 @@
 
 using namespace lu;
 
-TEST(settings_defaults_match_the_shipped_config) {
+TEST(settings_builtin_defaults) {
 	const ResolvedSettings r = resolve_settings({});
 	CHECK(r.settings.enabled);
 	CHECK(!r.settings.enable_in_editor);

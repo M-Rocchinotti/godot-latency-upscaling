@@ -39,7 +39,6 @@ inline constexpr const char *ENV_VERBOSE = "GODOT_LATENCY_UPSCALING_VERBOSE"; //
 inline constexpr const char *ENV_TEST_HIDE_EXTENSIONS = "GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS"; // comma list
 inline constexpr const char *ENV_TEST_GODOT_VERSION = "GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION"; // e.g. "4.8.0"
 
-inline constexpr const char *ADDON_CONFIG_PATH = "res://addons/latency_upscaling/latency_upscaling.cfg";
 inline constexpr const char *PROJECT_SETTING_PREFIX = "latency_upscaling/";
 
 } // namespace lu

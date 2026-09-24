@@ -5,7 +5,6 @@
 #include "reflex/reflex_ll2.h"
 #include "vk/dispatch.h"
 
-#include <godot_cpp/classes/config_file.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -46,35 +45,6 @@ bool variant_to_number(const Variant &value, double &out) {
 		default:
 			return false;
 	}
-}
-
-SettingsLayer config_layer(std::vector<std::string> &warnings) {
-	SettingsLayer layer;
-	layer.name = ADDON_CONFIG_PATH;
-	Ref<ConfigFile> config;
-	config.instantiate();
-	const Error err = config->load(ADDON_CONFIG_PATH);
-	if (err != OK) {
-		// Built-in defaults are identical to the shipped file, so a missing file (e.g. an export
-		// without the editor plugin's export hook) changes nothing.
-		log::info("%s not loaded (error %d); using built-in defaults", ADDON_CONFIG_PATH, static_cast<int>(err));
-		return layer;
-	}
-	for (const char *key : all_setting_keys()) {
-		const String full(key);
-		const String section = full.get_slice("/", 0);
-		const String name = full.get_slice("/", 1);
-		if (!config->has_section_key(section, name)) {
-			continue;
-		}
-		double number = 0.0;
-		if (variant_to_number(config->get_value(section, name), number)) {
-			layer.values[key] = number;
-		} else {
-			warnings.push_back(std::string(ADDON_CONFIG_PATH) + ": '" + key + "' is not a boolean or number");
-		}
-	}
-	return layer;
 }
 
 SettingsLayer project_layer(std::vector<std::string> &warnings) {
@@ -130,11 +100,14 @@ void bootstrap_core() {
 		log::warning("could not pin the addon DLL in memory; unloading it at exit may crash the editor");
 	}
 
-	// Settings: built-in defaults < addon config < project settings < environment.
+	// Settings resolve as: built-in defaults < project settings < environment. The store for
+	// overrides is project settings, which Godot always writes into project.godot (hence into
+	// project.binary in an export) and which are already parsed before CORE-level GDExtensions
+	// initialise (main.cpp registers core extensions "after globals setup"). This works whether
+	// or not the editor plugin is enabled and needs no separate config file to be exported.
 	std::vector<std::string> read_warnings;
+	g_state.addon_defaults = resolve_settings({}).settings; // built-in defaults, for the editor UI
 	std::vector<SettingsLayer> layers;
-	layers.push_back(config_layer(read_warnings));
-	g_state.addon_defaults = resolve_settings({ layers.front() }).settings;
 	layers.push_back(project_layer(read_warnings));
 	const String env_settings = os->get_environment(ENV_SETTINGS);
 	if (!env_settings.is_empty()) {

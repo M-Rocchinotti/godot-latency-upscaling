@@ -27,14 +27,37 @@ var _mode_button: OptionButton
 var _dlss: Object
 
 
+var _probe_frames := -1  # >=0 when the export probe is active
+
+
 func _ready() -> void:
 	_dlss = Engine.get_singleton("LatencyUpscaling") if Engine.has_singleton("LatencyUpscaling") else null
+	# Export probe: tests/run_export.py runs this exported main scene with LU_EXPORT_PROBE=1 to read
+	# the addon status from inside a real exported game. (A `--script` SceneTree main loop hangs in
+	# an exported build on Godot 4.7.2, so the probe rides the main scene instead.)
+	if OS.get_environment("LU_EXPORT_PROBE") == "1":
+		_probe_frames = 5
 	_build_world()
 	_build_panel()
 	gpu_load = gpu_load
 
 
+func _probe_tick() -> void:
+	_probe_frames -= 1
+	if _probe_frames > 0:
+		return
+	var status := {}
+	if Engine.has_singleton("LatencyUpscaling"):
+		status = Engine.get_singleton("LatencyUpscaling").get_status()
+	else:
+		status["error"] = "LatencyUpscaling singleton not registered"
+	print("LU_STATUS " + JSON.stringify(status))
+	get_tree().quit()
+
+
 func _process(delta: float) -> void:
+	if _probe_frames >= 0:
+		_probe_tick()
 	_time += delta
 	for i in _cubes.instance_count:
 		var x := i % GRID

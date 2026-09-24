@@ -32,7 +32,7 @@ next to the executable, no environment variables and no registry entries.
   vkCreateSwapchainKHR / vkQueueSubmit / vkQueuePresentKHR ─► QueueHooks (reflex/reflex_ll2.cpp)
   everything else ──────────────────────────────────► real vulkan-1.dll (untouched pointers)
 
-  RenderingServer frame_pre_draw / frame_post_draw ─► godot/latency_upscaling.cpp (markers)
+  RenderingServer frame_pre_draw + the GDExtension frame callback ─► godot/latency_upscaling.cpp (markers, sleep)
   GDExtension frame callback (end of iteration) ────► godot/latency_upscaling.cpp (Reflex sleep)
 ```
 

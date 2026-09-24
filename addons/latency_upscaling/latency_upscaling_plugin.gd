@@ -2,32 +2,24 @@
 extends EditorPlugin
 ## Editor side of the Latency & Upscaling addon.
 ##
-## The GDExtension does its work without this plugin. Enabling the plugin adds:
+## The GDExtension does its work without this plugin, and its settings live in Project Settings
+## (latency_upscaling/...), which are always exported. Enabling the plugin only adds:
 ## - a status report when the editor starts (and a notice when the addon was added while the
 ##   editor was running, which needs an editor restart to reach the editor's own Vulkan device);
-## - Project > Tools > "Latency & Upscaling: Print Status";
-## - packing of addons/latency_upscaling/latency_upscaling.cfg into exported games (Godot does not export
-##   .cfg files by default; without it exports use the identical built-in defaults).
+## - Project > Tools > "Latency & Upscaling: Print Status".
 
-const CONFIG_PATH := "res://addons/latency_upscaling/latency_upscaling.cfg"
 const EXTENSION_PATH := "res://addons/latency_upscaling/latency_upscaling.gdextension"
 const SINGLETON := "LatencyUpscaling"
 const MENU_ITEM := "Latency & Upscaling: Print Status"
 
-var _export_plugin: EditorExportPlugin
-
 
 func _enter_tree() -> void:
-	_export_plugin = _ConfigExportPlugin.new()
-	add_export_plugin(_export_plugin)
 	add_tool_menu_item(MENU_ITEM, _print_status)
 	_report_status.call_deferred()
 
 
 func _exit_tree() -> void:
 	remove_tool_menu_item(MENU_ITEM)
-	remove_export_plugin(_export_plugin)
-	_export_plugin = null
 
 
 func _report_status() -> void:
@@ -63,12 +55,3 @@ static func _summary(status: Dictionary) -> String:
 	var reflex: Dictionary = status["reflex"]
 	var reflex_text := "Reflex active in this process" if reflex["active"] else "Reflex: %s" % reflex["reason"]
 	return "Vulkan hook active on %s (driver %s). %s." % [vulkan["gpu"], vulkan["driver_version"], reflex_text]
-
-
-class _ConfigExportPlugin extends EditorExportPlugin:
-	func _get_name() -> String:
-		return "LatencyUpscalingConfig"
-
-	func _export_begin(_features: PackedStringArray, _is_debug: bool, _path: String, _flags: int) -> void:
-		if FileAccess.file_exists(CONFIG_PATH):
-			add_file(CONFIG_PATH, FileAccess.get_file_as_bytes(CONFIG_PATH), false)
