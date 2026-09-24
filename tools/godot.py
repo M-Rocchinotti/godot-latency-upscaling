@@ -17,6 +17,8 @@ Options handled here (not passed to Godot):
     --timeout N          kill the engine (and its children) after N seconds (default 900)
     --log NAME           write output to build/logs/NAME.log (default: timestamped)
     --env KEY=VALUE      set an environment variable for the engine (repeatable)
+    --project DIR        run against another project directory (default: this repository); used by
+                         the fresh-project install tests. The lock stays this repository's.
     --medium-integrity   run the engine at medium integrity level when this process is elevated.
                          The Vulkan loader ignores VK_ADD_LAYER_PATH/VK_LAYER_PATH in elevated
                          processes, so the SDK's validation layer is only found this way. Output
@@ -219,6 +221,7 @@ def main(argv: list[str]) -> int:
     log_name = None
     medium = False
     env_overrides: dict[str, str] = {}
+    project = PROJECT
     passthrough: list[str] = []
     i = 0
     while i < len(argv):
@@ -232,6 +235,8 @@ def main(argv: list[str]) -> int:
             env_overrides[key] = value; i += 2; continue
         if a == "--medium-integrity":
             medium = True; i += 1; continue
+        if a == "--project" and i + 1 < len(argv):
+            project = Path(argv[i + 1]).resolve(); i += 2; continue
         passthrough.append(a); i += 1
 
     godot = find_godot()
@@ -242,7 +247,7 @@ def main(argv: list[str]) -> int:
         return 125
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     log_path = LOG_DIR / f"{log_name or time.strftime('%Y%m%d-%H%M%S')}.log"
-    cmd = [str(godot), "--path", str(PROJECT)] + passthrough
+    cmd = [str(godot), "--path", str(project)] + passthrough
     env = dict(os.environ)
     env.update(env_overrides)
     print(f"[godot.py] {' '.join(cmd)}" + (f"  (env {env_overrides})" if env_overrides else ""), flush=True)
@@ -267,7 +272,7 @@ def main(argv: list[str]) -> int:
         else:
             timed_out_event = threading.Event()
             with open(log_path, "w", encoding="utf-8", errors="replace") as log:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=str(PROJECT), env=env,
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=str(project), env=env,
                                         text=True, encoding="utf-8", errors="replace")
                 done = threading.Event()
 
