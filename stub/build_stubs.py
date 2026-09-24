@@ -1,11 +1,10 @@
 #!/usr/bin/env python
-"""Cross-compile the no-op GDExtension stub for the non-Windows-x64 platforms with `zig cc`.
+"""EXPERIMENTAL, NOT SHIPPED: cross-compile the no-op GDExtension stub with `zig cc`.
 
-The real library is Windows-x64 only; these tiny stubs let a game that ships this addon export to
-the other desktop platforms without the "No GDExtension library found" error, and register the
-"LatencyUpscaling" singleton reporting that the platform is not supported (see the .c file).
+The stub is kept for a later release (see stub/README.md for why it is not shipped yet). It is
+built into build/stubs/, never into the addon, and the .gdextension does not reference it.
 
-    python stub/build_stubs.py            # build every target into the addon's bin/
+    python stub/build_stubs.py            # build every target into build/stubs/
     python stub/build_stubs.py --check     # only report which targets would build
 
 Requires zig (https://ziglang.org). Set ZIG or put zig.exe on PATH; E:\\zig\\zig.exe is tried too.
@@ -24,9 +23,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "stub" / "latency_upscaling_stub.c"
 INCLUDE = ROOT / "thirdparty" / "godot-cpp" / "gen" / "include"
-BIN = ROOT / "addons" / "latency_upscaling" / "bin"
+OUT = ROOT / "build" / "stubs"  # never the addon's bin/: the stubs are not shipped
 
-# (feature-tag key in the .gdextension, zig target triple, output filename)
+# (feature tag it would use in a .gdextension, zig target triple, output filename)
 TARGETS = [
     ("linux.x86_64", "x86_64-linux-gnu", "godot_latency_upscaling.linux.x86_64.so"),
     ("linux.arm64", "aarch64-linux-gnu", "godot_latency_upscaling.linux.arm64.so"),
@@ -62,15 +61,15 @@ def main(argv: list[str]) -> int:
     print(f"zig: {zig}")
     if "--check" in argv:
         for key, triple, name in TARGETS:
-            print(f"  would build {key:<15} {triple:<22} -> bin/{name}")
+            print(f"  would build {key:<15} {triple:<22} -> build/stubs/{name}")
         return 0
-    BIN.mkdir(parents=True, exist_ok=True)
+    OUT.mkdir(parents=True, exist_ok=True)
     failed = 0
     for key, triple, name in TARGETS:
-        out = BIN / name
+        out = OUT / name
         ok, msg = compile_target(zig, triple, out)
         size = out.stat().st_size if out.exists() else 0
-        print(f"{'OK  ' if ok else 'FAIL'} {key:<15} {triple:<22} -> bin/{name} ({size} bytes)")
+        print(f"{'OK  ' if ok else 'FAIL'} {key:<15} {triple:<22} -> build/stubs/{name} ({size} bytes)")
         if not ok:
             print("   " + msg.replace("\n", "\n   "))
             failed += 1

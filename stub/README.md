@@ -1,53 +1,50 @@
-# Cross-platform no-op stub
+# Cross-platform no-op stub — EXPERIMENTAL, NOT SHIPPED
 
-The full library (`godot_latency_upscaling.windows.*.x86_64.dll`) is **Windows x86_64 only** — it
-works by patching Godot's Vulkan loader on Windows, which has no equivalent on the other platforms.
+This directory holds a tiny raw-C GDExtension (`latency_upscaling_stub.c`) meant, in a later
+release, to give the addon a library on the platforms the hook does not support (Linux, macOS,
+Windows arm64). **It is not part of this release:** the `.gdextension` does not reference it,
+`tools/package.py` does not ship it, and `build_stubs.py` builds into `build/stubs/`, never into the
+addon. For this release, non-Windows exports exclude the addon instead (README, "Platforms").
 
-Without a library entry for a platform, Godot prints **"No GDExtension library found"** when a game
-that ships this addon is exported to it. To avoid that, `latency_upscaling_stub.c` is a tiny library
-built for the other desktop platforms. It uses only the GDExtension C ABI (no godot-cpp, no libc), so
-one source file compiles for every target. It registers the same `LatencyUpscaling` singleton, whose
-methods report that the platform is not supported:
+## Why it is not shipped yet
+
+Found in review; all must be fixed before it ships:
+
+- **No ptrcall paths.** Every method registers `ptrcall_func = NULL`. A dynamic call
+  (`Engine.get_singleton("LatencyUpscaling").get_status()`) works, but a statically typed call
+  goes through ptrcall and **crashes (signal 11)**.
+- **No properties or constants.** The real class has `reflex_mode`, `reflex_fps_limit`,
+  `overlay_visible` and `REFLEX_MODE_*`; the stub has none, so code written for the real API
+  (`LatencyUpscaling.reflex_mode = 1`) fails to parse against it. It must expose the full API.
+- **macOS binaries are unverified.** `zig cc` produced dylibs with a minimum OS of 13 and a local
+  `install_name`; neither was checked against Godot's macOS export or a real Mac.
+- **Nothing is verified on a real OS.** The only runtime check (`test_stub.py`) loads a
+  Windows-x64 build of the same source into Godot on Windows. The GDExtension C ABI is the same on
+  every OS, which makes that check meaningful for the logic, but not for loading, linking or
+  signing on Linux and macOS.
+
+Already fixed: the stub no longer leaks (every temporary String/StringName/Dictionary/Variant is
+destroyed; the singleton object and the class are released at SCENE deinit). `test_stub.py` runs
+Godot with `--verbose` and fails on any "Leaked instance" or "Orphan StringName" report.
+
+## What it does
+
+Registers the `LatencyUpscaling` singleton (a class extending `Object`) with:
 
 | method | returns |
 |---|---|
-| `is_reflex_supported()` | `false` |
-| `is_reflex_active()` | `false` |
+| `is_reflex_supported()`, `is_reflex_active()` | `false` |
 | `get_reflex_status()` | `"not supported on this platform"` |
 | `get_version()` | the version string |
 | `get_status()` | `{ "platform_supported": false, "reason": "not supported on this platform" }` |
 
-A game can therefore query the singleton the same way on every platform and degrade gracefully.
-
-## Building
+## Building and checking
 
 ```
-python stub/build_stubs.py     # into addons/latency_upscaling/bin/
+python stub/build_stubs.py     # linux x86_64/arm64, macos x86_64/arm64, windows arm64 -> build/stubs/
+python stub/test_stub.py       # Windows-x64 build of the same source, swapped in for the debug DLL
 ```
 
-Requires [zig](https://ziglang.org) (set `ZIG`, put `zig.exe` on `PATH`, or `E:\zig\zig.exe`). zig
-ships the cross sysroots — including macOS — so all targets build from Windows with no other SDK.
-`tools/package.py` runs this automatically. The built stubs, like the DLLs, are git-ignored build
-artifacts bundled into the release zip.
-
-## Platforms covered
-
-| feature tag | triple | output |
-|---|---|---|
-| `linux.x86_64` | `x86_64-linux-gnu` | `.so` |
-| `linux.arm64` | `aarch64-linux-gnu` | `.so` |
-| `macos.x86_64` | `x86_64-macos` | `.dylib` |
-| `macos.arm64` | `aarch64-macos` | `.dylib` |
-| `windows.arm64` | `aarch64-windows-gnu` | `.dll` |
-
-## Verification
-
-`stub/test_stub.py` builds the stub as a **Windows x86_64** DLL, swaps it in for the real debug DLL,
-and runs a headless Godot probe asserting the singleton reports "not supported". The GDExtension C
-ABI is identical across operating systems and the stub makes no OS calls, so this Windows-x64 run
-validates the exact same source that the Linux/macOS/Windows-arm64 stubs are built from. Those
-targets are **not run on hardware here**; only Windows x86_64 is runtime-verified.
-
-macOS entries are per-architecture. A **universal** macOS export (both architectures in one binary)
-needs a universal stub — build the two `.dylib`s and combine them with `lipo` on a Mac — or export
-for a single architecture.
+Requires [zig](https://ziglang.org) (`ZIG`, `PATH`, or `E:\zig\zig.exe`); zig ships the cross
+sysroots, including macOS, so every target builds from Windows. Neither script is part of
+`tests/run_all.py`, because nothing here ships.

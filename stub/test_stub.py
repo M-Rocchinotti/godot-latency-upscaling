@@ -12,6 +12,7 @@ Ends "stub test: <n> passed, <n> failed"; exit code is the number of failures.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -42,14 +43,17 @@ def build_windows_stub() -> bool:
     return p.returncode == 0
 
 
-def run_probe() -> dict:
+def run_probe() -> tuple[dict, list[str]]:
+    # --verbose: Godot only reports orphaned StringNames in verbose mode.
     p = subprocess.run([sys.executable, str(RUNNER), "--timeout", "120", "--log", "stub_probe",
-                        "--headless", "--script", "res://tests/stub_probe.gd"],
+                        "--headless", "--verbose", "--script", "res://tests/stub_probe.gd"],
                        cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    for line in (p.stdout + p.stderr).splitlines():
+    out = p.stdout + p.stderr
+    leaks = [l.strip() for l in out.splitlines() if re.search(r"leaked|orphan", l, re.IGNORECASE)]
+    for line in out.splitlines():
         if line.startswith("STUB_PROBE "):
-            return json.loads(line[len("STUB_PROBE "):])
-    return {"error": "no probe line", "out": (p.stdout + p.stderr)[-1200:]}
+            return json.loads(line[len("STUB_PROBE "):]), leaks
+    return {"error": "no probe line", "out": out[-1200:]}, leaks
 
 
 def main() -> int:
@@ -71,7 +75,7 @@ def main() -> int:
 
     try:
         shutil.copy2(STUB_DLL, DEBUG_DLL)
-        r = run_probe()
+        r, leaks = run_probe()
         check("singleton registered by the stub", r.get("has_singleton") is True,
               f"probe={r}" if "error" in r else "has_singleton=True")
         check("is_reflex_supported() is false", r.get("is_reflex_supported") is False, str(r.get("is_reflex_supported")))
@@ -84,6 +88,7 @@ def main() -> int:
         check("get_status() reports not supported",
               isinstance(status, dict) and status.get("platform_supported") is False
               and status.get("reason") == "not supported on this platform", str(status))
+        check("no leaked objects or orphaned StringNames at exit", not leaks, "; ".join(leaks[:3]) or "none")
     finally:
         shutil.copy2(backup, DEBUG_DLL)
         backup.unlink(missing_ok=True)

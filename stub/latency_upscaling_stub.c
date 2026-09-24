@@ -1,16 +1,17 @@
-// Raw-C GDExtension no-op stub for platforms where the Reflex / DLSS hook is not implemented.
+// EXPERIMENTAL, NOT SHIPPED. Raw-C GDExtension no-op stub for platforms without the hook.
 //
-// The real GDExtension is Windows-x64 only (it patches Godot's Vulkan loader on Windows). Without
-// a library for the other platforms Godot prints "No GDExtension library found" when a game that
-// ships this addon is exported to them. This stub is a tiny library, built for each of those
-// platforms with `zig cc`, that loads cleanly and registers the same "LatencyUpscaling" singleton
-// so a game can query it uniformly; every method reports that the platform is not supported.
+// Kept for a later release; see stub/README.md for why it is not shipped yet (no ptrcall paths, no
+// properties, macOS binaries not verified). The shipped addon has no library for non-Windows-x64
+// platforms and documents excluding it from those exports instead.
 //
-// It uses only the GDExtension C ABI (no godot-cpp, no libc beyond memcpy), so the identical logic
-// runs on every 64-bit target. Only 64-bit platforms are built, so the opaque built-in handles
-// (String, StringName, Dictionary) are one pointer (8 bytes) each.
+// What it does: registers the same "LatencyUpscaling" singleton with a few methods that report the
+// platform is not supported. It uses only the GDExtension C ABI (no godot-cpp, no libc), so one
+// source compiles for every target; only 64-bit targets are built, so the opaque built-in handles
+// (String, StringName, Dictionary) are one pointer (8 bytes) each and a Variant is 24 bytes.
+// Every temporary String/StringName/Dictionary/Variant it creates is destroyed again, and the
+// singleton object and the class are released at SCENE deinitialisation.
 //
-// Build: python stub/build_stubs.py   (see that script for the toolchain and targets)
+// Build: python stub/build_stubs.py (into build/stubs/)   Check: python stub/test_stub.py
 
 #include <gdextension_interface.h>
 
@@ -20,7 +21,6 @@
 #define LU_STUB_VERSION "0.1.0"
 #define LU_NOT_SUPPORTED "not supported on this platform"
 
-// Opaque 64-bit built-in handles.
 typedef struct {
 	uint8_t data[8];
 } OpaqueString;
@@ -30,133 +30,119 @@ typedef struct {
 typedef struct {
 	uint8_t data[8];
 } OpaqueDictionary;
+typedef struct {
+	uint8_t data[24];
+} OpaqueVariant;
 
 // --- resolved interface functions -----------------------------------------------------------
 static GDExtensionClassLibraryPtr g_library;
 static GDExtensionInterfaceStringNameNewWithUtf8Chars fn_sn_new;
 static GDExtensionInterfaceStringNewWithUtf8Chars fn_string_new;
 static GDExtensionInterfaceClassdbRegisterExtensionClass4 fn_register_class;
+static GDExtensionInterfaceClassdbUnregisterExtensionClass fn_unregister_class;
 static GDExtensionInterfaceClassdbRegisterExtensionClassMethod fn_register_method;
 static GDExtensionInterfaceClassdbConstructObject2 fn_construct_object;
 static GDExtensionInterfaceObjectSetInstance fn_object_set_instance;
+static GDExtensionInterfaceObjectDestroy fn_object_destroy;
 static GDExtensionInterfaceGlobalGetSingleton fn_global_get_singleton;
 static GDExtensionInterfaceClassdbGetMethodBind fn_get_method_bind;
 static GDExtensionInterfaceObjectMethodBindPtrcall fn_method_bind_ptrcall;
 static GDExtensionInterfaceGetVariantFromTypeConstructor fn_variant_from_type;
 static GDExtensionInterfaceVariantGetPtrConstructor fn_get_ptr_constructor;
+static GDExtensionInterfaceVariantGetPtrDestructor fn_get_ptr_destructor;
 static GDExtensionInterfaceVariantGetPtrKeyedSetter fn_get_keyed_setter;
+static GDExtensionInterfaceVariantDestroy fn_variant_destroy;
 
-// Cached names and the constructed singleton.
+// Names that must stay valid while the class is registered.
 static OpaqueStringName g_class_name; // "LatencyUpscaling"
 static OpaqueStringName g_object_name; // "Object"
-static OpaqueStringName g_empty_sn; // reused for PropertyInfo name/class_name
-static OpaqueString g_empty_str; // reused for PropertyInfo hint_string
+static int g_class_registered;
 static GDExtensionObjectPtr g_singleton;
 
-// Method-name storage must outlive registration.
-static OpaqueStringName g_name_is_supported;
-static OpaqueStringName g_name_is_active;
-static OpaqueStringName g_name_reflex_status;
-static OpaqueStringName g_name_get_version;
-static OpaqueStringName g_name_get_status;
+static void destroy_string(OpaqueString *s) {
+	fn_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING)(s);
+}
 
-static void make_sn(OpaqueStringName *dst, const char *text) {
-	fn_sn_new(dst, text);
+static void destroy_string_name(OpaqueStringName *s) {
+	fn_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_STRING_NAME)(s);
 }
 
 // --- return-value helpers (write a Variant into r_return) -----------------------------------
 static void return_bool(GDExtensionVariantPtr r_return, int value) {
-	GDExtensionVariantFromTypeConstructorFunc ctor = fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_BOOL);
 	GDExtensionBool v = value ? 1 : 0;
-	ctor(r_return, &v);
+	fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_BOOL)(r_return, &v);
 }
 
 static void return_string(GDExtensionVariantPtr r_return, const char *text) {
 	OpaqueString str;
 	fn_string_new(&str, text);
-	GDExtensionVariantFromTypeConstructorFunc ctor = fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_STRING);
-	ctor(r_return, &str);
+	fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_STRING)(r_return, &str); // copies
+	destroy_string(&str);
 }
 
-// Builds {"platform_supported": false, "reason": "not supported on this platform"} and writes it
-// into r_return as a Variant.
+static void set_string_key(OpaqueDictionary *dict, const char *key, OpaqueVariant *value) {
+	OpaqueString key_str;
+	OpaqueVariant key_var;
+	fn_string_new(&key_str, key);
+	fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_STRING)(&key_var, &key_str);
+	fn_get_keyed_setter(GDEXTENSION_VARIANT_TYPE_DICTIONARY)(dict, &key_var, value); // copies both
+	fn_variant_destroy(&key_var);
+	destroy_string(&key_str);
+}
+
+// {"platform_supported": false, "reason": "not supported on this platform"}
 static void return_status_dictionary(GDExtensionVariantPtr r_return) {
 	OpaqueDictionary dict;
-	GDExtensionPtrConstructor dict_ctor = fn_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_DICTIONARY, 0);
-	dict_ctor(&dict, NULL); // default (empty) Dictionary
-	GDExtensionPtrKeyedSetter set = fn_get_keyed_setter(GDEXTENSION_VARIANT_TYPE_DICTIONARY);
+	fn_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_DICTIONARY, 0)(&dict, NULL);
 
-	// Dictionary keys and values are Variants. Build them from native Strings/bool.
-	GDExtensionVariantFromTypeConstructorFunc str_to_var = fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_STRING);
-	GDExtensionVariantFromTypeConstructorFunc bool_to_var = fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_BOOL);
-
-	OpaqueString key_str;
-	uint8_t key_var[24]; // a Variant is 24 bytes on 64-bit
-	uint8_t val_var[24];
-
-	fn_string_new(&key_str, "platform_supported");
-	str_to_var(key_var, &key_str);
+	OpaqueVariant value;
 	GDExtensionBool supported = 0;
-	bool_to_var(val_var, &supported);
-	set(&dict, key_var, val_var);
+	fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_BOOL)(&value, &supported);
+	set_string_key(&dict, "platform_supported", &value);
+	fn_variant_destroy(&value);
 
-	fn_string_new(&key_str, "reason");
-	str_to_var(key_var, &key_str);
-	OpaqueString reason_str;
-	fn_string_new(&reason_str, LU_NOT_SUPPORTED);
-	str_to_var(val_var, &reason_str);
-	set(&dict, key_var, val_var);
+	OpaqueString reason;
+	fn_string_new(&reason, LU_NOT_SUPPORTED);
+	fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_STRING)(&value, &reason);
+	set_string_key(&dict, "reason", &value);
+	fn_variant_destroy(&value);
+	destroy_string(&reason);
 
-	GDExtensionVariantFromTypeConstructorFunc dict_to_var = fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_DICTIONARY);
-	dict_to_var(r_return, &dict);
+	fn_variant_from_type(GDEXTENSION_VARIANT_TYPE_DICTIONARY)(r_return, &dict); // copies
+	fn_get_ptr_destructor(GDEXTENSION_VARIANT_TYPE_DICTIONARY)(&dict);
 }
 
-// --- method call callbacks (variant path, used by dynamic GDScript calls) --------------------
-static void call_is_supported(void *ud, GDExtensionClassInstancePtr inst, const GDExtensionConstVariantPtr *args,
-		GDExtensionInt argc, GDExtensionVariantPtr r_return, GDExtensionCallError *err) {
-	(void)ud;
-	(void)inst;
-	(void)args;
-	(void)argc;
-	if (err) {
-		err->error = GDEXTENSION_CALL_OK;
+// --- method call callbacks (variant path, used by dynamic calls) -----------------------------
+#define LU_CALL_PREAMBLE \
+	(void)ud;            \
+	(void)inst;          \
+	(void)args;          \
+	(void)argc;          \
+	if (err) {           \
+		err->error = GDEXTENSION_CALL_OK; \
 	}
+
+static void call_false(void *ud, GDExtensionClassInstancePtr inst, const GDExtensionConstVariantPtr *args,
+		GDExtensionInt argc, GDExtensionVariantPtr r_return, GDExtensionCallError *err) {
+	LU_CALL_PREAMBLE
 	return_bool(r_return, 0);
 }
 
 static void call_get_reflex_status(void *ud, GDExtensionClassInstancePtr inst, const GDExtensionConstVariantPtr *args,
 		GDExtensionInt argc, GDExtensionVariantPtr r_return, GDExtensionCallError *err) {
-	(void)ud;
-	(void)inst;
-	(void)args;
-	(void)argc;
-	if (err) {
-		err->error = GDEXTENSION_CALL_OK;
-	}
+	LU_CALL_PREAMBLE
 	return_string(r_return, LU_NOT_SUPPORTED);
 }
 
 static void call_get_version(void *ud, GDExtensionClassInstancePtr inst, const GDExtensionConstVariantPtr *args,
 		GDExtensionInt argc, GDExtensionVariantPtr r_return, GDExtensionCallError *err) {
-	(void)ud;
-	(void)inst;
-	(void)args;
-	(void)argc;
-	if (err) {
-		err->error = GDEXTENSION_CALL_OK;
-	}
+	LU_CALL_PREAMBLE
 	return_string(r_return, LU_STUB_VERSION);
 }
 
 static void call_get_status(void *ud, GDExtensionClassInstancePtr inst, const GDExtensionConstVariantPtr *args,
 		GDExtensionInt argc, GDExtensionVariantPtr r_return, GDExtensionCallError *err) {
-	(void)ud;
-	(void)inst;
-	(void)args;
-	(void)argc;
-	if (err) {
-		err->error = GDEXTENSION_CALL_OK;
-	}
+	LU_CALL_PREAMBLE
 	return_status_dictionary(r_return);
 }
 
@@ -181,24 +167,29 @@ static GDExtensionClassCallVirtual get_virtual(void *class_userdata, GDExtension
 	return NULL; // no virtual methods are overridden
 }
 
-static void register_method(OpaqueStringName *name_storage, const char *name, GDExtensionClassMethodCall call,
-		GDExtensionVariantType return_type) {
-	make_sn(name_storage, name);
+static void register_method(const char *name, GDExtensionClassMethodCall call, GDExtensionVariantType return_type) {
+	OpaqueStringName method_name;
+	OpaqueStringName empty_name;
+	OpaqueString empty_string;
+	fn_sn_new(&method_name, name);
+	fn_sn_new(&empty_name, "");
+	fn_string_new(&empty_string, "");
+
 	GDExtensionPropertyInfo return_info;
 	return_info.type = return_type;
-	return_info.name = &g_empty_sn; // Godot copies these; NULL crashes it
-	return_info.class_name = &g_empty_sn;
+	return_info.name = &empty_name; // Godot copies these during registration; NULL crashes it
+	return_info.class_name = &empty_name;
 	return_info.hint = 0;
-	return_info.hint_string = &g_empty_str;
+	return_info.hint_string = &empty_string;
 	return_info.usage = 6; // PROPERTY_USAGE_DEFAULT
 
 	GDExtensionClassMethodInfo info;
-	info.name = name_storage;
+	info.name = &method_name;
 	info.method_userdata = NULL;
 	info.call_func = call;
-	info.ptrcall_func = NULL; // dynamic GDScript calls use call_func; typed ptrcalls are not offered
+	info.ptrcall_func = NULL; // KNOWN GAP (why this is not shipped): a typed ptrcall crashes
 	info.method_flags = GDEXTENSION_METHOD_FLAG_NORMAL | GDEXTENSION_METHOD_FLAG_CONST;
-	info.has_return_value = (return_type == GDEXTENSION_VARIANT_TYPE_NIL) ? 0 : 1;
+	info.has_return_value = 1;
 	info.return_value_info = &return_info;
 	info.return_value_metadata = GDEXTENSION_METHOD_ARGUMENT_METADATA_NONE;
 	info.argument_count = 0;
@@ -207,16 +198,32 @@ static void register_method(OpaqueStringName *name_storage, const char *name, GD
 	info.default_argument_count = 0;
 	info.default_arguments = NULL;
 	fn_register_method(g_library, &g_class_name, &info);
+
+	destroy_string(&empty_string);
+	destroy_string_name(&empty_name);
+	destroy_string_name(&method_name);
+}
+
+// Calls Engine.register_singleton / unregister_singleton through their method binds.
+static void engine_call(const char *method, int64_t hash, const GDExtensionConstTypePtr *call_args) {
+	OpaqueStringName engine_name;
+	OpaqueStringName method_name;
+	fn_sn_new(&engine_name, "Engine");
+	fn_sn_new(&method_name, method);
+	GDExtensionObjectPtr engine = fn_global_get_singleton(&engine_name);
+	GDExtensionMethodBindPtr bind = fn_get_method_bind(&engine_name, &method_name, hash);
+	if (engine && bind) {
+		fn_method_bind_ptrcall(bind, engine, call_args, NULL);
+	}
+	destroy_string_name(&method_name);
+	destroy_string_name(&engine_name);
 }
 
 static void register_class_and_singleton(void) {
-	make_sn(&g_class_name, "LatencyUpscaling");
-	make_sn(&g_object_name, "Object");
-	make_sn(&g_empty_sn, "");
-	fn_string_new(&g_empty_str, "");
+	fn_sn_new(&g_class_name, "LatencyUpscaling");
+	fn_sn_new(&g_object_name, "Object");
 
 	GDExtensionClassCreationInfo4 ci;
-	// Zero every field, then set the ones a minimal class needs.
 	uint8_t *raw = (uint8_t *)&ci;
 	for (size_t i = 0; i < sizeof(ci); ++i) {
 		raw[i] = 0;
@@ -226,42 +233,32 @@ static void register_class_and_singleton(void) {
 	ci.free_instance_func = free_instance;
 	ci.get_virtual_func = get_virtual;
 	fn_register_class(g_library, &g_class_name, &g_object_name, &ci);
+	g_class_registered = 1;
 
-	register_method(&g_name_is_supported, "is_reflex_supported", call_is_supported, GDEXTENSION_VARIANT_TYPE_BOOL);
-	register_method(&g_name_is_active, "is_reflex_active", call_is_supported, GDEXTENSION_VARIANT_TYPE_BOOL);
-	register_method(&g_name_reflex_status, "get_reflex_status", call_get_reflex_status, GDEXTENSION_VARIANT_TYPE_STRING);
-	register_method(&g_name_get_version, "get_version", call_get_version, GDEXTENSION_VARIANT_TYPE_STRING);
-	register_method(&g_name_get_status, "get_status", call_get_status, GDEXTENSION_VARIANT_TYPE_DICTIONARY);
+	register_method("is_reflex_supported", call_false, GDEXTENSION_VARIANT_TYPE_BOOL);
+	register_method("is_reflex_active", call_false, GDEXTENSION_VARIANT_TYPE_BOOL);
+	register_method("get_reflex_status", call_get_reflex_status, GDEXTENSION_VARIANT_TYPE_STRING);
+	register_method("get_version", call_get_version, GDEXTENSION_VARIANT_TYPE_STRING);
+	register_method("get_status", call_get_status, GDEXTENSION_VARIANT_TYPE_DICTIONARY);
 
-	// Construct one instance and register it as the engine singleton.
 	g_singleton = fn_construct_object(&g_class_name);
-	OpaqueStringName engine_name;
-	make_sn(&engine_name, "Engine");
-	GDExtensionObjectPtr engine = fn_global_get_singleton(&engine_name);
-	OpaqueStringName method_name;
-	make_sn(&method_name, "register_singleton");
-	GDExtensionMethodBindPtr bind = fn_get_method_bind(&engine_name, &method_name, 965313290);
-	if (engine && bind) {
-		const GDExtensionConstTypePtr call_args[2] = { &g_class_name, &g_singleton };
-		fn_method_bind_ptrcall(bind, engine, call_args, NULL);
-	}
+	const GDExtensionConstTypePtr call_args[2] = { &g_class_name, &g_singleton };
+	engine_call("register_singleton", 965313290, call_args);
 }
 
-static void unregister_singleton(void) {
-	if (!g_singleton) {
-		return;
-	}
-	OpaqueStringName engine_name;
-	make_sn(&engine_name, "Engine");
-	GDExtensionObjectPtr engine = fn_global_get_singleton(&engine_name);
-	OpaqueStringName method_name;
-	make_sn(&method_name, "unregister_singleton");
-	GDExtensionMethodBindPtr bind = fn_get_method_bind(&engine_name, &method_name, 3304788590u);
-	if (engine && bind) {
+static void release_class_and_singleton(void) {
+	if (g_singleton) {
 		const GDExtensionConstTypePtr call_args[1] = { &g_class_name };
-		fn_method_bind_ptrcall(bind, engine, call_args, NULL);
+		engine_call("unregister_singleton", 3304788590u, call_args);
+		fn_object_destroy(g_singleton);
+		g_singleton = NULL;
 	}
-	g_singleton = NULL;
+	if (g_class_registered) {
+		fn_unregister_class(g_library, &g_class_name);
+		g_class_registered = 0;
+		destroy_string_name(&g_object_name);
+		destroy_string_name(&g_class_name);
+	}
 }
 
 // --- initialization --------------------------------------------------------------------------
@@ -275,7 +272,7 @@ static void initialize(void *userdata, GDExtensionInitializationLevel level) {
 static void deinitialize(void *userdata, GDExtensionInitializationLevel level) {
 	(void)userdata;
 	if (level == GDEXTENSION_INITIALIZATION_SCENE) {
-		unregister_singleton();
+		release_class_and_singleton();
 	}
 }
 
@@ -285,25 +282,32 @@ static void deinitialize(void *userdata, GDExtensionInitializationLevel level) {
 #define LU_EXPORT __attribute__((visibility("default")))
 #endif
 
+#define LU_RESOLVE(var, type, name) var = (type)get_proc_address(name)
+
 LU_EXPORT GDExtensionBool godot_latency_upscaling_init(GDExtensionInterfaceGetProcAddress get_proc_address,
 		GDExtensionClassLibraryPtr library, GDExtensionInitialization *initialization) {
 	g_library = library;
-	fn_sn_new = (GDExtensionInterfaceStringNameNewWithUtf8Chars)get_proc_address("string_name_new_with_utf8_chars");
-	fn_string_new = (GDExtensionInterfaceStringNewWithUtf8Chars)get_proc_address("string_new_with_utf8_chars");
-	fn_register_class = (GDExtensionInterfaceClassdbRegisterExtensionClass4)get_proc_address("classdb_register_extension_class4");
-	fn_register_method = (GDExtensionInterfaceClassdbRegisterExtensionClassMethod)get_proc_address("classdb_register_extension_class_method");
-	fn_construct_object = (GDExtensionInterfaceClassdbConstructObject2)get_proc_address("classdb_construct_object2");
-	fn_object_set_instance = (GDExtensionInterfaceObjectSetInstance)get_proc_address("object_set_instance");
-	fn_global_get_singleton = (GDExtensionInterfaceGlobalGetSingleton)get_proc_address("global_get_singleton");
-	fn_get_method_bind = (GDExtensionInterfaceClassdbGetMethodBind)get_proc_address("classdb_get_method_bind");
-	fn_method_bind_ptrcall = (GDExtensionInterfaceObjectMethodBindPtrcall)get_proc_address("object_method_bind_ptrcall");
-	fn_variant_from_type = (GDExtensionInterfaceGetVariantFromTypeConstructor)get_proc_address("get_variant_from_type_constructor");
-	fn_get_ptr_constructor = (GDExtensionInterfaceVariantGetPtrConstructor)get_proc_address("variant_get_ptr_constructor");
-	fn_get_keyed_setter = (GDExtensionInterfaceVariantGetPtrKeyedSetter)get_proc_address("variant_get_ptr_keyed_setter");
+	LU_RESOLVE(fn_sn_new, GDExtensionInterfaceStringNameNewWithUtf8Chars, "string_name_new_with_utf8_chars");
+	LU_RESOLVE(fn_string_new, GDExtensionInterfaceStringNewWithUtf8Chars, "string_new_with_utf8_chars");
+	LU_RESOLVE(fn_register_class, GDExtensionInterfaceClassdbRegisterExtensionClass4, "classdb_register_extension_class4");
+	LU_RESOLVE(fn_unregister_class, GDExtensionInterfaceClassdbUnregisterExtensionClass, "classdb_unregister_extension_class");
+	LU_RESOLVE(fn_register_method, GDExtensionInterfaceClassdbRegisterExtensionClassMethod, "classdb_register_extension_class_method");
+	LU_RESOLVE(fn_construct_object, GDExtensionInterfaceClassdbConstructObject2, "classdb_construct_object2");
+	LU_RESOLVE(fn_object_set_instance, GDExtensionInterfaceObjectSetInstance, "object_set_instance");
+	LU_RESOLVE(fn_object_destroy, GDExtensionInterfaceObjectDestroy, "object_destroy");
+	LU_RESOLVE(fn_global_get_singleton, GDExtensionInterfaceGlobalGetSingleton, "global_get_singleton");
+	LU_RESOLVE(fn_get_method_bind, GDExtensionInterfaceClassdbGetMethodBind, "classdb_get_method_bind");
+	LU_RESOLVE(fn_method_bind_ptrcall, GDExtensionInterfaceObjectMethodBindPtrcall, "object_method_bind_ptrcall");
+	LU_RESOLVE(fn_variant_from_type, GDExtensionInterfaceGetVariantFromTypeConstructor, "get_variant_from_type_constructor");
+	LU_RESOLVE(fn_get_ptr_constructor, GDExtensionInterfaceVariantGetPtrConstructor, "variant_get_ptr_constructor");
+	LU_RESOLVE(fn_get_ptr_destructor, GDExtensionInterfaceVariantGetPtrDestructor, "variant_get_ptr_destructor");
+	LU_RESOLVE(fn_get_keyed_setter, GDExtensionInterfaceVariantGetPtrKeyedSetter, "variant_get_ptr_keyed_setter");
+	LU_RESOLVE(fn_variant_destroy, GDExtensionInterfaceVariantDestroy, "variant_destroy");
 
-	if (!fn_sn_new || !fn_string_new || !fn_register_class || !fn_register_method || !fn_construct_object ||
-			!fn_object_set_instance || !fn_global_get_singleton || !fn_get_method_bind || !fn_method_bind_ptrcall ||
-			!fn_variant_from_type || !fn_get_ptr_constructor || !fn_get_keyed_setter) {
+	if (!fn_sn_new || !fn_string_new || !fn_register_class || !fn_unregister_class || !fn_register_method ||
+			!fn_construct_object || !fn_object_set_instance || !fn_object_destroy || !fn_global_get_singleton ||
+			!fn_get_method_bind || !fn_method_bind_ptrcall || !fn_variant_from_type || !fn_get_ptr_constructor ||
+			!fn_get_ptr_destructor || !fn_get_keyed_setter || !fn_variant_destroy) {
 		return 0; // an entry point is missing: fail cleanly rather than crash
 	}
 
