@@ -1,12 +1,12 @@
 // Addon settings and how they are resolved from several layers.
 //
 // Precedence, lowest first:
-//   1. built-in defaults (identical to the shipped addons/latency_upscaling/latency_upscaling.cfg),
-//   2. addons/latency_upscaling/latency_upscaling.cfg,
-//   3. project settings "latency_upscaling/<key>" (only present when a developer changed them),
-//   4. the environment: GODOT_LATENCY_UPSCALING_SETTINGS="key=value;..." (e.g. for CI or a quick
+//   1. built-in defaults (compiled in),
+//   2. project settings "latency_upscaling/<key>" (only present when a developer changed them; always
+//      exported with the project and read at CORE initialisation),
+//   3. the environment: GODOT_LATENCY_UPSCALING_SETTINGS="key=value;..." (e.g. for CI or a quick
 //      test of the editor), then GODOT_LATENCY_UPSCALING_DISABLE=1, which forces enabled = false.
-// Runtime API calls (LatencyUpscaling.reflex_mode = ...) override the result for the session.
+// Runtime API calls (the singleton's reflex_mode etc.) override the result for the session.
 //
 // Pure C++: no Godot types, so the resolution rules are unit-tested.
 #pragma once

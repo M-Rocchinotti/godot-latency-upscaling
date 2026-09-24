@@ -16,7 +16,7 @@ namespace lu {
 struct BootState {
 	bool ran = false;
 	ResolvedSettings resolved;
-	Settings addon_defaults; // built-in defaults + latency_upscaling.cfg, without project settings
+	Settings addon_defaults; // the built-in defaults, without project settings (for the editor UI)
 	bool editor = false;
 	std::string godot_version; // "4.7.2"
 	bool late_load = false; // loaded while a RenderingServer already existed
