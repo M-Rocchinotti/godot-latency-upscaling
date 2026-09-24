@@ -72,14 +72,16 @@ detection. Output: `addons/latency_upscaling/bin/godot_latency_upscaling.windows
 
 Settings are resolved in this order (later wins):
 
-1. built-in defaults, identical to the shipped `addons/latency_upscaling/latency_upscaling.cfg`;
-2. `addons/latency_upscaling/latency_upscaling.cfg` (the addon's own config, edit it to change defaults);
-3. Project Settings `latency_upscaling/...` (shown in the editor, written to `project.godot` only when
-   you change them);
-4. the environment: `GODOT_LATENCY_UPSCALING_SETTINGS="key=value;key=value"` (for example
+1. built-in defaults (compiled in; the table below);
+2. Project Settings `latency_upscaling/...` — the override store. They appear in the editor's
+   Project Settings, are written to `project.godot` (and thus into the exported `project.binary`)
+   only when you change them from the default, and are read at CORE init before the Vulkan device
+   exists, so an exported game honours them **whether or not the editor plugin is enabled** — no
+   separate config file is shipped or needed;
+3. the environment: `GODOT_LATENCY_UPSCALING_SETTINGS="key=value;key=value"` (for example
    `general/enable_in_editor=true;reflex/mode=2`), then `GODOT_LATENCY_UPSCALING_DISABLE=1`, which
    disables the addon completely;
-5. calls to the `LatencyUpscaling` singleton at run time.
+4. calls to the `LatencyUpscaling` singleton at run time.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -174,10 +176,23 @@ interleaved in one process. Latency = simulation start to GPU render end per fra
 | On + Boost | 13.16 / 13.00 / 15.11 | 40.62 / 40.53 / 43.02 | 42.76 / 42.76 / 45.66 | 11.2 |
 
 Reflex On cuts the latency by about 9 ms (18 %, from about 4.0 to 3.2 frames) for about 7 % more
-frame time; Boost is the same within noise on this GPU. The ideal of about one frame is not
-reached on Pascal, and the remainder is not Godot's frame queue (the same run with
-`frame_queue_size = 1` measures the same). NVIDIA's own Streamline 2.14 no longer offers Vulkan
-Reflex before Turing; RTX GPUs are expected to do better but were not available for testing.
+frame time; Boost is the same within noise on this GPU. The ideal of about one frame is not reached
+on Pascal. The per-stage timeline from `vkGetLatencyTimingsNV` (printed by `run_benchmark.py`)
+shows why: with Reflex On the dominant interval is between the present call finishing and the GPU
+starting the next frame — **present_end -> gpu_start, about 28 ms** — which the Reflex sleep does
+not remove.
+
+The cause of this gap is not established. Candidates: the render graph's wait on
+`COLOR_ATTACHMENT_OUTPUT` before each frame's work (`rendering_device_driver_vulkan.cpp:3204`)
+together with windowed (DWM-composited) presentation; and/or Pascal itself. An exclusive-fullscreen
+run is included in the benchmark to test the composition theory. NVIDIA's own Streamline 2.14 no
+longer offers Vulkan Reflex before Turing; RTX GPUs are expected to do better but were not available
+for testing.
+
+> An earlier version of this note blamed Godot's frame queue and cited `frame_queue_size = 1` as
+> evidence. That was wrong: Godot clamps the queue depth to at least two frames (`MAX(2U, ...)` in
+> `rendering_device.cpp`), so setting it to 1 has no effect and the "measures the same" result
+> proves nothing.
 
 **Overhead of the addon** (light scene, about 900 fps), 1500 frames per run, frame interval mean /
 median / p95 in ms, two rounds:
@@ -196,7 +211,7 @@ The layer alone is below the run-to-run noise (about 0.1 ms). The Reflex calls c
 
 | Path | Contents |
 |---|---|
-| `addons/latency_upscaling/` | the addon: `.gdextension`, `bin/` (built DLLs), `latency_upscaling.cfg` (defaults), editor plugin, latency overlay, licences |
+| `addons/latency_upscaling/` | the addon: `.gdextension`, `bin/` (built DLLs and stubs), editor plugin, latency overlay, licences |
 | `src/` | C++ sources: `hook/` (loader hook), `vk/` (dispatch layer), `reflex/`, `godot/` (singleton, bootstrap), `dlss/` (Phase 2 interfaces), `core/` |
 | `demo/` | demo scene (the repository root is the Godot project hosting demo and tests) |
 | `tests/` | GDScript integration tests, Python runners, `unit/` C++ unit tests |

@@ -142,6 +142,17 @@ are unavailable ("created without them"). The host never sees a failure the addo
 "Pass-through" is tested, not assumed: `tests/run_all.py` renders a frame without the addon, with
 the layer in front but nothing added, and with Reflex active, and requires identical pixels.
 
+**Test coverage of the layer.** `dispatch.cpp` and `loader_hook.cpp` sit on the live Vulkan loader
+and the host's import table, which a unit test cannot faithfully mock, so they are covered by the
+Godot suites (`reflex`, `pass-through`, `fallback`, `editor`), by fault-driven fallback cases (a
+debug-only `GODOT_LATENCY_UPSCALING_TEST_FAULT` switch forces the device-extension, swapchain and
+loader-incomplete failure paths) and by mutation checks (`tests/run_mutations.py`) that remove each
+retry, the version check and the window-tracking guard and confirm a suite then fails. The pure
+decisions are unit-tested directly: IAT patching and `select_chain_target` in `test_iat_patch.cpp`.
+One path is defensive only: `ReflexFeature::destroy_surface` clears the tracked surface so a new
+window can be tracked afresh — a single-window Godot game never destroys and recreates its main
+surface mid-session, so it cannot be exercised from a test and is verified by code review.
+
 ## 4. Reflex (Phase 1)
 
 Reflex runs through the Khronos-registered extension `VK_NV_low_latency2` (spec version 2). No
@@ -240,15 +251,27 @@ GTX 1080 (Pascal), driver 582.28, Windows 10 19045, HAGS on. The numbers are in 
   frame-rate limit paces frames (30 fps limit -> 33 ms frames), and frame reports are complete.
 - GPU-bound (about 80 fps, VSync off), Reflex On lowers the simulation-start-to-GPU-end latency
   from about 50 ms to about 41 ms (about 4.0 to 3.2 frames) at about 7 % more frame time; On +
-  Boost is the same within noise. The remaining latency is not Godot's frame queue: the same
-  run with `rendering/rendering_device/vsync/frame_queue_size = 1` measures the same. Whether
-  an RTX GPU reaches the usual one-frame latency is untested (NVIDIA's Streamline 2.14 dropped
-  Vulkan Reflex before Turing, which suggests Pascal is not a target).
+  Boost is the same within noise. The per-stage timeline from `vkGetLatencyTimingsNV` shows the
+  dominant interval is between the present call finishing and the GPU starting the next frame
+  (present_end -> gpu_start, about 28 ms with Reflex On), which the Reflex sleep does not remove.
+  Its cause is not established. Candidates: the render graph waits on `COLOR_ATTACHMENT_OUTPUT`
+  before each frame's work (`rendering_device_driver_vulkan.cpp:3204`) together with windowed
+  (DWM-composited) presentation; and/or Pascal itself. Whether an RTX GPU reaches the usual
+  one-frame latency is untested (NVIDIA's Streamline 2.14 dropped Vulkan Reflex before Turing,
+  which suggests Pascal is not a target). Note: this remainder was previously attributed to
+  Godot's frame queue with `frame_queue_size = 1` as evidence; that was wrong. Godot clamps the
+  queue to at least two frames (`MAX(2U, ...)` in `rendering_device.cpp`), so setting it to 1 has
+  no effect and the "measures the same" result proves nothing.
 - Without the swapchain latency structure or without submission tags, the sleep and the reports
   on this driver behave the same, so those structures are guarded by unit tests
   (`reflex/ll2_patches.cpp`) rather than by run-time checks.
 - A minimised window presents nothing: the addon then skips the sleep (the driver itself did
   not block in that case; one sleep per presented frame follows the guide's "once per frame").
+- The D3D12 / Compatibility refusal (the hook installs but never sees a Vulkan loader request, so
+  it does nothing and the status names the driver) is verified by code review and by the
+  `HIDE`/environment fallback tests that drive the same status path. The end-to-end D3D12 run in
+  `tests/run_all.py` is **skipped** on the reference machine because Godot's own D3D12 driver
+  crashes here even without the addon (exit `0xC0000005`); it is not a regression of this addon.
 - The CPU marker timestamps in the reports come in steps of about 1 ms and neighbouring
   timestamps can be a few microseconds out of order although the markers were sent in order;
   GPU timestamps have microsecond resolution. Durations of short CPU regions (simulation,
@@ -264,7 +287,7 @@ GTX 1080 (Pascal), driver 582.28, Windows 10 19045, HAGS on. The numbers are in 
 | Hook installation, extension injection, Reflex On by default, markers, sleep | Reflex in the editor process: `latency_upscaling/general/enable_in_editor` |
 | `LatencyUpscaling` engine singleton, project settings shown (only saved when changed) | Overlay: `LatencyUpscaling.overlay_visible = true` or `latency_upscaling/overlay/enabled` |
 | Fallback with a clear status on every unsupported configuration | A game's own settings menu should call `LatencyUpscaling.reflex_mode` |
-| `latency_upscaling.cfg` packed into exports when the editor plugin is enabled | Without the plugin, exports use the identical built-in defaults |
+| Overrides via Project Settings (`latency_upscaling/...`) reach exported games, read at CORE init, with or without the editor plugin | Defaults changed only by setting them in the editor's Project Settings (saved to `project.godot`) |
 
 ## 6. Phase 2: DLSS Super Resolution / DLAA (design)
 
