@@ -20,5 +20,6 @@
 /build.cmd export-ignore
 /project.godot export-ignore
 /icon.svg export-ignore
+/icon.svg.import export-ignore
 /README.md export-ignore
 /CHANGELOG.md export-ignore
