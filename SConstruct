@@ -46,6 +46,7 @@ env.Append(LIBS=["kernel32", "advapi32"])
 PURE_SOURCES = [
     "src/core/log.cpp",
     "src/core/settings.cpp",
+    "src/core/testing.cpp",
     "src/dlss/jitter.cpp",
     "src/hook/iat_patch.cpp",
     "src/hook/loader_name.cpp",

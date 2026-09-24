@@ -1,6 +1,7 @@
 #include "godot/bootstrap.h"
 
 #include "core/log.h"
+#include "core/testing.h"
 #include "hook/loader_hook.h"
 #include "reflex/reflex_ll2.h"
 #include "vk/dispatch.h"
@@ -141,6 +142,7 @@ void bootstrap_core() {
 		patch = parts.size() > 2 ? static_cast<int>(parts[2].to_int()) : 0;
 	}
 	g_state.hidden_extensions = split_list(os->get_environment(ENV_TEST_HIDE_EXTENSIONS));
+	testing::set_faults(split_list(os->get_environment(ENV_TEST_FAULT)));
 #endif
 	g_state.godot_version = std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(patch);
 	// A RenderingServer only exists at CORE level when the extension is loaded into a running
