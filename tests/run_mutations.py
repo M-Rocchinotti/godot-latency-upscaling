@@ -92,9 +92,27 @@ MUTATIONS = [
      "\tconst uint64_t frame_id = sequencer.end_simulation();", "\tconst uint64_t frame_id = 0;", "reflex"),
     ("reflex: present ID repeated (validation layer)", LL2,
      "\tids_[index] = present_id;", "\tids_[index] = 1;", "validation"),
-    ("retry: no plain vkCreateDevice retry", DISPATCH,
-     "\t\t\tresult = L.next.CreateDevice(physical_device, info, allocator, device);\n",
-     "\t\t\t(void)info; // retry removed\n", "fallback"),
+    # --- the reviewer's round-1/round-2 mutations, verbatim (dlss_review/r2/extra_mutations.py) ---
+    ("R1 every window's swapchain gets latency mode (fake driver)", REFLEX,
+     "\t\tif (tracked_surface_ != VK_NULL_HANDLE && info->surface != tracked_surface_) {", "\t\tif (false) {", "unit"),
+    ("R1 every window's swapchain gets latency mode (second native window)", REFLEX,
+     "\t\tif (tracked_surface_ != VK_NULL_HANDLE && info->surface != tracked_surface_) {", "\t\tif (false) {", "reflex"),
+    ("R1 proxy returns hooks for names the loader lacks", DISPATCH,
+     "\tif (real == nullptr) {\n\t\treturn nullptr; // keep the loader's \"not available\" answers\n\t}\n", "", "unit"),
+    ("R1 swapchain retry reuses the retired oldSwapchain", REFLEX,
+     "\t\tretry.oldSwapchain = VK_NULL_HANDLE;\n", "", "unit"),
+    ("R1 no unpatched vkCreateDevice retry", DISPATCH,
+     "\t\t\tlog::warning(\"%s\", note.c_str());\n\t\t\tresult = L.next.CreateDevice(physical_device, info, allocator, device);",
+     "\t\t\tlog::warning(\"%s\", note.c_str());", "fallback"),
+    ("R2 sleep takes the swapchain lock exclusive again (fake driver)", REFLEX,
+     "\t\t// has no other writer.\n\t\tstd::shared_lock lock(swapchain_mutex_);",
+     "\t\t// has no other writer.\n\t\tstd::unique_lock lock(swapchain_mutex_);", "unit"),
+    ("R2 local devices patched like the main device", DISPATCH,
+     "\t\tis_main = !L.main_device_created;", "\t\tis_main = true;", "reflex"),
+    # --- own ---
+    ("sleep: reported sleep time excludes vkLatencySleepNV", REFLEX,
+     "	const double slept_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sleep_start).count();",
+     "	const double slept_ms = 0.0;", "unit"),
     ("retry: swapchain not retried without latency mode", REFLEX,
      "\t\tresult = next(device, &retry, allocator, swapchain);\n",
      "\t\t(void)retry; // retry removed\n", "fallback"),
@@ -108,6 +126,14 @@ MUTATIONS = [
      "} else if (major != 4 || minor != 7) {", "} else if (false) {", "fallback"),
     ("safety: late load not dormant", ENTRY,
      "\tif (lu::boot_state().late_load) {", "\tif (false) {", "late load"),
+]
+
+
+# Mutations deliberately not run: no test can observe them; the reason is documented and they are
+# listed so the report stays honest (docs/ARCHITECTURE.md, "Test coverage of the layer").
+REVIEW_ONLY = [
+    ("R1 surface destruction not forwarded", REFLEX, "\t\tdevice->forget_surface(surface);",
+     "a single-window Godot game never destroys and re-creates its main surface mid-session"),
 ]
 
 
@@ -158,6 +184,10 @@ def main(argv: list[str]) -> int:
             print(f"STALE     {name}")
         print(f"{len(selected) - len(stale)}/{len(selected)} mutations apply")
         return 1 if stale else 0
+    for name, rel, old, reason in REVIEW_ONLY:
+        if not words or any(w in name for w in words):
+            present = read(ROOT / rel).count(old) == 1
+            print(f"{'REVIEW' if present else 'STALE':<9} {name}  (not run: {reason})")
     outcomes = []
     try:
         for name, rel, old, new, suite in selected:

@@ -127,7 +127,7 @@ Other environment variables: `GODOT_LATENCY_UPSCALING_VERBOSE=1` prints informat
 enabled by `--verbose`). Debug builds read three test knobs used by the fallback tests:
 `GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS`, `GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION` and
 `GODOT_LATENCY_UPSCALING_TEST_FAULT` (forced failures: `device_extension`, `swapchain_create`,
-`swapchain_recreate`, `loader_incomplete`). Release builds ignore all three.
+`loader_incomplete`). Release builds ignore all three.
 
 ## Usage
 
