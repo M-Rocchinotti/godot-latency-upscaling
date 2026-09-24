@@ -265,6 +265,7 @@ void bootstrap_core() {
 		dlss::DlssFeature::get().configure(backend, no_backend, g_state.hidden_extensions);
 		vk::register_feature(&dlss::DlssFeature::get());
 		if (backend != nullptr) {
+			vk::register_feature(&dlss::StreamlineChainFeature::get());
 			vk::enable_command_interception(); // DLSS evaluates at the upscaler's marker dispatch
 		}
 	}

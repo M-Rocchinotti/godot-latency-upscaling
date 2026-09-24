@@ -19,6 +19,7 @@ void DeviceFeatureRequest::merge(const DeviceFeatureRequest &other) {
 	timeline_semaphore |= other.timeline_semaphore;
 	present_id |= other.present_id;
 	buffer_device_address |= other.buffer_device_address;
+	private_data |= other.private_data;
 }
 
 void DeviceRequest::add_extension(const char *name) {
@@ -57,6 +58,7 @@ DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const D
 	bool prepend_timeline = false;
 	bool prepend_present_id = false;
 	bool prepend_buffer_device_address = false;
+	bool prepend_private_data = false;
 	if (request.features.timeline_semaphore) {
 		// VkPhysicalDeviceVulkan12Features and VkPhysicalDeviceTimelineSemaphoreFeatures must not
 		// both be in a chain, so an existing 1.2 structure is the one to edit.
@@ -83,6 +85,18 @@ DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const D
 			request_bit(nullptr, &prepend_buffer_device_address);
 		}
 	}
+	if (request.features.private_data) {
+		// Promoted to Vulkan 1.3: VkPhysicalDeviceVulkan13Features holds it when the host chains that.
+		if (auto *v13 = mutable_in_chain<VkPhysicalDeviceVulkan13Features>(chain,
+					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES)) {
+			request_bit(&v13->privateData, nullptr);
+		} else if (auto *pd = mutable_in_chain<VkPhysicalDevicePrivateDataFeatures>(chain,
+						   VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES)) {
+			request_bit(&pd->privateData, nullptr);
+		} else {
+			request_bit(nullptr, &prepend_private_data);
+		}
+	}
 	if (request.features.present_id) {
 		if (auto *pid = mutable_in_chain<VkPhysicalDevicePresentIdFeaturesKHR>(chain,
 					VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR)) {
@@ -104,6 +118,12 @@ DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const D
 		present_id_.pNext = const_cast<void *>(head);
 		present_id_.presentId = VK_TRUE;
 		head = &present_id_;
+	}
+	if (prepend_private_data) {
+		private_data_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES;
+		private_data_.pNext = const_cast<void *>(head);
+		private_data_.privateData = VK_TRUE;
+		head = &private_data_;
 	}
 	if (prepend_buffer_device_address) {
 		buffer_device_address_.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;

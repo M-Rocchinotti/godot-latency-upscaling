@@ -28,8 +28,9 @@ struct DeviceFeatureRequest {
 	bool timeline_semaphore = false;
 	bool present_id = false;
 	bool buffer_device_address = false;
+	bool private_data = false; // Vulkan 1.3 / VK_EXT_private_data (Streamline creates private-data slots)
 
-	bool any() const { return timeline_semaphore || present_id || buffer_device_address; }
+	bool any() const { return timeline_semaphore || present_id || buffer_device_address || private_data; }
 	void merge(const DeviceFeatureRequest &other);
 };
 
@@ -91,6 +92,7 @@ private:
 	VkPhysicalDeviceTimelineSemaphoreFeatures timeline_{};
 	VkPhysicalDevicePresentIdFeaturesKHR present_id_{};
 	VkPhysicalDeviceBufferDeviceAddressFeatures buffer_device_address_{};
+	VkPhysicalDevicePrivateDataFeatures private_data_{};
 	std::vector<VkDeviceQueueCreateInfo> queue_infos_;
 	std::vector<std::vector<float>> priorities_; // per queue_infos_ entry the patch rewrote or added
 	std::vector<QueueAssignment> queues_;

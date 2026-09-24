@@ -65,6 +65,19 @@ private:
 	uint64_t frame_ = 0;
 };
 
+// What Streamline needs from the device merely by being in the call chain, whether or not DLSS
+// runs on it: the private-data feature, which its common plugin uses (vkCreatePrivateDataSlot)
+// without asking for it. Registered with the layer whenever Vulkan goes through Streamline.
+class StreamlineChainFeature : public vk::VulkanFeature {
+public:
+	static StreamlineChainFeature &get();
+	const char *name() const override { return "streamline"; }
+	void request_instance_extensions(std::vector<std::string> &) override {}
+	bool request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &request, std::string &reason) override;
+	void on_device_created(const vk::DeviceContext &, bool, const std::string &) override {}
+	void on_device_destroyed(VkDevice) override {}
+};
+
 // Streamline's log sink: warnings and errors go to the addon's log (kept for the status too).
 void streamline_log(int type, const char *message);
 

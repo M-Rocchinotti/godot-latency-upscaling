@@ -322,3 +322,26 @@ TEST(device_patch_leaves_queue_requests_it_cannot_serve_unassigned) {
 	DeviceCreatePatch blind(godot.chain.info, graphics);
 	CHECK(!blind.queue_assignments()[0].assigned);
 }
+
+TEST(device_patch_enables_private_data_where_the_host_chains_it_or_prepends_it) {
+	GodotLikeChain godot;
+	DeviceRequest request;
+	request.features.private_data = true;
+	{
+		DeviceCreatePatch patch(godot.info, request);
+		auto *pd = reinterpret_cast<const VkPhysicalDevicePrivateDataFeatures *>(
+				find_in_chain(patch.get()->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES));
+		CHECK(pd != nullptr && pd->privateData == VK_TRUE);
+	}
+	// A host that chains VkPhysicalDeviceVulkan13Features: set there (both would be invalid).
+	VkPhysicalDeviceVulkan13Features v13{};
+	v13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+	v13.pNext = const_cast<void *>(godot.info.pNext);
+	godot.info.pNext = &v13;
+	{
+		DeviceCreatePatch patch(godot.info, request);
+		CHECK(v13.privateData == VK_TRUE);
+		CHECK(find_in_chain(patch.get()->pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRIVATE_DATA_FEATURES) == nullptr);
+	}
+	CHECK(v13.privateData == VK_FALSE); // restored
+}

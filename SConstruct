@@ -51,6 +51,8 @@ PURE_SOURCES = [
     "src/dlss/dlss_recorder.cpp",
     "src/dlss/jitter.cpp",
     "src/dlss/runtime_files.cpp",
+    "src/dlss/sl_signature.cpp",
+    "src/dlss/streamline.cpp",
     "src/hook/iat_patch.cpp",
     "src/hook/loader_name.cpp",
     "src/reflex/frame_sequencer.cpp",

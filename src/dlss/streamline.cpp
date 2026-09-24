@@ -433,6 +433,24 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 	return true;
 }
 
+StreamlineChainFeature &StreamlineChainFeature::get() {
+	static StreamlineChainFeature *instance = new StreamlineChainFeature();
+	return *instance;
+}
+
+bool StreamlineChainFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &request, std::string &reason) {
+	const bool core = caps.effective_api_version >= VK_API_VERSION_1_3;
+	if (!core && !caps.has_extension(VK_EXT_PRIVATE_DATA_EXTENSION_NAME)) {
+		reason = "the device offers no private data (Streamline reports a validation error, nothing else)";
+		return false;
+	}
+	if (!core) {
+		request.add_extension(VK_EXT_PRIVATE_DATA_EXTENSION_NAME);
+	}
+	request.features.private_data = true;
+	return true;
+}
+
 std::string Streamline::version() const {
 	std::lock_guard<std::mutex> lock(mutex_);
 	return version_;

@@ -350,6 +350,9 @@ VALIDATION_LINE = re.compile(r"VALIDATION - |Validation Error|Validation Warning
 MESSAGE_ID = re.compile(r"Message Id Name: (\S+)")
 
 
+STREAMLINE_RUNTIME = ROOT / "addons" / "latency_upscaling" / "bin" / "nvidia" / "sl.interposer.dll"
+
+
 def vulkan_sdk() -> Path | None:
     value = os.environ.get("VULKAN_SDK", "").strip()
     local = ROOT / "tools" / ".vulkan_sdk_path"
@@ -384,7 +387,13 @@ def suite_validation() -> bool:
         # ... and recorded natively into Godot's command buffer (push descriptors, re-bound state).
         ("native upscaler", ["--gpu-validation", "--verbose", "--script", "res://tests/upscaler_run.gd", "--", "--frames=240"],
          {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "native", "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}),
-    ):
+    ) + ((
+        # With the NVIDIA runtime fetched: Vulkan through Streamline's interposer (forced on this
+        # GPU, where DLSS itself cannot run), with the native recording at the marker.
+        ("streamline pass-through", ["--gpu-validation", "--verbose", "--script", "res://tests/upscaler_run.gd", "--", "--frames=240"],
+         {"GODOT_LATENCY_UPSCALING_TEST_FORCE_STREAMLINE": "1", "GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "native",
+          "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}),
+    ) if STREAMLINE_RUNTIME.exists() else ()):
         code, out = godot(args, f"test_validation_{name.replace(' ', '_')}", {**env_base, **extra}, timeout=600, medium=True)
         messages = [l.strip() for l in out.splitlines() if VALIDATION_LINE.search(l)]
         runs[name] = (code, ids(messages), out)
@@ -394,6 +403,10 @@ def suite_validation() -> bool:
     fsr2_ids = runs["fsr2 baseline"][1]
     up_code, up_ids, up_out = runs["reference upscaler"]
     native_code, native_ids, native_out = runs["native upscaler"]
+    sl_code, sl_ids, sl_out = runs.get("streamline pass-through", (0, Counter(), ""))
+    sl_ran = not STREAMLINE_RUNTIME.exists() or (
+        '"loader_override_active":true' in sl_out and re.search(r'"substituted":(\d+)', sl_out) is not None
+        and int(re.search(r'"substituted":(\d+)', sl_out).group(1)) > 100)
     tests_ok = re.search(r"reflex tests: \d+ passed, 0 failed", hook_out) is not None
     layer_seen = "VK_LAYER_KHRONOS_validation" in hook_out
     upscaled = re.search(r'"frames_upscaled":(\d+)', up_out)
@@ -403,13 +416,15 @@ def suite_validation() -> bool:
     # Anything either the normal or the fallback-retry run reports more often than the run without
     # the addon is attributed to the addon; for the upscaler, more often than Godot's own FSR2 path.
     new = sorted(((hook_ids | fault_ids) - base_ids).elements())
-    new += sorted(((up_ids | native_ids) - (base_ids | fsr2_ids)).elements())
-    ok = (hook_code == 0 and fault_code == 0 and up_code == 0 and native_code == 0 and upscaler_ran and native_ran and tests_ok
-          and layer_seen and not new)
+    new += sorted(((up_ids | native_ids | sl_ids) - (base_ids | fsr2_ids)).elements())
+    ok = (hook_code == 0 and fault_code == 0 and up_code == 0 and native_code == 0 and sl_code == 0 and upscaler_ran
+          and native_ran and sl_ran and tests_ok and layer_seen and not new)
     detail = (f"validation layer {'active' if layer_seen else 'NOT active'}; message IDs hook {dict(hook_ids)}, "
               f"swapchain-fault {dict(fault_ids)}, reference upscaler {dict(up_ids)} "
               f"({upscaled.group(1) if upscaled else 0} frames upscaled), native upscaler {dict(native_ids)} "
-              f"({substituted.group(1) if substituted else 0} dispatches recorded natively), baseline {dict(base_ids)}, "
+              f"({substituted.group(1) if substituted else 0} dispatches recorded natively), "
+              f"{'Streamline pass-through ' + str(dict(sl_ids)) + (' (through sl.interposer.dll), ' if sl_ran else ' (NOT through Streamline), ') if STREAMLINE_RUNTIME.exists() else 'Streamline pass-through not run (no NVIDIA runtime fetched), '}"
+              f"baseline {dict(base_ids)}, "
               f"FSR2 baseline {dict(fsr2_ids)}, caused by the addon {len(new)}")
     return result("validation", ok, detail, [f"caused by the addon: {n}" for n in new])
 

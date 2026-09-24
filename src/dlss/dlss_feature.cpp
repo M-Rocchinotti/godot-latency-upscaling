@@ -127,8 +127,8 @@ void DlssFeature::on_device_destroyed(VkDevice device) {
 	if (device == VK_NULL_HANDLE || device != device_) {
 		return;
 	}
-	if (status_.available && backend_ != nullptr) {
-		backend_->shutdown();
+	if (backend_ != nullptr) {
+		backend_->shutdown(); // also when DLSS did not come up: the runtime still holds device objects
 	}
 	status_.available = false;
 	status_.reason = "the Vulkan device was destroyed";

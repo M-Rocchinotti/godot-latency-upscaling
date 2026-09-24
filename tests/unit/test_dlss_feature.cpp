@@ -218,7 +218,7 @@ TEST(dlss_feature_leaves_the_device_alone_when_the_backend_declines) {
 	CHECK(!feature.status().available);
 	CHECK_EQ(feature.status().reason, std::string("backend: init failed"));
 	feature.on_device_destroyed(DEVICE);
-	CHECK_EQ(backend.shut_down, 0); // never initialised: nothing to shut down
+	CHECK_EQ(backend.shut_down, 1); // the runtime may hold device objects even when DLSS did not come up
 }
 
 TEST(dlss_runtime_files_are_checked_by_existence_only) {
@@ -259,4 +259,24 @@ TEST(dlss_runtime_files_are_checked_by_existence_only) {
 	// The default folder sits next to the module that contains this code.
 	const std::wstring default_dir = default_runtime_dir();
 	CHECK(default_dir.size() > 7 && default_dir.substr(default_dir.size() - 7) == L"\\nvidia");
+}
+
+#include "dlss/streamline.h"
+
+TEST(streamline_in_the_chain_asks_for_private_data) {
+	StreamlineChainFeature &chain = StreamlineChainFeature::get();
+	vk::PhysicalDeviceCaps caps = rtx_caps();
+	caps.effective_api_version = VK_API_VERSION_1_2; // Godot 4.7's device version
+	vk::DeviceRequest request;
+	std::string reason;
+	CHECK(!chain.request_device(caps, request, reason)); // neither 1.3 nor the extension
+	CHECK(request.empty());
+	caps.extensions[VK_EXT_PRIVATE_DATA_EXTENSION_NAME] = 1;
+	CHECK(chain.request_device(caps, request, reason));
+	CHECK(request.features.private_data);
+	CHECK_EQ(request.extensions.size(), static_cast<size_t>(1));
+	vk::DeviceRequest core;
+	caps.effective_api_version = VK_API_VERSION_1_3;
+	CHECK(chain.request_device(caps, core, reason));
+	CHECK(core.features.private_data && core.extensions.empty()); // core in 1.3: no extension
 }
