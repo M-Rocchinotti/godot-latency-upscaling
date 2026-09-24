@@ -1,8 +1,8 @@
 # Architecture
 
 How the addon gets NVIDIA features into a stock Godot 4.7 without engine changes, and how it
-stays out of the way when it cannot. Phase 1 (this version) implements the Vulkan hook layer and
-NVIDIA Reflex; Phase 2 (DLSS Super Resolution / DLAA) and Phase 3 (Frame Generation) build on the
+stays out of the way when it cannot. Phase 1 implements the Vulkan hook layer and NVIDIA Reflex;
+Phase 2 adds DLSS Super Resolution / DLAA (section 7); Phase 3 (Frame Generation) will build on the
 same layer. The research behind every design decision, with file and line references into Godot
 4.7.2, Streamline and the DLSS SDK, is in the separate research document (`RESEARCH.md` of the
 research phase); this file references it as "research §x".
@@ -32,7 +32,8 @@ next to the executable, no environment variables and no registry entries.
   vkCreateSwapchainKHR / vkQueueSubmit / vkQueuePresentKHR ─► QueueHooks (reflex/reflex_ll2.cpp)
   vkCmdBindPipeline / ...DescriptorSets / ...PushConstants / vkCmdDispatch
                                 (only when an upscaler records natively) ─► vk/marker_interceptor.cpp
-  everything else ──────────────────────────────────► real vulkan-1.dll (untouched pointers)
+  everything else ──────────────────────────────────► real vulkan-1.dll (untouched pointers), or
+                                Streamline's sl.interposer.dll in front of it when DLSS runs
 
   RenderingServer frame_pre_draw + the GDExtension frame callback ─► godot/latency_upscaling.cpp (markers, sleep)
   GDExtension frame callback (end of iteration) ────► godot/latency_upscaling.cpp (Reflex sleep)
@@ -55,7 +56,11 @@ next to the executable, no environment variables and no registry entries.
 | `src/reflex/latency_stats.cpp` | Frame reports to averages | yes |
 | `src/core/settings.cpp` | Settings layers and validation | yes |
 | `src/dlss/jitter.cpp` | Phase 2: Godot's camera jitter reproduced on the CPU | yes |
-| `src/dlss/upscaler_provider.h` | Phase 2: interface of the DLSS backend | |
+| `src/dlss/upscaler_provider.h` | Phase 2: interface of the DLSS backend, evaluation inputs | |
+| `src/dlss/dlss_feature.cpp` | Phase 2: DLSS's `VulkanFeature`: device checks, reasons, backend lifetime | yes |
+| `src/dlss/streamline.cpp` | Phase 2: Streamline 2.14.1 (load, signature, `slInit`, evaluation); the chain feature | builds in the tests, runs only with NVIDIA's runtime |
+| `src/dlss/dlss_recorder.cpp` | Phase 2: the marker recorder that has DLSS evaluate | yes |
+| `src/dlss/gpu_precheck.cpp`, `runtime_files.cpp` | Phase 2: GPUs before Godot's instance; the runtime folder | |
 | `src/upscale/quality.cpp` | Phase 2: quality modes, scaling ratios, Auto, presets | yes |
 | `src/upscale/upscale_feature.cpp` | Phase 2: the upscaler's `VulkanFeature` (`VK_KHR_push_descriptor`), native objects' lifetime | yes |
 | `src/upscale/native_reference.cpp` | Phase 2: the reference upscaler recorded natively (push descriptors) | yes |
@@ -339,44 +344,138 @@ kept for a later release; `stub/README.md` lists what must change first.
 | Fallback with a clear status on every unsupported configuration | A game's own settings menu should set the singleton's `reflex_mode` (through `Engine`, see README Usage) |
 | Overrides via Project Settings (`latency_upscaling/...`) reach exported games, read at CORE init, with or without the editor plugin | Defaults changed only by setting them in the editor's Project Settings (saved to `project.godot`) |
 
-## 7. Phase 2: DLSS Super Resolution / DLAA (design)
+## 7. Phase 2: DLSS Super Resolution / DLAA
 
-Nothing of this is active in Phase 1; `src/dlss/` holds the interface and the jitter code.
+Implemented and tested on an RTX 5080 (driver 591.86, DLSS 310.9.1 through Streamline 2.14.1),
+with the plumbing also tested on the GTX 1080 through a reference upscaler.
 
-1. **Backend**: Streamline 2.14.1 in interposer mode behind the proxy (the proxy's
-   `vkGetInstanceProcAddr` forwards to `sl.interposer.dll` instead of `vulkan-1.dll`, exactly
-   what the NVIDIA fork does with volk, research §2.3), or direct NGX. `UpscalerProvider`
-   (`src/dlss/upscaler_provider.h`) is written so either can sit behind it.
-2. **Vulkan requirements**: a `VulkanFeature` for DLSS returns NGX's instance and device
-   extensions (`VK_NVX_binary_import`, `VK_NVX_image_view_handle`, `VK_EXT_buffer_device_address`,
-   `VK_KHR_push_descriptor`, plus the runtime list NGX reports) through the same request path
-   Reflex uses. `DeviceRequest` grows a queue list only when Frame Generation needs its
-   optical-flow queue (Phase 3).
-3. **The FSR2 slot** (research §2.2): the viewport runs in `SCALING_3D_MODE_FSR2` at the DLSS
-   render scale, so Godot computes render size, jitter phase count, mip bias and TAA-off. Between
-   frames the addon re-configures the viewport's `RenderSceneBuffersRD` with
-   `SCALING_3D_MODE_METALFX_TEMPORAL`, which maps to "no upscaler" on Vulkan
-   (`render_forward_clustered.cpp:1793-1798`), and creates the target-size `color_upscaled`
-   texture that tonemapping reads when it exists (`renderer_scene_render_rd.cpp:473`).
-4. **Recording the evaluate**: a `POST_TRANSPARENT` `CompositorEffect` (with
-   `needs_motion_vectors`) dispatches a marker compute pipeline whose uniform set names `color`,
-   `depth`, `velocity` (sampled) and `color_upscaled` (storage), so Godot's render graph orders
-   and transitions them. The layer recognises that dispatch (it knows the pipeline's `VkPipeline`
-   from `get_driver_resource`) in `vkCmdBindPipeline` / `vkCmdDispatch`, calls
-   `UpscalerProvider::evaluate()` on the same command buffer instead, and restores the bound
-   state afterwards.
-5. **Jitter**: `dlss::jitter_in_pixels()` reproduces Godot's Halton sequence and phase count
-   (unit-tested against the engine's formula). Godot's frame counter must be matched once by a
-   scene-UBO readback; motion vectors are current-to-previous in `clip * 0.5` units
-   (`scene_forward_clustered.glsl:3106-3112`), converted with `motion_vector_scale`.
-6. **NVIDIA binaries**: never in this repository. On first enable the editor plugin shows the
-   NVIDIA RTX SDKs licence and, after the developer accepts, fetches `streamline-sdk-v2.14.1.zip`
-   from NVIDIA's GitHub release and extracts the eight production DLLs of `bin/x64/` into
-   `addons/latency_upscaling/bin/nvidia/` (git-ignored). `tools/fetch_nvidia_sdk.py` is the command-line
-   stub of that step: it resolves the release and prints the plan; it does not download.
-7. **Known costs** (research §2.2): one frame of FSR2 when Godot re-configures the buffers
-   (resize, settings change), the debanding flag has to be restored, and everything must be
-   re-validated for each Godot minor version. Needs an RTX 20+ GPU to test.
+### 7.1 The FSR2 slot
+
+Godot 4.7 has no API to replace its temporal upscaler, but its FSR2 mode does everything an
+upscaler needs from the renderer (`src/godot/upscaler.cpp`):
+
+1. **Main thread**, end of every iteration: the root viewport runs in `SCALING_3D_MODE_FSR2` at the
+   quality mode's scale, so Godot computes the render size, the Halton jitter (`8 * ratio^2`
+   phases), the mip bias (`log2(scale)` plus the viewport's own) and switches its TAA off. With
+   DLSS the scale comes from Streamline's optimal render size (`slDLSSGetOptimalSettings`): Godot
+   truncates `target * scale` per axis (`renderer_viewport.cpp`), so the width matches exactly and
+   the height can be one pixel off (inside DLSS's render-size range); DLAA is exactly 1. The
+   current camera gets a `POST_TRANSPARENT` `CompositorEffect` with `needs_motion_vectors`, merged
+   with its own or the WorldEnvironment's compositor (restored on shutdown).
+2. **Render thread**, the frame after Godot (re)configures the render buffers (FSR2 runs once): a
+   takeover queued behind that frame's draw re-configures them identically but with
+   `SCALING_3D_MODE_METALFX_TEMPORAL`, which is "no upscaler" on Vulkan
+   (`render_forward_clustered.cpp:1789-1800`), and creates the target-size `color_upscaled` texture
+   that tonemapping reads whenever it exists (`renderer_scene_render_rd.cpp:473`). Lost in the
+   re-configuration: `use_debanding` (not exposed).
+3. **Render thread**, every frame after that: the effect dispatches the upscaler, which reads colour,
+   depth and velocity at render size and writes `color_upscaled` at target size.
+
+Conventions, measured with image tests (`tests/upscaler_tests.gd`, `tests/dlss_tests.gd`):
+
+| | Convention | Evidence |
+|---|---|---|
+| Jitter | `RenderSceneData.get_cam_projection()` is the jittered projection; jitter in render pixels = NDC offset * size / 2, exactly what Godot hands FSR2 (`taa_jitter * internal_size * 0.5`); +1/+1 in texture orientation | projection, CPU Halton sequence (calibrated once) and Godot's scene UBO (`taa_jitter`, `taa_frame_count`, read back) agree every frame; ignored or flipped jitter scores lower with both the reference upscaler and DLSS |
+| Motion vectors | current -> previous, UV units, Y down; DLSS / Streamline get `mvecScale` 1, 1 | a camera yaw / pitch of known size gives the expected centre velocity within 0.1 %; flipped vectors score lower under camera motion with both upscalers |
+| Depth | reverse Z (`depthInverted`) | Godot 4.7 renders reverse Z |
+
+### 7.2 Recording into Godot's command buffer: the marker
+
+An upscaler has to record into the command buffer Godot is recording, at the point where colour,
+depth and velocity are final and `color_upscaled` has not been read yet, and with those images in
+known layouts. Instead of hooking Godot's render graph, the addon lets the graph do the ordering:
+
+1. The effect dispatches a **marker**: an ordinary RenderingDevice compute list with the reference
+   upscaler's pipeline and a uniform set naming colour, depth and velocity (sampled) and
+   `color_upscaled` (storage). The render graph therefore orders the dispatch after the scene and
+   before tonemapping, and transitions the images to `SHADER_READ_ONLY_OPTIMAL` (sampled) and
+   `GENERAL` (storage) (`rendering_device_graph.cpp:136-140`). The push constants carry a job id.
+2. The layer hands Godot hooks for `vkBeginCommandBuffer`, `vkEndCommandBuffer`, `vkCmdBindPipeline`,
+   `vkCmdBindDescriptorSets`, `vkCmdPushConstants` and `vkCmdDispatch` (only in runs that record
+   natively; they must be in place before Godot resolves its functions, i.e. at CORE
+   initialisation). `MarkerInterceptor` (`src/vk/marker_interceptor.cpp`) tracks the compute state
+   bound while a registered marker pipeline (its `VkPipeline` from `get_driver_resource`) is bound
+   and, on its `vkCmdDispatch`, hands the command buffer to the marker's recorder instead.
+3. When the recorder recorded, the marker dispatch is dropped and the marker, its descriptor sets
+   (with their dynamic offsets) and push constants are bound again, so whatever Godot records next
+   sees the state it set up (Streamline's rule when it does not track command-list state). When the
+   recorder declines, the marker dispatch runs: the reference upscaler fills the output.
+
+Recorders: `NativeReferenceRecorder` (the reference shader through the addon's own pipeline with
+push descriptors, `VK_KHR_push_descriptor`; debug test backend, proves the mechanism on any GPU:
+bit-identical to Godot's own recording of the same shader) and `DlssRecorder` (DLSS evaluation).
+
+### 7.3 DLSS through Streamline
+
+`src/dlss/streamline.cpp`, `src/godot/bootstrap.cpp`:
+
+1. **Decision at CORE initialisation** (the only moment the host's Vulkan calls can still be
+   routed): DLSS enabled in the settings, a Vulkan run (not headless, not Compatibility, not
+   D3D12), the runtime files present (`<addon library folder>/nvidia/`, checked by existence), then
+   a temporary Vulkan instance through the real loader lists the GPUs. Each goes through the
+   addon's checks (`dlss::check_device`: NVIDIA, driver 512.15+, `VK_NVX_binary_import` and
+   `VK_NVX_image_view_handle`); only then is `sl.interposer.dll` loaded, after its NVIDIA signature
+   is verified (Streamline's own `sl_security.h`), `slInit` called (Vulkan, DLSS only, no OTA, no
+   command-list state tracking, frame-based tagging, no log files) and Streamline asked
+   (`slIsFeatureSupported`). Without a supported GPU Streamline is unloaded again.
+2. **Interposer mode**, as NVIDIA's own Godot integration uses it: the layer's `next` functions come
+   from `sl.interposer.dll` instead of `vulkan-1.dll` (`vk::set_loader_override`). Streamline's
+   `vkCreateInstance` / `vkCreateDevice` add DLSS's requirements (on the RTX 5080: instance
+   `VK_KHR_get_physical_device_properties2`, `VK_KHR_external_memory_capabilities`,
+   `VK_KHR_external_semaphore_capabilities`; device `VK_KHR_push_descriptor`,
+   `VK_NVX_binary_import`, `VK_NVX_image_view_handle`, buffer device address; Vulkan 1.2 features
+   `timelineSemaphore`, `descriptorIndexing`, `bufferDeviceAddress`; no extra queues), and its
+   present path runs every frame. The addon's own hooks (Reflex, the marker) sit in front of it.
+   Streamline creates private-data slots without asking for the feature, so
+   `StreamlineChainFeature` enables `privateData` whenever Vulkan goes through Streamline.
+3. **Evaluation** at the marker: `DlssRecorder` looks up the job and `Streamline::evaluate` records
+   `slDLSSSetOptions` (mode, output size, presets, HDR colour, auto exposure),
+   `slSetConstants` (jitter, `mvecScale`, reverse Z, reset, unjittered camera matrices),
+   `slSetTagForFrame` (colour, depth, motion vectors, output: `VkImage`, view, format, size, usage
+   derived from Godot's texture usage, layout as the graph left it) and `slEvaluateFeature` into
+   Godot's command buffer.
+4. **Shutdown**: `slShutdown` right before the device is destroyed (the layer's `vkDestroyDevice`
+   hook), also when DLSS did not come up; the module stays loaded for the rest of the process.
+
+Every "no" is reported: `get_dlss_status()` returns `unavailable: <reason>` (not an NVIDIA GPU,
+driver older than 512.15, the NGX extensions missing, the runtime not installed, DLSS disabled at
+startup, Streamline's own verdict), `off: <reason>` (disabled at run time, Auto below 1920x1080) or
+`active (<mode>, <render> -> <output>)`.
+
+### 7.4 The NVIDIA runtime
+
+NVIDIA's binaries are never in this repository or the release zip. The developer fetches them after
+accepting NVIDIA's licences:
+
+- in the editor: when the plugin is enabled with DLSS on and the runtime missing (and under
+  Project > Tools), a dialog shows the NVIDIA RTX SDKs licence and the Streamline licence, keeps
+  Download disabled until the acceptance box is ticked, downloads `streamline-sdk-v2.14.1.zip`
+  from NVIDIA's GitHub release, checks size, the release's SHA-256 digest and the pinned hashes,
+  and installs the listed files into the git-ignored `addons/latency_upscaling/bin/nvidia/`,
+  recording the acceptance (`licence_acceptance.json`);
+- or `tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences`, the same from the command line.
+
+`addons/latency_upscaling/nvidia_runtime.json` names the release and the files;
+`nvidia_runtime.lock.json` pins the SHA-256 of the archive and of every file taken from it.
+Windows exports ship the four DLLs DLSS Super Resolution needs (`sl.interposer`, `sl.common`,
+`sl.dlss`, `nvngx_dlss`: verified to be enough on the RTX 5080) and NVIDIA's licence files in
+`nvidia/` beside the executable (`nvidia_runtime_export.gd`).
+
+### 7.5 Limits and costs
+
+- One frame of Godot's FSR2 whenever Godot re-configures the render buffers (resize, quality
+  change), then the takeover.
+- `use_debanding` is lost in the re-configuration.
+- Only the root viewport is upscaled; sub-viewports and multiview (XR) buffers are left alone.
+- Godot's sky pass writes no velocity (`sky.glsl`), so sky and clear-colour pixels keep the cleared
+  value and count as not moving on screen even while the camera turns (Streamline is told camera
+  motion is included in the vectors). NVIDIA's own Godot integration rebuilds those vectors from
+  depth before DLSS; the addon does not yet.
+- Everything depends on Godot 4.7 internals (the FSR2 / MetalFX mode mapping, the render-graph
+  layouts, `color_upscaled`); other Godot versions are refused by the version check.
+- Tests that need an RTX GPU run on a remote PC in short windowed runs (`tools/rtx_remote.py`,
+  log in `docs/RTX_WINDOWED_RUNS.md`); the validation layers are not installed there, so the
+  Streamline path is validation-checked on the GTX 1080 with Vulkan forced through the interposer.
 
 ## 8. Phase 3: Frame Generation (outline)
 

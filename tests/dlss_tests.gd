@@ -9,6 +9,7 @@ extends SceneTree
 ##   modes       for every quality mode Godot renders at the size DLSS asks for (slDLSSGetOptimalSettings;
 ##               the width exactly, the height within a pixel), the output is target size, frames are
 ##               evaluated
+##   auto        Auto below 1920x1080 is off and gives the viewport back
 ##   presets     Default, J, K, L and M evaluate without failures
 ##   still       against a 2x supersampled truth: DLSS Quality beats a bilinear upscale of the same
 ##               render size, DLAA beats native rendering without AA, and Godot's jitter convention
@@ -113,6 +114,7 @@ func _run() -> void:
 	await _test_active()
 	if _failed == 0:
 		await _test_modes()
+		await _test_auto()
 		await _test_presets()
 		await _test_still()
 		await _test_motion()
@@ -162,6 +164,18 @@ func _test_modes() -> void:
 				ready and render.x == optimal.x and abs(render.y - optimal.y) <= 1 and target == SIZE and frames["failed"] == 0,
 				"render %s, DLSS optimal %s, target %s, %d failed" % [render, optimal, target, frames["failed"]])
 	_results["render_sizes"] = sizes
+
+
+# Auto follows NVIDIA's table by output size: below 1920x1080 it means off, and the addon gives the
+# viewport back to Godot's own settings.
+func _test_auto() -> void:
+	_lu.dlss_enabled = true
+	_lu.dlss_quality = 0
+	await _frames(10)
+	var status: String = _lu.get_dlss_status()
+	_check("Auto at 1280x720 is off and gives the viewport back",
+			status.begins_with("off: Auto") and not _lu.is_dlss_active() and root.scaling_3d_mode != Viewport.SCALING_3D_MODE_FSR2,
+			"%s; viewport mode %d" % [status, root.scaling_3d_mode])
 
 
 func _test_presets() -> void:

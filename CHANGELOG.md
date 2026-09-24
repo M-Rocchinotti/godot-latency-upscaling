@@ -2,6 +2,48 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] - Phase 2: DLSS Super Resolution / DLAA
+
+### Added
+
+- DLSS Super Resolution and DLAA through NVIDIA Streamline 2.14.1 (DLSS 310.9.1 on the test
+  machine), on any Godot 4.7 Vulkan project without engine changes: quality modes DLAA, Quality,
+  Balanced, Performance, Ultra Performance and Auto (NVIDIA's table by output size), presets
+  Default / J / K / L / M, at the render size DLSS asks for. Tested on an RTX 5080 (driver 591.86):
+  image tests against a supersampled truth, FSR2 and native rendering, all modes and presets, and
+  a GPU-time benchmark (README, "DLSS results").
+- The FSR2 slot: Godot's own FSR2 mode computes render size, jitter, mip bias and TAA-off; its
+  render buffers are then re-configured to "no upscaler" and the upscaler writes the target-size
+  `color_upscaled` texture tonemapping reads.
+- Marker interception: the upscaler is recorded into Godot's command buffer where Godot's render
+  graph put a marker compute dispatch, with Godot's state bound again afterwards (the layer hooks
+  six `vkCmd*` / command-buffer functions, only in runs that need it).
+- Streamline runs as an interposer in front of the Vulkan loader, loaded only when a GPU passes
+  the addon's checks and Streamline's, after its NVIDIA signature is verified; no OTA, no log files.
+- API: `dlss_enabled`, `dlss_quality`, `dlss_preset`, `is_dlss_supported()`, `is_dlss_active()`,
+  `get_dlss_status()` ("active (...)", "off: ...", "unavailable: <reason>"); settings
+  `latency_upscaling/dlss/enabled`, `dlss/quality`, `dlss/preset`; the status reports the DLSS
+  runtime, evaluated frames and failures.
+- The NVIDIA runtime is fetched by the developer, never shipped with the addon: the editor plugin
+  shows NVIDIA's licences and downloads only after the developer accepts them
+  (`tools/fetch_nvidia_sdk.py` does the same from the command line). The release archive and every
+  file taken from it are pinned by SHA-256 (`nvidia_runtime.lock.json`). Windows exports carry the
+  four DLLs DLSS Super Resolution needs and NVIDIA's licence files in `nvidia/` beside the game.
+- The layer: queue requests and more feature bits (buffer device address, private data) for
+  features; an optional loader override (Streamline's interposer).
+- Tools: `tools/rtx_remote.py` (tests on a remote RTX PC: deploy, headless runs over SSH, short
+  windowed runs in the user's session after a preflight check, logs, cleanup), `tools/sl_probe`
+  (Streamline's requirements and DLSS support without a window), `vk_probe`.
+- Tests: reference and native-recording image tests of the FSR2 slot (jitter against Godot's UBO,
+  conventions, velocity, motion), DLSS image tests and benchmark on the RTX GPU, validation-layer
+  runs of the native recording and of the Streamline path, the runtime fetch (synthetic archives,
+  the real archive against the lock), exports, mutations for the new code.
+
+### Changed
+
+- The DLSS feature is registered in every game run with the hook (not in the editor); without the
+  runtime or a suitable GPU it changes nothing and reports why.
+
 ## [0.1.0] - 2026-09-24
 
 Phase 0 (repository and build) and Phase 1 (Vulkan hook layer and NVIDIA Reflex).

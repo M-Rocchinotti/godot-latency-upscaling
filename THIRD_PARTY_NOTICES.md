@@ -47,7 +47,7 @@ Manzur. MIT licence, same text as godot-cpp above.
 ### NVIDIA Streamline 2.14.1 headers (MIT)
 
 `thirdparty/streamline/include/` holds the public headers of the Streamline SDK 2.14.1 (from
-`streamline-sdk-v2.14.1.zip`, NVIDIA's GitHub release), unmodified, except `sl_nvperf.h`, which is
+`streamline-sdk-v2.14.1.zip`, NVIDIA's GitHub release), unmodified apart from line endings, except `sl_nvperf.h`, which is
 under the NSight Perf SDK licence and is left out. They declare the Streamline API that the DLSS
 backend and `tools/sl_probe` call at run time; no NVIDIA binary is linked. Licence text:
 `thirdparty/streamline/LICENSE.txt`.
