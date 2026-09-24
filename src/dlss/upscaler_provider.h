@@ -93,6 +93,9 @@ public:
 	// vkCmdDispatch interception of the marker pipeline. false (with `error`) when nothing was
 	// recorded. The caller restores Godot's pipeline, descriptor-set and push-constant state.
 	virtual bool evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &inputs, std::string &error) = 0;
+
+	// E.g. "DLSS 310.9.1 through Streamline 2.14.1", once initialised.
+	virtual std::string version() const { return std::string(); }
 };
 
 } // namespace lu::dlss

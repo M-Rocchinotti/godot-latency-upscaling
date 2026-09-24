@@ -188,8 +188,19 @@ void Upscaler::update() {
 	resolved_quality_ = mode;
 	inactive_reason_.clear();
 
-	// 1. The viewport runs in the FSR2 slot at the mode's scale.
-	const float scale = upscale::render_scale(mode);
+	// 1. The viewport runs in the FSR2 slot at the mode's scale. With DLSS, the scale that makes
+	// Godot's render size (target * scale, truncated: renderer_viewport.cpp) exactly the render size
+	// DLSS asks for; otherwise NVIDIA's ratio.
+	float scale = upscale::render_scale(mode);
+	dlss::ImageSize optimal;
+	if (dlss_provider_ != nullptr && target.x > 0 &&
+			dlss_provider_->optimal_render_size(dlss::ImageSize{ static_cast<uint32_t>(target.x), static_cast<uint32_t>(target.y) },
+					mode, optimal) &&
+			optimal.width > 0) {
+		// DLAA: exactly 1 (above 1 Godot leaves the FSR2 slot for bilinear downsampling).
+		scale = optimal.width >= static_cast<uint32_t>(target.x) ? 1.0f :
+																  (static_cast<float>(optimal.width) + 0.5f) / static_cast<float>(target.x);
+	}
 	if (!applied_) {
 		saved_scaling_mode_ = root->get_scaling_3d_mode();
 		saved_scaling_scale_ = root->get_scaling_3d_scale();
@@ -311,6 +322,16 @@ Dictionary Upscaler::status() const {
 	dlss_frames["missing_job"] = static_cast<int64_t>(evaluated.missing_job);
 	dlss_frames["failed"] = static_cast<int64_t>(evaluated.failed);
 	dlss_frames["last_error"] = String::utf8(evaluated.last_error.c_str());
+	if (dlss_provider_ != nullptr) {
+		dlss_frames["runtime"] = String::utf8(dlss_provider_->version().c_str());
+		dlss::ImageSize optimal;
+		if (stats_.target_width > 0 &&
+				dlss_provider_->optimal_render_size(dlss::ImageSize{ static_cast<uint32_t>(stats_.target_width),
+															static_cast<uint32_t>(stats_.target_height) },
+						resolved_quality_, optimal)) {
+			dlss_frames["optimal_render_size"] = Vector2i(static_cast<int>(optimal.width), static_cast<int>(optimal.height));
+		}
+	}
 	d["dlss_frames"] = dlss_frames;
 	return d;
 }

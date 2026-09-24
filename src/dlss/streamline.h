@@ -49,7 +49,7 @@ public:
 	bool evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &inputs, std::string &error) override;
 
 	// "DLSS 310.9.1 through Streamline 2.14.1" once initialised, else "".
-	std::string version() const;
+	std::string version() const override;
 	// The last warnings / errors Streamline reported (for the status).
 	std::vector<std::string> log_tail() const;
 
