@@ -1,6 +1,7 @@
 #include "vk/dispatch.h"
 
 #include "core/log.h"
+#include "core/testing.h"
 #include "vk/device_patch.h"
 
 #include <algorithm>
@@ -50,6 +51,7 @@ struct Layer {
 	std::vector<VulkanFeature *> features;
 	std::atomic<QueueHooks *> queue_hooks{ nullptr };
 	std::map<DispatchKey, InstanceInfo> instances;
+	bool main_device_created = false; // the first (presenting) device; later ones are local devices
 	LayerSnapshot snap;
 };
 
@@ -220,6 +222,24 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 		return L.next.CreateDevice(physical_device, info, allocator, device);
 	}
 
+	// Only the presenting device gets the Reflex extensions and a sleep semaphore. Godot creates
+	// it once during DisplayServer setup, before any script runs; later vkCreateDevice calls are
+	// secondary devices (RenderingDevice.create_local_rendering_device(), which never presents), so
+	// they pass through unpatched and do not change the reported device.
+	bool is_main;
+	{
+		std::lock_guard<std::mutex> lock(L.mutex);
+		is_main = !L.main_device_created;
+	}
+	if (!is_main) {
+		const VkResult r = L.next.CreateDevice(physical_device, info, allocator, device);
+		if (r == VK_SUCCESS) {
+			std::lock_guard<std::mutex> lock(L.mutex);
+			L.snap.local_devices_created++;
+		}
+		return r;
+	}
+
 	const PhysicalDeviceCaps caps = query_caps(inst, physical_device);
 	DeviceRequest request;
 	struct Decision {
@@ -241,6 +261,13 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 		}
 		decisions.push_back(d);
 	}
+#ifdef DEBUG_ENABLED
+	// Fault injection: a bogus extension makes the patched vkCreateDevice fail, so the fallback to
+	// the host's own create info is exercised (GODOT_LATENCY_UPSCALING_TEST_FAULT=device_extension).
+	if (testing::fault("device_extension")) {
+		request.add_extension("VK_LU_TEST_nonexistent_extension");
+	}
+#endif
 
 	std::vector<std::string> enabled = names_of(info->ppEnabledExtensionNames, info->enabledExtensionCount);
 	std::vector<std::string> added;
@@ -272,6 +299,7 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 
 	{
 		std::lock_guard<std::mutex> lock(L.mutex);
+		L.main_device_created = true;
 		LayerSnapshot &s = L.snap;
 		s.devices_created++;
 		s.device_handle = reinterpret_cast<uint64_t>(*device);

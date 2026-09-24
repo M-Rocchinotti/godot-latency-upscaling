@@ -331,6 +331,7 @@ Dictionary LatencyUpscaling::get_status() const {
 	vulkan["instances_created"] = layer.instances_created;
 	vulkan["instance_layers"] = to_packed(layer.instance_layers);
 	vulkan["devices_created"] = layer.devices_created;
+	vulkan["local_devices_created"] = layer.local_devices_created;
 	vulkan["device_handle"] = static_cast<int64_t>(layer.device_handle);
 	vulkan["gpu"] = String::utf8(layer.gpu_name.c_str());
 	vulkan["vendor_id"] = static_cast<int64_t>(layer.vendor_id);

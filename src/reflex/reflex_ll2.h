@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -122,13 +123,20 @@ private:
 	std::atomic<bool> presented_since_sleep_{ false };
 	std::atomic<SleepState> sleep_state_{ SleepState::Enabled };
 
-	// Guards the swapchain handle against a destroy on another thread while an LL2 call uses it,
-	// the mode and the counters/state strings. Never held across the semaphore wait or a log call.
-	std::mutex mutex_;
+	// Shared/exclusive lock over the swapchain handle and mode. VK_NV_low_latency2's per-frame
+	// calls (sleep, markers, timings, present-id) do not mark the swapchain externally
+	// synchronised, so they may run concurrently: they hold this shared, while create/destroy of
+	// the swapchain and mode changes hold it exclusive. A shared holder therefore never blocks
+	// another (the main thread's sleep no longer stalls the render thread's present hook), and
+	// a destroy still waits until no LL2 call is in flight. Never held across the semaphore wait
+	// or a log call. Lock order when both are taken: swapchain_mutex_ then counters_mutex_.
+	std::shared_mutex swapchain_mutex_;
 	VkSurfaceKHR tracked_surface_ = VK_NULL_HANDLE;
 	VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
 	bool latency_mode_enabled_ = false;
 	SleepMode mode_;
+	// Counters and the diagnostic strings; short critical sections only.
+	std::mutex counters_mutex_;
 	std::string sleep_disabled_reason_;
 	std::string swapchain_note_;
 	std::string sleep_mode_error_;

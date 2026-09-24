@@ -42,9 +42,10 @@ struct LayerSnapshot {
 	bool loader_intercepted = false; // the host's vulkan-1.dll request reached the layer
 	std::string loader_problem; // non-empty when the proxy could not be used
 	int instances_created = 0;
-	int devices_created = 0;
+	int devices_created = 0; // the presenting device (0 or 1)
+	int local_devices_created = 0; // secondary devices (create_local_rendering_device), passed through
 	std::vector<std::string> instance_layers; // explicit layers of the last instance (e.g. validation)
-	// Last device created through the layer (Godot's main device in practice).
+	// The presenting device (the first created through the layer); local devices do not change it.
 	uint64_t device_handle = 0;
 	std::string gpu_name;
 	uint32_t vendor_id = 0;
