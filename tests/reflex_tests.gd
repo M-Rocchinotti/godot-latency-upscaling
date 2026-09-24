@@ -3,7 +3,9 @@ extends SceneTree
 ##
 ##     python tools/godot.py --script res://tests/reflex_tests.gd
 ##
-## Ends with "reflex tests: <passed> passed, <failed> failed". Every check prints PASS/FAIL.
+## Ends with "reflex tests: <passed> passed, <failed> failed, <skipped> skipped". Every check prints
+## PASS/FAIL; a check that cannot run in this configuration prints SKIP with the reason (run_all
+## reports those separately and fails unless the skip is explicitly allowed).
 
 const WARMUP_FRAMES := 30
 const TIMESTAMP_TOLERANCE_US := 1500
@@ -11,6 +13,7 @@ const TIMESTAMP_TOLERANCE_US := 1500
 var _dlss: Object
 var _passed := 0
 var _failed := 0
+var _skipped := 0
 
 
 func _initialize() -> void:
@@ -39,6 +42,7 @@ func _run() -> void:
 	await _test_swapchain_recreation()
 	await _test_minimized_window()
 	await _test_local_rendering_device()
+	await _test_second_window()
 	await _test_overlay()
 	_finish()
 
@@ -46,6 +50,22 @@ func _run() -> void:
 func _frames(count: int) -> void:
 	for i in count:
 		await process_frame
+
+
+func _skip(name: String, reason: String) -> void:
+	print("SKIP %s  (%s)" % [name, reason])
+	_skipped += 1
+
+
+var _render_thread_id := -1
+
+
+# True when rendering runs on its own thread (--render-thread separate). The engine consumes that
+# option, so ask the render thread for its ID instead.
+func _separate_render_thread() -> bool:
+	RenderingServer.call_on_render_thread(func() -> void: _render_thread_id = OS.get_thread_caller_id())
+	await _frames(3)
+	return _render_thread_id != OS.get_main_thread_id()
 
 
 func _check(name: String, ok: bool, detail: String = "") -> void:
@@ -58,7 +78,7 @@ func _check(name: String, ok: bool, detail: String = "") -> void:
 
 
 func _finish() -> void:
-	print("reflex tests: %d passed, %d failed" % [_passed, _failed])
+	print("reflex tests: %d passed, %d failed, %d skipped" % [_passed, _failed, _skipped])
 	quit(1 if _failed > 0 else 0)
 
 
@@ -163,17 +183,29 @@ func _test_mode_switching() -> void:
 func _test_fps_limit() -> void:
 	_dlss.reflex_fps_limit = 30.0
 	await _frames(10)
-	var presents_before: int = _counters()["presents_stamped"]
+	var before := _counters()
+	var presents_before: int = before["presents_stamped"]
 	var start := Time.get_ticks_usec()
 	await _frames(30)
 	var interval_ms := (Time.get_ticks_usec() - start) / 30000.0
-	var presents_during: int = _counters()["presents_stamped"] - presents_before
+	var after := _counters()
+	var presents_during: int = after["presents_stamped"] - presents_before
+	var blocked: int = after["present_lock_waits_over_1ms"] - before["present_lock_waits_over_1ms"]
 	# The driver paces the Reflex sleep to the requested minimum interval (33.3 ms at 30 fps).
 	_check("Reflex frame-rate limit paces frames", interval_ms > 30.0 and interval_ms < 40.0, "%.2f ms per frame" % interval_ms)
 	# Every capped frame still presents. With a separate render thread this only holds if the
 	# present hook is not blocked by the main thread's sleep (the shared/exclusive swapchain lock).
 	_check("present hook keeps up under the frame-rate cap", presents_during >= 27,
 			"%d presents in 30 capped frames" % presents_during)
+	# Measured directly: how often the present hook waited more than 1 ms for the swapchain lock
+	# while the main thread slept (vkLatencySleepNV blocks for most of a capped frame on this driver).
+	# The shared lock keeps that at 0; the exclusive lock blocked almost every present.
+	_check("present hook never waits > 1 ms behind the Reflex sleep", blocked == 0,
+			"%d of %d capped presents waited > 1 ms; longest present-lock wait %d us, longest vkLatencySleepNV %d us" % [
+				blocked, presents_during, after["present_lock_wait_max_us"], after["latency_sleep_call_max_us"]])
+	# Under the cap the driver blocks inside vkLatencySleepNV; the reported sleep must include it.
+	var sleep_ms: float = _dlss.get_latency_stats()["reflex_sleep_ms"]
+	_check("reported Reflex sleep covers the capped wait", sleep_ms > 10.0, "%.1f ms" % sleep_ms)
 	_dlss.reflex_fps_limit = 0.0
 	_dlss.reflex_fps_limit = 5.0 # rejected: below 10 fps
 	_check("invalid frame-rate limit rejected", _dlss.reflex_fps_limit == 0.0)
@@ -237,6 +269,38 @@ func _test_local_rendering_device() -> void:
 	_check("status still describes the presenting device", vulkan["device_handle"] == main_handle and vulkan["gpu"] == main_gpu,
 			"handle %d gpu %s" % [vulkan["device_handle"], vulkan["gpu"]])
 	_check("Reflex still active after a local device", _dlss.is_reflex_active(), _dlss.get_reflex_status())
+
+
+func _test_second_window() -> void:
+	# A second native window (not embedded) gets its own surface and swapchain on the same device.
+	# Latency mode belongs to the main window only: the second swapchain must pass through untouched.
+	if await _separate_render_thread():
+		_skip("second native window", "Godot 4.7.2 crashes with a second native window under the separate render thread, with the addon disabled too")
+		return
+	var before := _counters()
+	var embedded := root.gui_embed_subwindows
+	root.gui_embed_subwindows = false
+	var window := Window.new()
+	window.title = "second window"
+	window.size = Vector2i(320, 200)
+	window.position = Vector2i(40, 40)
+	root.add_child(window)
+	await _frames(30)
+	var during := _counters()
+	_check("a second native window gets its own swapchain, passed through",
+			during["other_swapchains"] > before["other_swapchains"],
+			"other_swapchains %d -> %d" % [before["other_swapchains"], during["other_swapchains"]])
+	_check("the second window's swapchain does not get latency mode",
+			during["swapchains_with_latency_mode"] == before["swapchains_with_latency_mode"],
+			"swapchains_with_latency_mode %d -> %d" % [before["swapchains_with_latency_mode"], during["swapchains_with_latency_mode"]])
+	_check("Reflex stays on the main window while a second one is open",
+			_dlss.is_reflex_active() and during["presents_stamped"] > before["presents_stamped"], _dlss.get_reflex_status())
+	window.queue_free()
+	await _frames(20)
+	root.gui_embed_subwindows = embedded
+	var after := _counters()
+	_check("Reflex active and presenting after the second window closed",
+			_dlss.is_reflex_active() and after["presents_stamped"] > during["presents_stamped"], _dlss.get_reflex_status())
 
 
 func _test_overlay() -> void:

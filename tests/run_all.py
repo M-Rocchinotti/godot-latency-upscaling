@@ -83,6 +83,10 @@ def result(name: str, ok: bool, detail: str = "", problems: list[str] | None = N
 ALLOWED_SKIPS = {
     "fallback: D3D12 driver": "Godot 4.7.2's own D3D12 driver crashes on the reference GTX 1080, with or "
                               "without the addon; the refusal path is covered by code review and the status tests",
+    "reflex (separate render thread): second native window":
+        "Godot 4.7.2 crashes (signal 11 in the driver) when a second native window is used under the separate "
+        "render thread, with the addon disabled too; the same check runs in the default thread model and as a "
+        "unit test (ll2_other_windows_swapchains_pass_through)",
 }
 SKIPPED: list[str] = []
 
@@ -112,8 +116,16 @@ def suite_import() -> bool:
     return result("import", code == 0 and EXTENSION_LIST.exists() and not problems, f"exit {code}", problems)
 
 
+def report_test_skips(suite: str, out: str) -> None:
+    for line in out.splitlines():
+        m = re.match(r"SKIP (.+?)  \((.*)\)$", line)
+        if m:
+            skip(f"{suite}: {m.group(1)}", m.group(2))
+
+
 def suite_reflex() -> bool:
     code, out = godot(["--script", "res://tests/reflex_tests.gd"], "test_reflex")
+    report_test_skips("reflex", out)
     summary = re.search(r"reflex tests: (\d+) passed, (\d+) failed", out)
     fails = [l for l in out.splitlines() if l.startswith("FAIL")]
     problems = problems_in(out, [r"Reflex mode must be", r"Reflex frame-rate limit must be"])
@@ -125,6 +137,7 @@ def suite_reflex_render_thread() -> bool:
     """The same tests with Godot's separate render thread (thread model "Separate"): the render
     submission then runs on another thread than the simulation and the sleep."""
     code, out = godot(["--render-thread", "separate", "--script", "res://tests/reflex_tests.gd"], "test_reflex_render_thread")
+    report_test_skips("reflex (separate render thread)", out)
     summary = re.search(r"reflex tests: (\d+) passed, (\d+) failed", out)
     fails = [l for l in out.splitlines() if l.startswith("FAIL")]
     # Godot 4.7.2 itself reports empty 2D texture updates for the demo in this experimental thread
