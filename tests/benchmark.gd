@@ -40,13 +40,15 @@ func _initialize() -> void:
 
 func _run() -> void:
 	for mode in _modes:
-		var reflex := _dlss != null and _dlss.is_reflex_active()
+		var reflex: bool = _dlss != null and _dlss.is_reflex_active()
 		if mode != "-" and reflex:
 			_dlss.reflex_mode = int(mode)
 		for i in SETTLE_FRAMES:
 			await process_frame
 		var frame_ms := PackedFloat64Array()
 		var latency := {}
+		# Only frames simulated after this point count: the driver's reports reach back 64 frames.
+		var first_id: int = _dlss.get_latency_stats()["latest_present_id"] if reflex else 0
 		var last := Time.get_ticks_usec()
 		for i in _frames:
 			await process_frame
@@ -54,9 +56,9 @@ func _run() -> void:
 			frame_ms.append((now - last) / 1000.0)
 			last = now
 			if reflex and i % REPORT_EVERY == 0:
-				_collect(latency)
+				_collect(latency, first_id)
 		if reflex:
-			_collect(latency)
+			_collect(latency, first_id)
 		var result := {
 			"mode": mode,
 			"reflex_active": reflex,
@@ -70,9 +72,9 @@ func _run() -> void:
 	quit()
 
 
-func _collect(into: Dictionary) -> void:
+func _collect(into: Dictionary, first_id: int) -> void:
 	for r: Dictionary in _dlss.get_latency_reports():
-		if r["sim_start_us"] > 0 and r["gpu_render_end_us"] >= r["sim_start_us"]:
+		if r["present_id"] > first_id and r["sim_start_us"] > 0 and r["gpu_render_end_us"] >= r["sim_start_us"]:
 			into[r["present_id"]] = (r["gpu_render_end_us"] - r["sim_start_us"]) / 1000.0
 
 
