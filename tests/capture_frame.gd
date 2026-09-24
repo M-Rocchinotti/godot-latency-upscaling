@@ -3,6 +3,9 @@ extends SceneTree
 ##
 ##     python tools/godot.py --resolution 640x360 --script res://tests/capture_frame.gd -- --out=build/captures/a.png
 ##
+## --fsr2=SCALE renders the 3D part with Godot's own FSR2 at that scale, as a project that uses FSR2
+## itself would: with the addon's upscaler inactive, the addon must not change those pixels either.
+##
 ## Nothing in the scene depends on time or on the frame count, so two runs on the same machine
 ## produce the same pixels unless something in the Vulkan path changes them. The capture is
 ## taken after a warm-up so that shader compilation and shadow atlases have settled.
@@ -11,12 +14,18 @@ const WARMUP_FRAMES := 45
 
 var _out := ""
 var _frames := 0
+var _fsr2_scale := 0.0
 
 
 func _initialize() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--out="):
 			_out = arg.get_slice("=", 1)
+		elif arg.begins_with("--fsr2="):
+			_fsr2_scale = float(arg.get_slice("=", 1))
+	if _fsr2_scale > 0.0:
+		root.scaling_3d_mode = Viewport.SCALING_3D_MODE_FSR2
+		root.scaling_3d_scale = _fsr2_scale
 	var world := Node3D.new()
 	root.add_child(world)
 

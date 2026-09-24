@@ -13,7 +13,10 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
                               timings, modes, frame-rate limit (present-lock bound), swapchain
                               recreation, minimised window, local device, second window, overlay
   reflex (separate render ...) the same with Godot's separate render thread
-  pass-through                a rendered frame is identical with and without the hook
+  pass-through                a rendered frame is identical with and without the hook (also for a
+                              project that uses Godot's FSR2, with the addon's upscaler inactive)
+  upscaler                    Phase 2 plumbing with the reference upscaler: FSR2 slot, jitter vs
+                              Godot's UBO, image quality and conventions, velocity, motion
   fallback: ...               forced failure cases give a clean status and no crash
   editor                      the editor opens the project with the addon, no errors
   editor with Reflex enabled  enable_in_editor (environment override): Reflex in the editor process
@@ -163,9 +166,9 @@ def suite_editor_with_reflex() -> bool:
                   f"exit {code}" + ("" if active else ", Reflex not active"), problems)
 
 
-def capture(name: str, env: dict[str, str]) -> tuple[bytes | None, list[str]]:
+def capture(name: str, env: dict[str, str], extra: list[str] | None = None) -> tuple[bytes | None, list[str]]:
     rel = f"build/captures/{name}.png"
-    code, out = godot(["--resolution", "640x360", "--script", "res://tests/capture_frame.gd", "--", f"--out={rel}"],
+    code, out = godot(["--resolution", "640x360", "--script", "res://tests/capture_frame.gd", "--", f"--out={rel}"] + (extra or []),
                       f"test_capture_{name}", env)
     raw = ROOT / "build" / "captures" / f"{name}.rgba"
     problems = problems_in(out) + ([f"exit {code}"] if code != 0 else [])
@@ -186,8 +189,17 @@ def suite_pass_through() -> bool:
         problems += [f"{name}: {x}" for x in p]
     if any(v is None for v in pixels.values()):
         return result("pass-through", False, "a capture failed", problems)
+    # A project using Godot's own FSR2: with the upscaler inactive (no DLSS here, no test backend)
+    # the addon must leave that path untouched too.
+    for name, env in (("fsr2_baseline", {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}), ("fsr2_hook", {})):
+        data, p = capture(name, env, ["--fsr2=0.5"])
+        pixels[name] = data
+        problems += [f"{name}: {x}" for x in p]
+    if pixels["fsr2_baseline"] is None or pixels["fsr2_hook"] is None:
+        return result("pass-through", False, "an FSR2 capture failed", problems)
     digest = {k: hashlib.sha256(v).hexdigest()[:12] for k, v in pixels.items()}
-    ok = (pixels["baseline_a"] == pixels["baseline_b"] == pixels["hook_reflex"] == pixels["hook_only"]) and not problems
+    ok = (pixels["baseline_a"] == pixels["baseline_b"] == pixels["hook_reflex"] == pixels["hook_only"]
+          and pixels["fsr2_baseline"] == pixels["fsr2_hook"]) and not problems
     return result("pass-through", ok, ", ".join(f"{k}={v}" for k, v in digest.items()), problems)
 
 
@@ -322,6 +334,12 @@ def suite_validation() -> bool:
         ("hook", ["--gpu-validation", "--verbose", "--script", "res://tests/reflex_tests.gd"], {}),
         ("swapchain fault", ["--gpu-validation", "--verbose", "--script", "res://tests/print_status.gd", "--", "--frames=60"],
          {"GODOT_LATENCY_UPSCALING_TEST_FAULT": "swapchain_create"}),
+        # Phase 2: Godot's own FSR2 without the addon (it runs once before every takeover), then
+        # the reference upscaler in the FSR2 slot.
+        ("fsr2 baseline", ["--gpu-validation", "--verbose", "--script", "res://tests/upscaler_run.gd", "--", "--frames=240", "--fsr2=0.5"],
+         {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}),
+        ("reference upscaler", ["--gpu-validation", "--verbose", "--script", "res://tests/upscaler_run.gd", "--", "--frames=240"],
+         {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "reference", "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}),
     ):
         code, out = godot(args, f"test_validation_{name.replace(' ', '_')}", {**env_base, **extra}, timeout=600, medium=True)
         messages = [l.strip() for l in out.splitlines() if VALIDATION_LINE.search(l)]
@@ -329,14 +347,21 @@ def suite_validation() -> bool:
     hook_code, hook_ids, hook_out = runs["hook"]
     base_ids = runs["baseline"][1]
     fault_code, fault_ids, _ = runs["swapchain fault"]
+    fsr2_ids = runs["fsr2 baseline"][1]
+    up_code, up_ids, up_out = runs["reference upscaler"]
     tests_ok = re.search(r"reflex tests: \d+ passed, 0 failed", hook_out) is not None
     layer_seen = "VK_LAYER_KHRONOS_validation" in hook_out
+    upscaled = re.search(r'"frames_upscaled":(\d+)', up_out)
+    upscaler_ran = upscaled is not None and int(upscaled.group(1)) > 100
     # Anything either the normal or the fallback-retry run reports more often than the run without
-    # the addon is attributed to the addon.
+    # the addon is attributed to the addon; for the upscaler, more often than Godot's own FSR2 path.
     new = sorted(((hook_ids | fault_ids) - base_ids).elements())
-    ok = hook_code == 0 and fault_code == 0 and tests_ok and layer_seen and not new
+    new += sorted((up_ids - (base_ids | fsr2_ids)).elements())
+    ok = hook_code == 0 and fault_code == 0 and up_code == 0 and upscaler_ran and tests_ok and layer_seen and not new
     detail = (f"validation layer {'active' if layer_seen else 'NOT active'}; message IDs hook {dict(hook_ids)}, "
-              f"swapchain-fault {dict(fault_ids)}, baseline {dict(base_ids)}, caused by the addon {len(new)}")
+              f"swapchain-fault {dict(fault_ids)}, reference upscaler {dict(up_ids)} "
+              f"({upscaled.group(1) if upscaled else 0} frames upscaled), baseline {dict(base_ids)}, "
+              f"FSR2 baseline {dict(fsr2_ids)}, caused by the addon {len(new)}")
     return result("validation", ok, detail, [f"caused by the addon: {n}" for n in new])
 
 
@@ -357,6 +382,20 @@ def suite_archive() -> bool:
              if (ROOT / name).read_bytes() != (ROOT / "addons" / "latency_upscaling" / name).read_bytes()]
     return result("archive", not unexpected and not missing and not stale, f"{len(names)} entries",
                   unexpected[:10] + missing + stale)
+
+
+def suite_upscaler() -> bool:
+    # Phase 2 plumbing with the reference upscaler (debug builds): the FSR2 slot, jitter against
+    # Godot's own UBO, still-image quality and conventions, velocity sign/scale, motion.
+    code, out = godot(["--script", "res://tests/upscaler_tests.gd"], "test_upscaler",
+                      {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "reference",
+                       "GODOT_LATENCY_UPSCALING_SETTINGS": "dlss/quality=4"}, timeout=600)
+    summary = re.search(r"upscaler tests: (\d+) passed, (\d+) failed", out)
+    fails = [l for l in out.splitlines() if l.startswith("FAIL")]
+    problems = problems_in(out)
+    ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
+    measured = [l for l in out.splitlines() if l.startswith(("STILL ", "VELOCITY ", "MOTION "))]
+    return result("upscaler", ok, summary.group(0) if summary else f"exit {code}, no summary", fails + problems + measured)
 
 
 def suite_portable() -> bool:
@@ -384,6 +423,7 @@ SUITES = [
     ("reflex", suite_reflex),
     ("reflex render thread", suite_reflex_render_thread),
     ("pass-through", suite_pass_through),
+    ("upscaler", suite_upscaler),
     ("fallback", suite_fallbacks),
     ("editor", suite_editor),
     ("editor reflex", suite_editor_with_reflex),
