@@ -17,6 +17,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -48,6 +49,12 @@ struct Counters {
 	uint64_t presents_stamped = 0;
 	uint64_t submits_tagged = 0;
 	uint64_t swapchains_with_latency_mode = 0;
+	uint64_t other_swapchains = 0; // swapchains of other windows, passed through untouched
+	// The present hook's wait for the swapchain lock. With the shared lock it never waits behind
+	// the main thread's vkLatencySleepNV; only swapchain creation/destruction (exclusive) can block it.
+	uint64_t present_lock_waits_over_1ms = 0;
+	uint64_t present_lock_wait_max_us = 0;
+	uint64_t latency_sleep_call_max_us = 0; // how long vkLatencySleepNV itself blocked, at most
 	double last_sleep_ms = 0.0;
 	double average_sleep_ms = 0.0; // exponential moving average
 };
@@ -97,6 +104,8 @@ public:
 private:
 	enum class SleepState { Enabled, Suspended, Disabled };
 	void stop_sleeping(SleepState state, const std::string &reason);
+	// Counts a present hook's wait for the swapchain lock (see Counters). Takes counters_mutex_.
+	void record_present_lock_wait(std::chrono::steady_clock::duration waited);
 	// Applies mode_ to swapchain_; called with mutex_ held. Returns the message to log (the log
 	// sink may call back into the addon, so nothing is logged under the lock).
 	std::string apply_sleep_mode_locked();

@@ -364,6 +364,10 @@ Dictionary LatencyUpscaling::get_status() const {
 		counters["presents_stamped"] = static_cast<int64_t>(st.counters.presents_stamped);
 		counters["submits_tagged"] = static_cast<int64_t>(st.counters.submits_tagged);
 		counters["swapchains_with_latency_mode"] = static_cast<int64_t>(st.counters.swapchains_with_latency_mode);
+		counters["other_swapchains"] = static_cast<int64_t>(st.counters.other_swapchains);
+		counters["present_lock_waits_over_1ms"] = static_cast<int64_t>(st.counters.present_lock_waits_over_1ms);
+		counters["present_lock_wait_max_us"] = static_cast<int64_t>(st.counters.present_lock_wait_max_us);
+		counters["latency_sleep_call_max_us"] = static_cast<int64_t>(st.counters.latency_sleep_call_max_us);
 		reflex_info["counters"] = counters;
 	}
 	d["reflex"] = reflex_info;

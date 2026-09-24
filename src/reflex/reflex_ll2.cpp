@@ -157,6 +157,15 @@ void Ll2Device::stop_sleeping(SleepState state, const std::string &reason) {
 			state == SleepState::Suspended ? "suspended until the window swapchain is re-created" : "disabled", reason.c_str());
 }
 
+void Ll2Device::record_present_lock_wait(std::chrono::steady_clock::duration waited) {
+	const auto us = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(waited).count());
+	std::lock_guard<std::mutex> counters(counters_mutex_);
+	counters_.present_lock_wait_max_us = std::max(counters_.present_lock_wait_max_us, us);
+	if (us > 1000) {
+		counters_.present_lock_waits_over_1ms++;
+	}
+}
+
 bool Ll2Device::sleep() {
 	if (sleep_state_.load() != SleepState::Enabled) {
 		return false;
@@ -172,6 +181,10 @@ bool Ll2Device::sleep() {
 	uint64_t value = 0;
 	VkSemaphore semaphore = VK_NULL_HANDLE;
 	VkResult result = VK_SUCCESS;
+	int64_t call_us = 0;
+	// The sleep is the call plus the wait: under a frame-rate cap this driver blocks inside
+	// vkLatencySleepNV itself, so timing only the semaphore wait reported ~0 ms.
+	std::chrono::steady_clock::time_point sleep_start{};
 	{
 		// Shared: vkLatencySleepNV may block for a frame on this driver, but under a shared lock it
 		// does not stall the render thread's present/marker hooks; only a swapchain destroy (which
@@ -187,7 +200,9 @@ bool Ll2Device::sleep() {
 		info.sType = VK_STRUCTURE_TYPE_LATENCY_SLEEP_INFO_NV;
 		info.signalSemaphore = semaphore;
 		info.value = value;
+		sleep_start = std::chrono::steady_clock::now();
 		result = latency_sleep_(device_, swapchain_, &info);
+		call_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - sleep_start).count();
 		if (result == VK_SUCCESS) {
 			sleep_value_ = value; // only a value the driver will signal advances the counter
 		}
@@ -203,12 +218,12 @@ bool Ll2Device::sleep() {
 	wait.semaphoreCount = 1;
 	wait.pSemaphores = &semaphore;
 	wait.pValues = &value;
-	const auto start = std::chrono::steady_clock::now();
 	result = wait_semaphores_(device_, &wait, SLEEP_TIMEOUT_NS);
-	const double slept_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+	const double slept_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sleep_start).count();
 	signal_pending_ = result == VK_TIMEOUT;
 	{
 		std::lock_guard<std::mutex> counters(counters_mutex_);
+		counters_.latency_sleep_call_max_us = std::max<uint64_t>(counters_.latency_sleep_call_max_us, static_cast<uint64_t>(call_us));
 		counters_.sleeps++;
 		counters_.last_sleep_ms = slept_ms;
 		counters_.average_sleep_ms = counters_.sleeps == 1 ? slept_ms : counters_.average_sleep_ms * 0.95 + slept_ms * 0.05;
@@ -297,14 +312,22 @@ VkResult Ll2Device::create_swapchain(VkDevice device, const VkSwapchainCreateInf
 	if (info == nullptr || !valid_) {
 		return next(device, info, allocator, swapchain);
 	}
+	bool other_window = false;
 	{
 		std::shared_lock lock(swapchain_mutex_);
 		// Latency mode is for the window the game runs in: the first surface a swapchain is
 		// created for (Godot creates the main window before any other). Other windows' swapchains
 		// pass through untouched.
 		if (tracked_surface_ != VK_NULL_HANDLE && info->surface != tracked_surface_) {
-			return next(device, info, allocator, swapchain);
+			other_window = true;
 		}
+	}
+	if (other_window) {
+		{
+			std::lock_guard<std::mutex> counters(counters_mutex_);
+			counters_.other_swapchains++;
+		}
+		return next(device, info, allocator, swapchain);
 	}
 	const SwapchainLatencyPatch patch(*info);
 	VkResult result;
@@ -382,7 +405,9 @@ VkResult Ll2Device::present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQ
 	}
 	uint32_t index = UINT32_MAX;
 	{
+		const auto before_lock = std::chrono::steady_clock::now();
 		std::shared_lock lock(swapchain_mutex_);
+		record_present_lock_wait(std::chrono::steady_clock::now() - before_lock);
 		if (!valid_ || swapchain_ == VK_NULL_HANDLE || !latency_mode_enabled_) {
 			return next(queue, info);
 		}
