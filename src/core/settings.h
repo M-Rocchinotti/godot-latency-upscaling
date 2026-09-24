@@ -4,7 +4,8 @@
 //   1. built-in defaults (identical to the shipped addons/nvidia_dlss/nvidia_dlss.cfg),
 //   2. addons/nvidia_dlss/nvidia_dlss.cfg,
 //   3. project settings "nvidia_dlss/<key>" (only present when a developer changed them),
-//   4. the environment (GODOT_NVIDIA_DLSS_DISABLE=1 forces enabled = false).
+//   4. the environment: GODOT_NVIDIA_DLSS_SETTINGS="key=value;..." (e.g. for CI or a quick
+//      test of the editor), then GODOT_NVIDIA_DLSS_DISABLE=1, which forces enabled = false.
 // Runtime API calls (NvidiaDLSS.reflex_mode = ...) override the result for the session.
 //
 // Pure C++: no Godot types, so the resolution rules are unit-tested.
@@ -61,6 +62,11 @@ struct ResolvedSettings {
 // Applies the layers in order (later layers win). Invalid values are ignored with a warning,
 // unknown keys too.
 ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers);
+
+// Parses "key=value;key=value" (the GODOT_NVIDIA_DLSS_SETTINGS environment variable) into a
+// layer. Values: true, false or a number. Malformed entries are skipped with a warning; keys
+// are validated later by resolve_settings().
+SettingsLayer parse_settings_override(const std::string &name, const std::string &text, std::vector<std::string> &warnings);
 
 // Converts a frame-rate limit to VK_NV_low_latency2's minimumIntervalUs (0 = no limit).
 unsigned int fps_limit_to_interval_us(double fps_limit);

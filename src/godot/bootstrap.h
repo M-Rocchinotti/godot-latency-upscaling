@@ -33,6 +33,7 @@ const BootState &boot_state();
 
 // Environment variables.
 inline constexpr const char *ENV_DISABLE = "GODOT_NVIDIA_DLSS_DISABLE"; // "1": no hook at all
+inline constexpr const char *ENV_SETTINGS = "GODOT_NVIDIA_DLSS_SETTINGS"; // "key=value;...": overrides
 inline constexpr const char *ENV_VERBOSE = "GODOT_NVIDIA_DLSS_VERBOSE"; // "1": informational log lines
 // Debug builds only, for the fallback tests:
 inline constexpr const char *ENV_TEST_HIDE_EXTENSIONS = "GODOT_NVIDIA_DLSS_TEST_HIDE_EXTENSIONS"; // comma list

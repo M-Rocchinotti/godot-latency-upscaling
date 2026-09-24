@@ -136,6 +136,11 @@ void bootstrap_core() {
 	layers.push_back(config_layer(read_warnings));
 	g_state.addon_defaults = resolve_settings({ layers.front() }).settings;
 	layers.push_back(project_layer(read_warnings));
+	const String env_settings = os->get_environment(ENV_SETTINGS);
+	if (!env_settings.is_empty()) {
+		layers.push_back(parse_settings_override(std::string("environment variable ") + ENV_SETTINGS,
+				env_settings.utf8().get_data(), read_warnings));
+	}
 	if (os->get_environment(ENV_DISABLE) == "1") {
 		SettingsLayer env;
 		env.name = std::string("environment variable ") + ENV_DISABLE;

@@ -44,6 +44,29 @@ TEST(settings_invalid_values_are_ignored_with_a_warning) {
 	CHECK(r.source_of.empty());
 }
 
+TEST(settings_environment_override_is_parsed) {
+	std::vector<std::string> warnings;
+	const SettingsLayer layer = parse_settings_override("env", " general/enable_in_editor = true ;reflex/mode=2;; reflex/fps_limit=144.5 ;overlay/enabled=false", warnings);
+	CHECK(warnings.empty());
+	CHECK_EQ(layer.values.size(), static_cast<size_t>(4));
+	CHECK_EQ(layer.values.at(keys::ENABLE_IN_EDITOR), 1.0);
+	CHECK_EQ(layer.values.at(keys::REFLEX_MODE), 2.0);
+	CHECK_EQ(layer.values.at(keys::REFLEX_FPS_LIMIT), 144.5);
+	CHECK_EQ(layer.values.at(keys::OVERLAY_ENABLED), 0.0);
+	const ResolvedSettings r = resolve_settings({ layer });
+	CHECK(r.settings.enable_in_editor);
+	CHECK(r.settings.reflex_mode == ReflexMode::OnBoost);
+}
+
+TEST(settings_environment_override_rejects_malformed_entries) {
+	std::vector<std::string> warnings;
+	const SettingsLayer layer = parse_settings_override("env", "reflex/mode;=1;reflex/fps_limit=fast;general/enabled=0", warnings);
+	CHECK_EQ(warnings.size(), static_cast<size_t>(3));
+	CHECK_EQ(layer.values.size(), static_cast<size_t>(1));
+	CHECK_EQ(layer.values.at(keys::ENABLED), 0.0);
+	CHECK(parse_settings_override("env", "", warnings).values.empty());
+}
+
 TEST(settings_fps_limit_conversion) {
 	CHECK_EQ(fps_limit_to_interval_us(0.0), 0u);
 	CHECK_EQ(fps_limit_to_interval_us(60.0), 16667u);

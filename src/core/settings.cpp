@@ -1,7 +1,9 @@
 #include "core/settings.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
 namespace nvdlss {
 namespace {
@@ -55,6 +57,44 @@ const char *reflex_mode_name(ReflexMode mode) {
 			return "On + Boost";
 	}
 	return "unknown";
+}
+
+SettingsLayer parse_settings_override(const std::string &name, const std::string &text, std::vector<std::string> &warnings) {
+	SettingsLayer layer;
+	layer.name = name;
+	auto trim = [](std::string s) {
+		const size_t first = s.find_first_not_of(" \t");
+		const size_t last = s.find_last_not_of(" \t");
+		return first == std::string::npos ? std::string() : s.substr(first, last - first + 1);
+	};
+	size_t start = 0;
+	while (start <= text.size()) {
+		const size_t end = std::min(text.find(';', start), text.size());
+		const std::string entry = trim(text.substr(start, end - start));
+		start = end + 1;
+		if (entry.empty()) {
+			continue;
+		}
+		const size_t equals = entry.find('=');
+		const std::string key = equals == std::string::npos ? std::string() : trim(entry.substr(0, equals));
+		const std::string value = equals == std::string::npos ? std::string() : trim(entry.substr(equals + 1));
+		double number = 0.0;
+		char *parse_end = nullptr;
+		if (value == "true") {
+			number = 1.0;
+		} else if (value == "false") {
+			number = 0.0;
+		} else if (!value.empty()) {
+			number = std::strtod(value.c_str(), &parse_end);
+		}
+		const bool numeric_ok = value == "true" || value == "false" || (parse_end != nullptr && *parse_end == '\0');
+		if (key.empty() || !numeric_ok) {
+			warnings.push_back(name + ": '" + entry + "' ignored (expected key=true|false|number)");
+			continue;
+		}
+		layer.values[key] = number;
+	}
+	return layer;
 }
 
 ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
