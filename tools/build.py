@@ -5,6 +5,7 @@
     build.cmd debug                # only template_debug (used by the editor and debug exports)
     build.cmd release              # only template_release
     build.cmd tests                # only the C++ unit tests (build/unit_tests/unit_tests.exe)
+    build.cmd vk_probe             # the window-less Vulkan probe (build/tools/vk_probe.exe)
     build.cmd -j 3                 # parallel compile jobs (default 2: the reference machine has 4 cores)
     build.cmd --clean              # remove the SCons outputs for the selected targets
 
@@ -34,7 +35,8 @@ INNER_FLAG = "--inside-devshell"
 # Compilers run below normal priority (inherited by cl.exe) so a build never starves the
 # interactive work on the machine.
 LOW_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
-TARGETS = {"debug": ["target=template_debug"], "release": ["target=template_release"], "tests": ["unit_tests"]}
+TARGETS = {"debug": ["target=template_debug"], "release": ["target=template_release"], "tests": ["unit_tests"],
+           "vk_probe": ["vk_probe"]}
 
 
 def venv_python() -> Path:

@@ -33,6 +33,7 @@ sl.*.dll
 tools/.godot_path
 tools/.devshell_path
 tools/.vulkan_sdk_path
+tools/.rtx_remote.json
 
 # Exports
 export/

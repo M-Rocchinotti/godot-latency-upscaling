@@ -92,3 +92,11 @@ test_sources += [n.path.replace("\\", "/").replace("tests/unit/", test_obj_dir +
                  for n in Glob("tests/unit/*.cpp")]
 unit_tests = test_env.Program("build/unit_tests/unit_tests.exe", test_sources)
 Alias("unit_tests", unit_tests)
+
+# vk_probe: a stand-alone, window-less Vulkan capability probe (tools/vk_probe/, used by the
+# remote RTX harness tools/rtx_remote.py). No Godot, no NVIDIA SDK.
+probe_env = env.Clone()
+probe_env["LIBS"] = ["kernel32"]
+probe_env.VariantDir("build/obj/vk_probe", "tools/vk_probe", duplicate=False)
+vk_probe = probe_env.Program("build/tools/vk_probe.exe", ["build/obj/vk_probe/vk_probe.cpp"])
+Alias("vk_probe", vk_probe)

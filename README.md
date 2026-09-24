@@ -244,6 +244,15 @@ python tests/run_benchmark.py          # latency Off / On / Boost and hook overh
 python tests/run_mutations.py          # mutation checks: the tests catch re-introduced bugs
 ```
 
+Tests that need an RTX GPU run on a remote Windows PC through `tools/rtx_remote.py` (SSH with a
+key; configuration in the git-ignored `tools/.rtx_remote.json`): it copies Godot, the project and
+the tools into one folder there, runs Godot headless over SSH or inside the user's desktop session
+through a one-shot scheduled task, collects logs and in-engine captures, and cleans up. It refuses
+any run that would open a window unless `--window-ok` is given, which is reserved for runs the
+PC's owner has agreed to. `python tools/rtx_remote.py selftest` checks the whole chain without a
+window; `build/tools/vk_probe.exe` (built with `build.cmd vk_probe`) reports what a GPU's Vulkan
+driver offers for Reflex, DLSS and Frame Generation, also without a window.
+
 `run_all.py` reports skipped checks as SKIP, never as PASS, and fails on any skip that is not
 explicitly allowed (only two are, each with its reason: Godot 4.7.2's own D3D12 crash here, and its
 crash with a second native window under the separate render thread).
