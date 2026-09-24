@@ -30,13 +30,14 @@ func _run() -> void:
 		return
 	_dlss = Engine.get_singleton("NvidiaDLSS")
 	await _frames(WARMUP_FRAMES)
-	_test_device_came_through_the_layer()
+	await _test_device_came_through_the_layer()
 	await _test_markers_are_sent_every_frame()
 	await _test_flash_marker()
 	await _test_timings_are_plausible()
 	await _test_mode_switching()
 	await _test_fps_limit()
 	await _test_swapchain_recreation()
+	await _test_minimized_window()
 	await _test_overlay()
 	_finish()
 
@@ -71,8 +72,12 @@ func _test_device_came_through_the_layer() -> void:
 	_check("hook active", status["hook"]["active"], str(status["hook"]))
 	_check("VK_NV_low_latency2 enabled on the device", "VK_NV_low_latency2" in vulkan["device_extensions"], str(vulkan["device_extensions"]))
 	_check("VK_KHR_present_id enabled on the device", "VK_KHR_present_id" in vulkan["device_extensions"])
-	var rd := RenderingServer.get_rendering_device()
-	var godot_device: int = rd.get_driver_resource(RenderingDevice.DRIVER_RESOURCE_LOGICAL_DEVICE, RID(), 0)
+	# get_driver_resource() must run on the render thread (a separate one in that thread model).
+	var queried := [0]
+	RenderingServer.call_on_render_thread(func() -> void:
+		queried[0] = RenderingServer.get_rendering_device().get_driver_resource(RenderingDevice.DRIVER_RESOURCE_LOGICAL_DEVICE, RID(), 0))
+	await _frames(3)
+	var godot_device: int = queried[0]
 	_check("Godot renders with the device created through the layer", godot_device != 0 and godot_device == vulkan["device_handle"],
 			"godot %d vs layer %d" % [godot_device, vulkan["device_handle"]])
 	_check("Reflex supported", _dlss.is_reflex_supported(), _dlss.get_reflex_status())
@@ -182,6 +187,27 @@ func _test_swapchain_recreation() -> void:
 	var presents: int = after["presents_stamped"]
 	await _frames(10)
 	_check("presents stamped after recreation", _counters()["presents_stamped"] > presents)
+
+
+func _test_minimized_window() -> void:
+	# A minimised window draws and presents nothing. The sleep must not wait for a present that
+	# never comes (and must not be switched off for the rest of the session because of it).
+	var before := _counters()
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_MINIMIZED)
+	await _frames(40)
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	await _frames(30)
+	var after := _counters()
+	var reflex: Dictionary = _dlss.get_status()["reflex"]
+	_check("no sleep timeouts while minimised", after["sleep_timeouts"] == before["sleep_timeouts"],
+			"%d -> %d" % [before["sleep_timeouts"], after["sleep_timeouts"]])
+	_check("sleep still enabled after minimising", reflex["sleep_enabled"], _dlss.get_reflex_status())
+	_check("no sleep without a present while minimised", after["sleeps_skipped"] > before["sleeps_skipped"],
+			"%d -> %d skipped" % [before["sleeps_skipped"], after["sleeps_skipped"]])
+	var presents: int = after["presents_stamped"]
+	var sleeps: int = after["sleeps"]
+	await _frames(10)
+	_check("frames present and sleep again after restoring", _counters()["presents_stamped"] > presents and _counters()["sleeps"] > sleeps)
 
 
 func _test_overlay() -> void:

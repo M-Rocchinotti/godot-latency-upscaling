@@ -32,6 +32,7 @@ NAME = "src/hook/loader_name.cpp"
 IAT = "src/hook/iat_patch.cpp"
 JITTER = "src/dlss/jitter.cpp"
 REFLEX = "src/reflex/reflex_ll2.cpp"
+LL2 = "src/reflex/ll2_patches.cpp"
 SINGLETON = "src/godot/nvidia_dlss.cpp"
 BOOT = "src/godot/bootstrap.cpp"
 ENTRY = "src/register_types.cpp"
@@ -71,19 +72,25 @@ MUTATIONS = [
      "\t\twrite_pointer(slot.slot, slot.original);\n", "\t\t(void)slot;\n", "unit"),
     ("jitter: pixels not halved", JITTER,
      "\tout.x = halton(index, 2) * 0.5f;", "\tout.x = halton(index, 2);", "unit"),
+    ("settings: environment override values not parsed", SETTINGS,
+     "\t\t\tnumber = std::strtod(value.c_str(), &parse_end);", "\t\t\tnumber = 0.0;", "unit"),
+    # Invisible on the reference driver at run time (sleep and reports work without them), so the
+    # structures are guarded by unit tests.
+    ("ll2: swapchain without latency mode", LL2,
+     "\tlatency_.latencyModeEnable = VK_TRUE;", "\tlatency_.latencyModeEnable = VK_FALSE;", "unit"),
+    ("ll2: submissions not tagged", LL2,
+     "\t\tcopies_[i].pNext = &tags_[i];\n", "", "unit"),
+    ("ll2: present ID not attached", LL2,
+     "\tinfo_.pNext = &id_info_;\n", "", "unit"),
     # --- engine level, caught by the Godot suites ---
     ("reflex: extension not requested", REFLEX,
      "\trequest.add_extension(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);\n", "", "reflex"),
-    ("reflex: swapchain without latency mode", REFLEX,
-     "\t\tlatency.latencyModeEnable = VK_TRUE;", "\t\tlatency.latencyModeEnable = VK_FALSE;", "reflex"),
-    ("reflex: submissions not tagged", REFLEX,
-     "\t\tcopies[i].pNext = &tags[i];\n", "", "reflex"),
     ("reflex: sleep never called", SINGLETON,
      "\tdevice->sleep();\n", "", "reflex"),
     ("reflex: SIMULATION_END never sent", SINGLETON,
      "\tconst uint64_t frame_id = sequencer.end_simulation();", "\tconst uint64_t frame_id = 0;", "reflex"),
-    ("reflex: present ID repeated (validation layer)", REFLEX,
-     "\t\tids[index] = present_id;", "\t\tids[index] = 1;", "validation"),
+    ("reflex: present ID repeated (validation layer)", LL2,
+     "\tids_[index] = present_id;", "\tids_[index] = 1;", "validation"),
     ("safety: version check removed", BOOT,
      "} else if (major != 4 || minor != 7) {", "} else if (false) {", "fallback"),
     ("safety: late load not dormant", ENTRY,
@@ -105,25 +112,35 @@ def suite_fails(suite: str) -> bool:
     return proc.returncode != 0
 
 
+def read(path: Path) -> str:
+    with open(path, encoding="utf-8", newline="") as f:  # no newline translation: restore byte-exact
+        return f.read()
+
+
+def write(path: Path, text: str) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
 def run(name: str, rel: str, old: str, new: str, suite: str) -> str:
     path = ROOT / rel
-    original = path.read_text(encoding="utf-8")
+    original = read(path)
     if original.count(old) != 1:
         return "STALE"
     try:
-        path.write_text(original.replace(old, new), encoding="utf-8")
+        write(path, original.replace(old, new))
         if not build("tests" if suite == "unit" else "debug"):
             return "INVALID"
         return "CAUGHT" if suite_fails(suite) else "SURVIVED"
     finally:
-        path.write_text(original, encoding="utf-8")
+        write(path, original)
 
 
 def main(argv: list[str]) -> int:
     words = [a for a in argv if not a.startswith("-")]
     selected = [m for m in MUTATIONS if not words or any(w in m[0] for w in words)]
     if "--check" in argv:  # only verify that every mutation still applies, without building
-        stale = [m[0] for m in selected if (ROOT / m[1]).read_text(encoding="utf-8").count(m[2]) != 1]
+        stale = [m[0] for m in selected if read(ROOT / m[1]).count(m[2]) != 1]
         for name in stale:
             print(f"STALE     {name}")
         print(f"{len(selected) - len(stale)}/{len(selected)} mutations apply")

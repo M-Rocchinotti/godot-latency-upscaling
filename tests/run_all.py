@@ -10,10 +10,13 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
   unit tests                  C++ tests of the pure modules (no GPU)
   import                      headless import, creates .godot/extension_list.cfg
   reflex                      hook loaded, extensions enabled on Godot's device, markers, sleep,
-                              timings, modes, frame-rate limit, swapchain recreation, overlay
+                              timings, modes, frame-rate limit, swapchain recreation, minimised
+                              window, overlay
+  reflex (separate render ...) the same with Godot's separate render thread
   pass-through                a rendered frame is identical with and without the hook
   fallback: ...               forced failure cases give a clean status and no crash
   editor                      the editor opens the project with the addon, no errors
+  editor with Reflex enabled  enable_in_editor (environment override): Reflex in the editor process
   editor: addon added ...     the addon loaded into a running editor stays dormant, no crash
   validation                  Vulkan validation layers (LunarG SDK) report nothing with the hook
   archive                     `git archive` ships only the addon and the licences
@@ -93,6 +96,35 @@ def suite_reflex() -> bool:
     problems = problems_in(out, [r"Reflex mode must be", r"Reflex frame-rate limit must be"])
     ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
     return result("reflex", ok, summary.group(0) if summary else f"exit {code}, no summary", fails + problems)
+
+
+def suite_reflex_render_thread() -> bool:
+    """The same tests with Godot's separate render thread (thread model "Separate"): the render
+    submission then runs on another thread than the simulation and the sleep."""
+    code, out = godot(["--render-thread", "separate", "--script", "res://tests/reflex_tests.gd"], "test_reflex_render_thread")
+    summary = re.search(r"reflex tests: (\d+) passed, (\d+) failed", out)
+    fails = [l for l in out.splitlines() if l.startswith("FAIL")]
+    # Godot 4.7.2 itself reports empty 2D texture updates for the demo in this experimental thread
+    # model, with or without the addon.
+    problems = problems_in(out, [r"Reflex mode must be", r"Reflex frame-rate limit must be",
+                                 r'Condition "p_image\.is_null\(\) \|\| p_image->is_empty\(\)" is true',
+                                 r"This function \(finalize\) can only be called from the render thread",
+                                 r"2 ObjectDB instances were leaked at exit"])
+    ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
+    return result("reflex (separate render thread)", ok, summary.group(0) if summary else f"exit {code}, no summary",
+                  fails + problems)
+
+
+def suite_editor_with_reflex() -> bool:
+    """Reflex enabled in the editor process itself (enable_in_editor through the environment
+    override; the editor ignores override.cfg): the editor's main window gets latency mode, its
+    other windows pass through, and nothing reports an error."""
+    code, out = godot(["--editor", "--quit-after", "300"], "test_editor_reflex",
+                      {"GODOT_NVIDIA_DLSS_SETTINGS": "general/enable_in_editor=true"})
+    problems = problems_in(out)
+    active = "Reflex active in this process" in out
+    return result("editor with Reflex enabled", code == 0 and active and not problems,
+                  f"exit {code}" + ("" if active else ", Reflex not active"), problems)
 
 
 def capture(name: str, env: dict[str, str]) -> tuple[bytes | None, list[str]]:
@@ -269,9 +301,11 @@ SUITES = [
     ("unit tests", suite_unit_tests),
     ("import", suite_import),
     ("reflex", suite_reflex),
+    ("reflex render thread", suite_reflex_render_thread),
     ("pass-through", suite_pass_through),
     ("fallback", suite_fallbacks),
     ("editor", suite_editor),
+    ("editor reflex", suite_editor_with_reflex),
     ("late load", suite_editor_late_load),
     ("validation", suite_validation),
     ("archive", suite_archive),
