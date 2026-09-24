@@ -7,14 +7,8 @@ reloadable = false
 
 [libraries]
 
-; Windows x86_64: the full implementation (Vulkan hook + Reflex).
+; Windows x86_64 only. The editor, games run from it and debug exports use the debug library;
+; release exports use the release library, so a release zip must contain both.
+; Other platforms have no library: exclude the addon from those exports (see README, "Platforms").
 windows.debug.x86_64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.windows.template_debug.x86_64.dll"
 windows.release.x86_64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.windows.template_release.x86_64.dll"
-; Other platforms: a no-op stub (stub/) so exports load cleanly and the LatencyUpscaling singleton
-; exists, reporting that the platform is not supported. Same library for debug and release. macOS
-; entries are per-architecture; a universal macOS export needs a lipo'd stub (see stub/README).
-linux.x86_64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.linux.x86_64.so"
-linux.arm64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.linux.arm64.so"
-macos.x86_64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.macos.x86_64.dylib"
-macos.arm64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.macos.arm64.dylib"
-windows.arm64 = "res://addons/latency_upscaling/bin/godot_latency_upscaling.windows.arm64.dll"

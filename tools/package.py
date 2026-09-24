@@ -1,18 +1,21 @@
 #!/usr/bin/env python
-"""Build the distributable addon zip.
+"""Build the distributable addon zip (the only installable form of the addon).
 
 The zip contains only what a user drops into their project: the addon (addons/latency_upscaling/**)
-with the release Windows DLL and the cross-platform no-op stubs, plus the licence files and the
-addon README (which carries the AI-usage disclosure). No debug DLL, no import libs, no source.
+with BOTH Windows x86_64 DLLs, plus the licence files and the addon README (which carries the
+AI-usage disclosure). No import libs, no source, no stubs.
+
+Both DLLs are needed: Godot picks the [libraries] entry with the most matching feature tags, so
+the editor, games started from it and debug exports load the debug DLL, and only release exports
+load the release DLL. A zip with only one of them does not load in the other set of processes.
 
     python tools/package.py               # -> dist/godot-latency-upscaling-v<version>.zip
     python tools/package.py --skip-build   # use the binaries already in bin/
 
-Steps: build the release DLL (tools/build.py release) and the stubs (stub/build_stubs.py) unless
---skip-build, then stage the addon with only the shipped binaries and zip it. Releases come from
-this script; `git archive` (Download ZIP / Asset Library) ships the same addon tree minus the
-git-ignored binaries (see .gitattributes) — the two are reconciled by tests/run_all.py's archive
-suite. Ends "package: <zip> (<n> files, <size>)".
+GitHub's "Download ZIP" (git archive) is NOT installable: it has no binaries (they are build
+outputs). Releases come from this script; tests/run_package.py installs the zip into a fresh
+project and checks the editor, a game run from it, and a debug and a release export.
+Ends "package: <zip> (<n> files, <size>)".
 """
 from __future__ import annotations
 
@@ -29,14 +32,10 @@ DIST = ROOT / "dist"
 VERSION = (ROOT / "src" / "core" / "version.h").read_text(encoding="utf-8")
 VERSION = VERSION.split('LU_VERSION "', 1)[1].split('"', 1)[0]
 
-# The only binaries that ship (release Windows DLL + the five cross-platform stubs).
+# The only binaries that ship: both Windows x86_64 DLLs (see the module docstring).
 SHIPPED_BINARIES = [
+    "godot_latency_upscaling.windows.template_debug.x86_64.dll",
     "godot_latency_upscaling.windows.template_release.x86_64.dll",
-    "godot_latency_upscaling.linux.x86_64.so",
-    "godot_latency_upscaling.linux.arm64.so",
-    "godot_latency_upscaling.macos.x86_64.dylib",
-    "godot_latency_upscaling.macos.arm64.dylib",
-    "godot_latency_upscaling.windows.arm64.dll",
 ]
 
 # Addon files to ship (everything but bin/, handled separately; no editor .uid caches).
@@ -55,17 +54,11 @@ def addon_files() -> list[Path]:
 
 
 def build() -> bool:
-    release = subprocess.run([sys.executable, str(ROOT / "tools" / "build.py"), "release", "-j", "2"],
-                             cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if release.returncode:
-        print(release.stdout[-2000:])
-        print("release build failed")
-        return False
-    stubs = subprocess.run([sys.executable, str(ROOT / "stub" / "build_stubs.py")],
-                           cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if stubs.returncode:
-        print(stubs.stdout[-2000:])
-        print("stub build failed (is zig installed?)")
+    proc = subprocess.run([sys.executable, str(ROOT / "tools" / "build.py"), "debug", "release", "-j", "2"],
+                          cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode:
+        print(proc.stdout[-2000:])
+        print("debug/release build failed")
         return False
     return True
 
