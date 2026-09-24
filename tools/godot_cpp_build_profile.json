@@ -1,0 +1,13 @@
+{
+	"_comment": "godot-cpp build profile: only these engine classes (plus their parents and the ones godot-cpp always needs) get C++ bindings. This keeps the godot-cpp build small on a 4-core machine. Add a class here before using it from src/.",
+	"enabled_classes": [
+		"ConfigFile",
+		"Engine",
+		"Input",
+		"MainLoop",
+		"OS",
+		"ProjectSettings",
+		"RenderingServer",
+		"ResourceLoader"
+	]
+}
