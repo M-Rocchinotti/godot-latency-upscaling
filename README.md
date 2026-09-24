@@ -419,8 +419,8 @@ in dB against a 2x supersampled render of the same view, higher is closer; 64 fr
 
 The last two rows are the convention checks: with the jitter and motion vectors exactly as the
 addon hands them over DLSS scores best; any deliberate change scores lower. All five modes render at
-the size DLSS asks for, all presets evaluate, and every upscaled frame is evaluated by DLSS (18 of 18
-checks). PSNR is not a perceptual measure; the captures are written next to the log for a look.
+the size DLSS asks for, all presets evaluate, Auto is off below 1080p, and every upscaled frame is
+evaluated by DLSS (19 of 19 checks). PSNR is not a perceptual measure; the captures are written next to the log for a look.
 
 **GPU time** (`tests/dlss_bench.gd`, the demo scene at 1920x1080, median over 200 frames of the main
 viewport's GPU time, which includes the upscaler; the load shader runs at the render resolution):

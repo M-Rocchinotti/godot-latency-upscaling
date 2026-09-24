@@ -15,3 +15,4 @@ keyboard focus, and start only when `preflight` finds the PC idle (GPU load, no 
 | 2026-09-25 01:09:04 | dlss_bench | `--script res://tests/dlss_bench.gd -- --size=1920x1080` | 12 s | exit 0 | GPU 0 %, no fullscreen app in front, no game in front |
 | 2026-09-25 01:10:09 | dlss_reflex | `GODOT_LATENCY_UPSCALING_SETTINGS=dlss/quality=2 --script res://tests/upscaler_run.gd -- --frames=400` | 6 s | exit 0 | GPU 0 %, no fullscreen app in front, no game in front |
 | 2026-09-25 01:15:42 | dlss_minimal_runtime | `GODOT_LATENCY_UPSCALING_SETTINGS=dlss/quality=2 --script res://tests/upscaler_run.gd -- --frames=200` | 4 s | exit 0 | GPU 0 %, no fullscreen app in front, no game in front |
+| 2026-09-25 01:28:22 | dlss_tests | `--script res://tests/dlss_tests.gd` | 8 s | exit 0 | GPU 0 %, no fullscreen app in front, no game in front |
