@@ -4,6 +4,7 @@
 #include "core/testing.h"
 #include "hook/loader_hook.h"
 #include "reflex/reflex_ll2.h"
+#include "upscale/upscale_feature.h"
 #include "vk/dispatch.h"
 
 #include <godot_cpp/classes/engine.hpp>
@@ -182,6 +183,19 @@ void bootstrap_core() {
 		if (g_state.reflex_enabled) {
 			vk::set_queue_hooks(&reflex);
 		}
+	}
+	// Phase 2: recording an upscaler into Godot's command buffer needs the vkCmd* hooks, which
+	// must be in place before Godot resolves its Vulkan functions, i.e. now. Only the native test
+	// backend uses it so far (DLSS joins in the DLSS step).
+	bool native_recording = false;
+#ifdef DEBUG_ENABLED
+	native_recording = g_state.test_upscaler == "native" && !g_state.editor;
+#endif
+	upscale::UpscaleFeature &upscale_feature = upscale::UpscaleFeature::get();
+	upscale_feature.configure(native_recording, g_state.hidden_extensions);
+	if (g_state.hook_installed && native_recording) {
+		vk::enable_command_interception();
+		vk::register_feature(&upscale_feature);
 	}
 	if (g_state.hook_installed) {
 		log::info("Vulkan hook installed (%d import slot(s)); Reflex %s", static_cast<int>(g_state.patched_imports.size()),

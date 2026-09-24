@@ -30,6 +30,8 @@ next to the executable, no environment variables and no registry entries.
         GetProcAddress(m, "vkGetInstanceProcAddr") ──────────────────► exported proxy (vk/dispatch.cpp)
   vkCreateInstance / vkCreateDevice ────────────────► hooks: features add extensions + feature bits
   vkCreateSwapchainKHR / vkQueueSubmit / vkQueuePresentKHR ─► QueueHooks (reflex/reflex_ll2.cpp)
+  vkCmdBindPipeline / ...DescriptorSets / ...PushConstants / vkCmdDispatch
+                                (only when an upscaler records natively) ─► vk/marker_interceptor.cpp
   everything else ──────────────────────────────────► real vulkan-1.dll (untouched pointers)
 
   RenderingServer frame_pre_draw + the GDExtension frame callback ─► godot/latency_upscaling.cpp (markers, sleep)
@@ -47,12 +49,17 @@ next to the executable, no environment variables and no registry entries.
 | `src/vk/dispatch.cpp` | The proxy `vkGetInstanceProcAddr` / `vkGetDeviceProcAddr` and the hooks | |
 | `src/vk/device_patch.cpp` | Adds extensions and feature bits to a `VkDeviceCreateInfo` | yes |
 | `src/vk/vk_feature.h` | Extension point: what a feature needs from instance and device | |
+| `src/vk/marker_interceptor.cpp` | Phase 2: replaces a marker compute dispatch in Godot's command buffer, re-binds Godot's state | yes |
 | `src/reflex/reflex_ll2.cpp` | Reflex via `VK_NV_low_latency2`: sleep, markers, timings, swapchain / present / submit | |
 | `src/reflex/frame_sequencer.cpp` | Frame IDs and marker order rules | yes |
 | `src/reflex/latency_stats.cpp` | Frame reports to averages | yes |
 | `src/core/settings.cpp` | Settings layers and validation | yes |
 | `src/dlss/jitter.cpp` | Phase 2: Godot's camera jitter reproduced on the CPU | yes |
 | `src/dlss/upscaler_provider.h` | Phase 2: interface of the DLSS backend | |
+| `src/upscale/quality.cpp` | Phase 2: quality modes, scaling ratios, Auto, presets | yes |
+| `src/upscale/upscale_feature.cpp` | Phase 2: the upscaler's `VulkanFeature` (`VK_KHR_push_descriptor`), native objects' lifetime | yes |
+| `src/upscale/native_reference.cpp` | Phase 2: the reference upscaler recorded natively (push descriptors) | yes |
+| `src/godot/upscaler.cpp` | Phase 2: the FSR2 slot takeover, jitter, the reference backend, the marker | |
 
 ## 3. The hook
 
@@ -94,6 +101,7 @@ The proxy returns the loader's own answer for every name except these:
 | `vkCreateInstance`, `vkDestroyInstance` | remember the instance's API version; add instance extensions features ask for (none in Phase 1) |
 | `vkCreateDevice`, `vkDestroyDevice` | add device extensions and feature bits; tell features about the device |
 | `vkCreateSwapchainKHR`, `vkDestroySwapchainKHR`, `vkDestroySurfaceKHR`, `vkQueueSubmit`, `vkQueuePresentKHR` | Reflex (only intercepted when Reflex is enabled for the process) |
+| `vkBeginCommandBuffer`, `vkEndCommandBuffer`, `vkCmdBindPipeline`, `vkCmdBindDescriptorSets`, `vkCmdPushConstants`, `vkCmdDispatch` | Phase 2 marker interception (only handed out when an upscaler records natively; enabled at CORE initialisation, before Godot resolves them) |
 
 A `NULL` answer from the loader stays `NULL`. Every hook ends in the loader's exported
 trampoline for that function, which dispatches through the handle, so validation layers,

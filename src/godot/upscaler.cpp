@@ -4,6 +4,9 @@
 #include "dlss/jitter.h"
 #include "godot/bootstrap.h"
 #include "godot/reference_upscaler_glsl.h"
+#include "upscale/reference_params.h"
+#include "upscale/upscale_feature.h"
+#include "vk/dispatch.h"
 
 #include <godot_cpp/classes/camera3d.hpp>
 #include <godot_cpp/classes/compositor.hpp>
@@ -113,8 +116,9 @@ Upscaler &Upscaler::get() {
 }
 
 void Upscaler::configure(UpscaleBackend backend, const std::string &reason, upscale::Quality quality,
-		upscale::Preset preset, bool enabled) {
+		upscale::Preset preset, bool enabled, bool native) {
 	backend_ = backend;
+	native_requested_ = native;
 	backend_reason_ = reason;
 	quality_ = quality;
 	preset_ = preset;
@@ -265,6 +269,7 @@ Dictionary Upscaler::status() const {
 	d["frames_upscaled"] = static_cast<int64_t>(stats_.frames_upscaled);
 	d["fsr2_frames"] = static_cast<int64_t>(stats_.fsr2_frames);
 	d["takeovers"] = static_cast<int64_t>(stats_.takeovers);
+	d["frames_since_reset"] = static_cast<int64_t>(stats_.frames_since_reset);
 	d["render_size"] = Vector2i(stats_.render_width, stats_.render_height);
 	d["target_size"] = Vector2i(stats_.target_width, stats_.target_height);
 	Dictionary jitter;
@@ -273,11 +278,27 @@ Dictionary Upscaler::status() const {
 	jitter["checks"] = static_cast<int64_t>(stats_.jitter_checks);
 	jitter["mismatches"] = static_cast<int64_t>(stats_.jitter_mismatches);
 	jitter["last_pixels"] = Vector2(stats_.last_jitter_x, stats_.last_jitter_y);
+	jitter["phase"] = stats_.phase;
 	jitter["ubo_checks"] = static_cast<int64_t>(stats_.ubo_checks);
 	jitter["ubo_mismatches"] = static_cast<int64_t>(stats_.ubo_mismatches);
 	d["jitter"] = jitter;
 	d["velocity_samples"] = stats_.velocity_samples.duplicate();
 	d["error"] = String::utf8(stats_.error.c_str());
+	Dictionary native;
+	native["requested"] = native_requested_;
+	native["active"] = marker_.load() != 0;
+	native["error"] = String::utf8(native_error_.c_str());
+	native["command_hooks"] = vk::command_interception_active();
+	const vk::InterceptorStats intercepted = vk::interceptor_stats();
+	native["marker_dispatches"] = static_cast<int64_t>(intercepted.marker_dispatches);
+	native["substituted"] = static_cast<int64_t>(intercepted.substituted);
+	native["declined"] = static_cast<int64_t>(intercepted.declined);
+	native["untracked"] = static_cast<int64_t>(intercepted.untracked);
+	const upscale::NativeRecorderStats recorder = upscale::UpscaleFeature::get().reference_recorder().stats();
+	native["recorded"] = static_cast<int64_t>(recorder.recorded);
+	native["missing_job"] = static_cast<int64_t>(recorder.missing_job);
+	native["not_created"] = static_cast<int64_t>(recorder.not_created);
+	d["native"] = native;
 	return d;
 }
 
@@ -379,6 +400,7 @@ bool Upscaler::ensure_pipeline() {
 	}
 	shader_ = rd->shader_create_from_spirv(spirv, "LatencyUpscaling reference upscaler");
 	pipeline_ = rd->compute_pipeline_create(shader_);
+	const PackedByteArray bytecode = spirv->get_stage_bytecode(RenderingDevice::SHADER_STAGE_COMPUTE);
 	Ref<RDSamplerState> sampler;
 	sampler.instantiate();
 	sampler->set_min_filter(RenderingDevice::SAMPLER_FILTER_LINEAR);
@@ -391,7 +413,39 @@ bool Upscaler::ensure_pipeline() {
 		set_error("reference upscaler pipeline could not be created");
 		return false;
 	}
+	if (native_requested_) {
+		ensure_native(bytecode);
+	}
 	return true;
+}
+
+// Registers the reference pipeline as the marker and creates its native twin from the same SPIR-V.
+// On any failure the marker is not registered, so Godot's own dispatch of it keeps upscaling.
+void Upscaler::ensure_native(const PackedByteArray &bytecode) {
+	std::string error;
+	upscale::UpscaleFeature &feature = upscale::UpscaleFeature::get();
+	if (!vk::command_interception_active()) {
+		error = "Godot's vkCmd* functions are not hooked (the command hooks were not enabled before the Vulkan instance)";
+	} else if (bytecode.size() == 0 || bytecode.size() % 4 != 0) {
+		error = "no SPIR-V for the native reference pipeline";
+	} else if (feature.native_ready(error)) {
+		std::vector<uint32_t> words(static_cast<size_t>(bytecode.size()) / 4);
+		std::memcpy(words.data(), bytecode.ptr(), words.size() * sizeof(uint32_t));
+		if (feature.ensure_reference(words, error)) {
+			RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+			const uint64_t marker = rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_COMPUTE_PIPELINE, pipeline_, 0);
+			if (marker == 0 || !vk::add_marker(reinterpret_cast<VkPipeline>(marker), &feature.reference_recorder())) {
+				error = "the reference pipeline could not be registered as the marker";
+			} else {
+				marker_ = marker;
+			}
+		}
+	}
+	if (!error.empty()) {
+		log::warning("upscaler: native recording unavailable, Godot records the reference dispatch: %s", error.c_str());
+		std::lock_guard<std::mutex> lock(stats_mutex_);
+		native_error_ = error;
+	}
 }
 
 void Upscaler::track_jitter(RenderSceneData *scene, ViewState &view, int render_width, int target_width,
@@ -471,7 +525,8 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 		view.reset = true;
 		view.inputs_key[0] = 0; // rebuild the uniform sets
 	}
-	const uint64_t key[4] = { color.get_id(), depth.get_id(), velocity.get_id(), output.get_id() };
+	const uint64_t key[4] = { static_cast<uint64_t>(color.get_id()), static_cast<uint64_t>(depth.get_id()),
+		static_cast<uint64_t>(velocity.get_id()), static_cast<uint64_t>(output.get_id()) };
 	if (std::memcmp(key, view.inputs_key, sizeof(key)) != 0) {
 		for (int i = 0; i < 2; ++i) {
 			if (view.uniform_set[i].is_valid() && rd->uniform_set_is_valid(view.uniform_set[i])) {
@@ -519,15 +574,55 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 	const float jitter_sign_y = JITTER_SIGN_Y * snap.jitter_sign_y;
 	const float motion_sign = snap.motion_sign;
 	const float max_history = snap.max_history;
-	if (reset_requested_.exchange(false)) {
-		view.reset = true;
+	// Godot's jitter phase of this frame (UINT32_MAX until calibrated).
+	const uint32_t phase_count = dlss::jitter_phase_count(static_cast<uint32_t>(target.x), static_cast<uint32_t>(internal.x), true, false);
+	const uint32_t phase = view.calibrated && phase_count > 0 ?
+			static_cast<uint32_t>((static_cast<int64_t>(view.frames % phase_count) + view.phase_offset + phase_count) % phase_count) :
+			UINT32_MAX;
+	// A requested reset, optionally held back until a given jitter phase (debug tests compare runs
+	// that must start from the same phase).
+	if (reset_requested_.load()) {
+		const int wanted_phase = reset_phase_.load();
+		if (wanted_phase < 0 || static_cast<uint32_t>(wanted_phase) == phase) {
+			reset_requested_ = false;
+			reset_phase_ = -1;
+			view.reset = true;
+		}
 	}
-	const float params[12] = { static_cast<float>(internal.x), static_cast<float>(internal.y), static_cast<float>(target.x),
-		static_cast<float>(target.y), jitter_x * jitter_sign_x, jitter_y * jitter_sign_y, motion_sign, motion_sign, max_history,
-		view.reset ? 1.0f : 0.0f, 0.0f, 0.0f };
+	upscale::ReferenceParams params;
+	params.render_size[0] = static_cast<float>(internal.x);
+	params.render_size[1] = static_cast<float>(internal.y);
+	params.target_size[0] = static_cast<float>(target.x);
+	params.target_size[1] = static_cast<float>(target.y);
+	params.jitter[0] = jitter_x * jitter_sign_x;
+	params.jitter[1] = jitter_y * jitter_sign_y;
+	params.motion_sign[0] = motion_sign;
+	params.motion_sign[1] = motion_sign;
+	params.max_history = max_history;
+	params.reset = view.reset ? 1.0f : 0.0f;
+	if (marker_.load() != 0) {
+		// Native recording: the job id travels with the marker's push constants and names the images
+		// (Godot's own views of them) for the recorder.
+		if (++job_counter_ == 0) {
+			job_counter_ = 1; // 0 means "no job"
+		}
+		params.job = job_counter_;
+		auto view_of = [&](const RID &texture) {
+			return reinterpret_cast<VkImageView>(rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_TEXTURE_VIEW, texture, 0));
+		};
+		upscale::ReferenceJob job;
+		job.color = view_of(color);
+		job.depth = view_of(depth);
+		job.velocity = view_of(velocity);
+		job.history_read = view_of(view.history[view.read]);
+		job.output = view_of(output);
+		job.history_write = view_of(view.history[1 - view.read]);
+		job.sampler = reinterpret_cast<VkSampler>(rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_SAMPLER, sampler_, 0));
+		upscale::UpscaleFeature::get().reference_recorder().set_job(params.job, job);
+	}
 	PackedByteArray push;
 	push.resize(sizeof(params));
-	std::memcpy(push.ptrw(), params, sizeof(params));
+	std::memcpy(push.ptrw(), &params, sizeof(params));
 
 	const int64_t list = rd->compute_list_begin();
 	rd->compute_list_bind_compute_pipeline(list, pipeline_);
@@ -537,18 +632,17 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 	rd->compute_list_end();
 
 #ifdef DEBUG_ENABLED
-	const uint32_t phase_count = dlss::jitter_phase_count(static_cast<uint32_t>(target.x), static_cast<uint32_t>(internal.x), true, false);
-	const uint32_t phase = view.calibrated && phase_count > 0 ?
-			static_cast<uint32_t>((static_cast<int64_t>(view.frames % phase_count) + view.phase_offset + phase_count) % phase_count) :
-			UINT32_MAX;
 	debug_readbacks(scene, rb, jitter_x, jitter_y, phase, phase_count);
 #endif
 
+	view.frames_since_reset = view.reset ? 1 : view.frames_since_reset + 1;
 	view.read = 1 - view.read;
 	view.reset = false;
 	view.frames++;
 	std::lock_guard<std::mutex> lock(stats_mutex_);
 	stats_.frames_upscaled++;
+	stats_.frames_since_reset = view.frames_since_reset;
+	stats_.phase = phase == UINT32_MAX ? -1 : static_cast<int>(phase);
 	stats_.render_width = internal.x;
 	stats_.render_height = internal.y;
 	stats_.target_width = target.x;
@@ -581,7 +675,7 @@ void Upscaler::debug_readbacks(RenderSceneData *scene, RenderSceneBuffersRD *rb,
 	if (!ensure_velocity_probe() || !velocity.is_valid()) {
 		return;
 	}
-	if (probe_velocity_ != velocity.get_id() || !rd->uniform_set_is_valid(probe_set_)) {
+	if (probe_velocity_ != static_cast<uint64_t>(velocity.get_id()) || !rd->uniform_set_is_valid(probe_set_)) {
 		if (probe_set_.is_valid() && rd->uniform_set_is_valid(probe_set_)) {
 			rd->free_rid(probe_set_);
 		}
@@ -679,7 +773,22 @@ void Upscaler::set_test_conventions(float jitter_x, float jitter_y, float motion
 	reset_requested_ = true;
 }
 
+void Upscaler::set_test_native_mode(int mode) {
+	upscale::NativeMode native = upscale::NativeMode::Record;
+	if (mode == 1) {
+		native = upscale::NativeMode::Decline;
+	} else if (mode == 2) {
+		native = upscale::NativeMode::TestNegatedJitterX;
+	}
+	upscale::UpscaleFeature::get().reference_recorder().set_mode(native);
+}
+
 void Upscaler::release_gpu_resources() {
+	// The marker first: the pipeline is about to be freed. The native twin lives until the device
+	// is destroyed (UpscaleFeature::on_device_destroyed), when it can no longer be in flight.
+	if (const uint64_t marker = marker_.exchange(0)) {
+		vk::remove_marker(reinterpret_cast<VkPipeline>(marker));
+	}
 	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
 	if (rd == nullptr) {
 		return;

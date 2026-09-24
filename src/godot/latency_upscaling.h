@@ -69,10 +69,12 @@ public:
 	DlssPreset get_dlss_preset() const;
 #ifdef DEBUG_ENABLED
 	// Test hooks (debug builds only, tests/upscaler_tests.gd): upscaler conventions relative to
-	// Godot's (+1 = Godot's), a history reset, and N frames of UBO / velocity read-backs.
+	// Godot's (+1 = Godot's), a history reset, N frames of UBO / velocity read-backs, and the native
+	// recorder's mode (0 record, 1 let Godot's marker dispatch run, 2 record with a negated jitter x).
 	void _set_upscaler_test_conventions(double jitter_x, double jitter_y, double motion);
-	void _reset_upscaler_history();
+	void _reset_upscaler_history(int phase); // phase >= 0: at that jitter phase
 	void _request_upscaler_readbacks(int frames);
+	void _set_upscaler_test_native_mode(int mode);
 #endif
 
 	// --- Engine wiring (not exposed) ---

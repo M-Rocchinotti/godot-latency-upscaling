@@ -6,6 +6,8 @@
 // velocity sampled, the target-size output as a storage image -- so Godot's render graph orders
 // and transitions them the way DLSS needs.
 //
+// The push constants are upscale::ReferenceParams (src/upscale/reference_params.h).
+//
 // Per output pixel: take the nearest render sample at the jittered position, weight it by how close
 // the scene point it saw is to the pixel centre, and accumulate it with the reprojected history
 // (clamped to the current 3x3 neighbourhood; the alpha channel carries the accumulated weight).
@@ -33,8 +35,8 @@ layout(push_constant, std430) uniform Params {
 	vec2 motion_sign;     // +1/+1 for Godot's convention; flipped only by the convention tests
 	float max_history;    // cap of the accumulated weight (the effective history length)
 	float reset;          // 1: ignore the history (first frame, resize)
-	float pad0;
-	float pad1;
+	uint job;             // the native recorder's job id (0: none); not used by the shader
+	uint pad;
 } params;
 
 void main() {

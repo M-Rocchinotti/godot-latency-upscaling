@@ -16,6 +16,11 @@
 //
 // Jitter comes from RenderSceneData.get_cam_projection() (the jittered projection) every frame;
 // the Halton phase is also tracked on the CPU (calibrated once) and must agree.
+//
+// Native recording (docs/ARCHITECTURE.md section 7, step 4): the reference pipeline doubles as the
+// marker. Its VkPipeline is registered with the layer's MarkerInterceptor, and when Godot records
+// the dispatch into its command buffer, upscale::NativeReferenceRecorder records the same shader
+// natively instead (the images named by the push constants' job id). DLSS takes that slot later.
 #pragma once
 
 #include "upscale/quality.h"
@@ -53,7 +58,7 @@ protected:
 
 enum class UpscaleBackend {
 	None, // upscaling off (reason says why)
-	Reference, // the reference compute upscaler, recorded by Godot (debug test backend)
+	Reference, // the reference compute upscaler (debug test backend), recorded by Godot or natively
 	Dlss, // NVIDIA DLSS (Phase 2; needs the NVIDIA runtime)
 };
 
@@ -64,8 +69,9 @@ public:
 	static Upscaler &get();
 
 	// SCENE init (main thread). `backend` None comes with the reason.
+	// `native`: record the backend natively into Godot's command buffer (marker interception).
 	void configure(UpscaleBackend backend, const std::string &reason, upscale::Quality quality, upscale::Preset preset,
-			bool enabled);
+			bool enabled, bool native);
 
 	// Main thread.
 	void update(); // end of every main-loop iteration
@@ -93,8 +99,15 @@ public:
 	// Debug builds (tests/upscaler_tests.gd): conventions to compare against Godot's (+1 = Godot's),
 	// a history reset, and read-backs of the scene UBO and the velocity texture for `frames`.
 	void set_test_conventions(float jitter_x, float jitter_y, float motion);
-	void request_history_reset() { reset_requested_ = true; }
+	// phase >= 0: hold the reset back until the frame with that jitter phase.
+	void request_history_reset(int phase = -1) {
+		reset_phase_ = phase;
+		reset_requested_ = true;
+	}
 	void request_readbacks(int frames) { readback_frames_ = frames; }
+	// Debug builds: 0 = record natively, 1 = let the marker dispatch run (the RenderingDevice path),
+	// 2 = record natively with the jitter's x negated (proves the image is the native recording).
+	void set_test_native_mode(int mode);
 
 private:
 	struct Snapshot { // written by the main thread, read by the render thread
@@ -114,6 +127,7 @@ private:
 		uint64_t inputs_key[4] = {}; // color, depth, velocity, output RIDs the sets were built for
 		bool reset = true;
 		uint64_t frames = 0;
+		uint64_t frames_since_reset = 0; // including the reset frame
 		bool calibrated = false;
 		int64_t phase_offset = 0; // Godot phase = (frames + phase_offset) % phase_count
 	};
@@ -121,6 +135,8 @@ private:
 		uint64_t frames_upscaled = 0;
 		uint64_t fsr2_frames = 0; // frames Godot ran FSR2 before a takeover
 		uint64_t takeovers = 0;
+		uint64_t frames_since_reset = 0;
+		int phase = -1; // Godot's jitter phase of the last upscaled frame (-1: not calibrated)
 		int render_width = 0, render_height = 0, target_width = 0, target_height = 0;
 		uint32_t phase_count = 0;
 		int calibrated_phase = -1;
@@ -134,6 +150,7 @@ private:
 	};
 
 	bool ensure_pipeline(); // render thread
+	void ensure_native(const godot::PackedByteArray &spirv); // render thread, after the pipeline exists
 	bool ensure_velocity_probe(); // render thread, debug
 	void dispatch_reference(godot::RenderSceneBuffersRD *rb, godot::RenderSceneData *scene, ViewState &view);
 	void track_jitter(godot::RenderSceneData *scene, ViewState &view, int render_width, int target_width,
@@ -164,10 +181,15 @@ private:
 	// Render thread.
 	godot::RID shader_, pipeline_, sampler_;
 	bool pipeline_failed_ = false;
+	bool native_requested_ = false; // set by configure() before any frame
+	std::atomic<uint64_t> marker_{ 0 }; // VkPipeline registered as the marker (0: none)
+	std::string native_error_; // guarded by stats_mutex_
+	uint32_t job_counter_ = 0;
 	std::map<uint64_t, ViewState> views_; // by render-target RID id
 	std::map<uint64_t, godot::Ref<godot::RenderSceneBuffersRD>> pending_; // to take over
 	std::atomic<bool> takeover_pending_{ false };
 	std::atomic<bool> reset_requested_{ false };
+	std::atomic<int> reset_phase_{ -1 };
 	std::atomic<int> readback_frames_{ -1 }; // -1: not yet read from the environment
 	godot::RID probe_shader_, probe_pipeline_, probe_buffer_, probe_set_;
 	uint64_t probe_velocity_ = 0; // velocity RID the probe set was built for

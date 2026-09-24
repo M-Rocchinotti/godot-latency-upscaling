@@ -117,8 +117,9 @@ void LatencyUpscaling::_bind_methods() {
 #ifdef DEBUG_ENABLED
 	ClassDB::bind_method(D_METHOD("_set_upscaler_test_conventions", "jitter_x", "jitter_y", "motion"),
 			&LatencyUpscaling::_set_upscaler_test_conventions);
-	ClassDB::bind_method(D_METHOD("_reset_upscaler_history"), &LatencyUpscaling::_reset_upscaler_history);
+	ClassDB::bind_method(D_METHOD("_reset_upscaler_history", "phase"), &LatencyUpscaling::_reset_upscaler_history, DEFVAL(-1));
 	ClassDB::bind_method(D_METHOD("_request_upscaler_readbacks", "frames"), &LatencyUpscaling::_request_upscaler_readbacks);
+	ClassDB::bind_method(D_METHOD("_set_upscaler_test_native_mode", "mode"), &LatencyUpscaling::_set_upscaler_test_native_mode);
 #endif
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "reflex_mode", PROPERTY_HINT_ENUM, "Off,On,On + Boost"), "set_reflex_mode", "get_reflex_mode");
@@ -288,12 +289,15 @@ void LatencyUpscaling::configure_upscaler() {
 		reason = "the DLSS backend is not available yet (Phase 2 in progress)";
 	}
 #ifdef DEBUG_ENABLED
-	if (boot.test_upscaler == "reference" && !boot.editor) {
+	if ((boot.test_upscaler == "reference" || boot.test_upscaler == "native") && !boot.editor) {
 		backend = UpscaleBackend::Reference; // test backend (tests/upscaler_tests.gd)
 		reason.clear();
 	}
+	const bool native = boot.test_upscaler == "native" && !boot.editor;
+#else
+	const bool native = false;
 #endif
-	Upscaler::get().configure(backend, reason, s.dlss_quality, s.dlss_preset, s.dlss_enabled);
+	Upscaler::get().configure(backend, reason, s.dlss_quality, s.dlss_preset, s.dlss_enabled, native);
 }
 
 void LatencyUpscaling::run_upscaler_takeovers() {
@@ -369,12 +373,16 @@ void LatencyUpscaling::_set_upscaler_test_conventions(double jitter_x, double ji
 	Upscaler::get().set_test_conventions(static_cast<float>(jitter_x), static_cast<float>(jitter_y), static_cast<float>(motion));
 }
 
-void LatencyUpscaling::_reset_upscaler_history() {
-	Upscaler::get().request_history_reset();
+void LatencyUpscaling::_reset_upscaler_history(int phase) {
+	Upscaler::get().request_history_reset(phase);
 }
 
 void LatencyUpscaling::_request_upscaler_readbacks(int frames) {
 	Upscaler::get().request_readbacks(frames);
+}
+
+void LatencyUpscaling::_set_upscaler_test_native_mode(int mode) {
+	Upscaler::get().set_test_native_mode(mode);
 }
 #endif
 
