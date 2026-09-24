@@ -15,7 +15,7 @@ PROBLEMS = [
     re.compile(r"^ERROR:"),
     re.compile(r"was leaked|were leaked|leaked at exit", re.IGNORECASE),
     re.compile(r"resources still in use", re.IGNORECASE),
-    re.compile(r"^WARNING:.*NVIDIA DLSS"),
+    re.compile(r"^WARNING:.*\[LatencyUpscaling\]"),
     re.compile(r"CrashHandlerException|Program crashed"),
 ]
 

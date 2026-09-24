@@ -230,7 +230,7 @@ def suite_fallbacks() -> bool:
 def suite_editor() -> bool:
     code, out = godot(["--editor", "--quit-after", "300"], "test_editor")
     problems = problems_in(out)
-    summary = re.search(r"NVIDIA DLSS [\d.]+: (.*)", out)
+    summary = re.search(r"Latency & Upscaling [\d.]+: (.*)", out)
     return result("editor", code == 0 and summary is not None and not problems,
                   summary.group(1) if summary else f"exit {code}, no status line", problems)
 

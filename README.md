@@ -47,9 +47,9 @@ the LunarG Vulkan SDK.
    `addons/latency_upscaling/bin/` (from a release, or build them: see below).
 2. Open the project in Godot 4.7. The GDExtension loads by itself. If you copied the folder while
    the editor was running, restart the editor once (games you start from it work immediately).
-3. Optional: Project > Project Settings > Plugins > enable **NVIDIA DLSS**. The plugin adds a status
-   message, Project > Tools > "NVIDIA DLSS: Print Status", and packs the addon's settings file into
-   exports. Reflex works without it.
+3. Optional: Project > Project Settings > Plugins > enable **Latency & Upscaling**. The plugin adds a
+   status message and Project > Tools > "Latency & Upscaling: Print Status". The GDExtension and all
+   settings work without enabling the plugin.
 
 Nothing else is needed: no autoload, no node in your scenes, no change to `project.godot`.
 
