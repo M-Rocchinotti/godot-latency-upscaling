@@ -50,3 +50,6 @@ Thumbs.db
 # Secrets
 .env
 *.env
+
+# Distributable zips (built by tools/package.py)
+/dist/

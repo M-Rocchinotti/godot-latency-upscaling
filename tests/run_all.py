@@ -19,7 +19,9 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
   editor with Reflex enabled  enable_in_editor (environment override): Reflex in the editor process
   editor: addon added ...     the addon loaded into a running editor stays dormant, no crash
   validation                  Vulkan validation layers (LunarG SDK) report nothing with the hook
+  stub                        the no-op cross-platform stub registers the singleton (needs zig)
   archive                     `git archive` ships only the addon and the licences
+  package                     tools/package.py ships only the addon + release binaries, no debug/src
 
 Requirements: Godot 4.7.2 (tools/.godot_path or GODOT_BIN), a built debug DLL (build.cmd debug),
 for "validation" the Vulkan SDK (VULKAN_SDK or tools/.vulkan_sdk_path). Every Godot process is
@@ -317,6 +319,44 @@ def suite_archive() -> bool:
                   unexpected[:10] + missing + stale)
 
 
+def suite_stub() -> bool:
+    sys.path.insert(0, str(ROOT / "stub"))
+    from build_stubs import find_zig
+
+    if find_zig() is None:
+        return result("stub", True, "skipped: zig not found (needed only for the cross-platform stubs)")
+    proc = subprocess.run([sys.executable, str(ROOT / "stub" / "test_stub.py")], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    tail = [l for l in proc.stdout.splitlines() if l.startswith(("PASS", "FAIL"))]
+    return result("stub", proc.returncode == 0, "no-op stub registers the singleton, reports not supported",
+                  [l for l in tail if l.startswith("FAIL")])
+
+
+def suite_package() -> bool:
+    import zipfile
+
+    binaries = [
+        "godot_latency_upscaling.windows.template_release.x86_64.dll",
+        "godot_latency_upscaling.linux.x86_64.so", "godot_latency_upscaling.linux.arm64.so",
+        "godot_latency_upscaling.macos.x86_64.dylib", "godot_latency_upscaling.macos.arm64.dylib",
+        "godot_latency_upscaling.windows.arm64.dll",
+    ]
+    bin_dir = ROOT / "addons" / "latency_upscaling" / "bin"
+    if any(not (bin_dir / b).exists() for b in binaries):
+        return result("package", True, "skipped: shipped binaries not built (run tools/package.py)")
+    proc = subprocess.run([sys.executable, str(ROOT / "tools" / "package.py"), "--skip-build"], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        return result("package", False, "package.py failed", [proc.stdout[-400:]])
+    zips = sorted((ROOT / "dist").glob("godot-latency-upscaling-v*.zip"))
+    names = zipfile.ZipFile(zips[-1]).namelist() if zips else []
+    banned = [n for n in names if n.endswith((".lib", ".exp", ".pdb")) or "template_debug" in n
+              or n.startswith(("src/", "tests/", "tools/", "stub/", "docs/"))]
+    have = all(f"addons/latency_upscaling/bin/{b}" in names for b in binaries)
+    have = have and "addons/latency_upscaling/README.md" in names and "LICENSE" in names
+    return result("package", have and not banned, f"{len(names)} files, only the addon + shipped binaries", banned)
+
+
 SUITES = [
     ("unit tests", suite_unit_tests),
     ("import", suite_import),
@@ -328,7 +368,9 @@ SUITES = [
     ("editor reflex", suite_editor_with_reflex),
     ("late load", suite_editor_late_load),
     ("validation", suite_validation),
+    ("stub", suite_stub),
     ("archive", suite_archive),
+    ("package", suite_package),
 ]
 
 

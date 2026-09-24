@@ -47,6 +47,10 @@ def compile_target(zig: str, triple: str, out: Path) -> tuple[bool, str]:
     cmd = [zig, "cc", "-shared", "-O2", "-fvisibility=hidden", "-fno-sanitize=undefined",
            "-target", triple, "-I", str(INCLUDE), str(SRC), "-o", str(out)]
     p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # A Windows DLL build also emits an import .lib and a .pdb next to the output; the addon ships
+    # only the runtime library, so drop them (matches "no .lib/.exp in bin" for the MSVC build).
+    for extra in (out.with_suffix(".lib"), out.with_suffix(".pdb"), out.parent / "latency_upscaling_stub.lib"):
+        extra.unlink(missing_ok=True)
     return p.returncode == 0, (p.stderr or p.stdout).strip()
 
 
