@@ -53,7 +53,10 @@ PURE_SOURCES = [
     "src/reflex/frame_sequencer.cpp",
     "src/reflex/latency_stats.cpp",
     "src/reflex/ll2_patches.cpp",
+    "src/reflex/reflex_ll2.cpp",
     "src/vk/device_patch.cpp",
+    "src/vk/dispatch.cpp",
+    "src/vk/vk_feature.cpp",
 ]
 
 obj_dir = "build/obj/" + env["target"]
