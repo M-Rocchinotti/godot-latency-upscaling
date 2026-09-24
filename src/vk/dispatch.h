@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 
 // Registration happens at CORE initialisation, before the host creates a Vulkan instance.
 void register_feature(VulkanFeature *feature);
@@ -56,4 +56,4 @@ struct LayerSnapshot {
 };
 LayerSnapshot snapshot();
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

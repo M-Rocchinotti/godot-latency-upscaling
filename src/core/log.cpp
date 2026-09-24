@@ -5,7 +5,7 @@
 #include <cstdarg>
 #include <cstdio>
 
-namespace nvdlss::log {
+namespace lu::log {
 namespace {
 
 void default_sink(Level level, const char *message) {
@@ -22,7 +22,7 @@ void emit(Level level, const char *format, va_list args) {
 	char body[1024];
 	std::vsnprintf(body, sizeof(body), format, args);
 	char message[1060];
-	std::snprintf(message, sizeof(message), "[NVIDIA DLSS] %s", body);
+	std::snprintf(message, sizeof(message), "[LatencyUpscaling] %s", body);
 	g_sink.load()(level, message);
 }
 
@@ -64,4 +64,4 @@ void error(const char *format, ...) {
 	va_end(args);
 }
 
-} // namespace nvdlss::log
+} // namespace lu::log

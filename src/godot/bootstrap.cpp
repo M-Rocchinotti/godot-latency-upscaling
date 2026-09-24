@@ -13,7 +13,7 @@
 
 using namespace godot;
 
-namespace nvdlss {
+namespace lu {
 namespace {
 
 BootState g_state;
@@ -214,4 +214,4 @@ void bootstrap_core() {
 	}
 }
 
-} // namespace nvdlss
+} // namespace lu

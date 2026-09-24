@@ -1,12 +1,12 @@
 // Addon settings and how they are resolved from several layers.
 //
 // Precedence, lowest first:
-//   1. built-in defaults (identical to the shipped addons/nvidia_dlss/nvidia_dlss.cfg),
-//   2. addons/nvidia_dlss/nvidia_dlss.cfg,
-//   3. project settings "nvidia_dlss/<key>" (only present when a developer changed them),
-//   4. the environment: GODOT_NVIDIA_DLSS_SETTINGS="key=value;..." (e.g. for CI or a quick
-//      test of the editor), then GODOT_NVIDIA_DLSS_DISABLE=1, which forces enabled = false.
-// Runtime API calls (NvidiaDLSS.reflex_mode = ...) override the result for the session.
+//   1. built-in defaults (identical to the shipped addons/latency_upscaling/latency_upscaling.cfg),
+//   2. addons/latency_upscaling/latency_upscaling.cfg,
+//   3. project settings "latency_upscaling/<key>" (only present when a developer changed them),
+//   4. the environment: GODOT_LATENCY_UPSCALING_SETTINGS="key=value;..." (e.g. for CI or a quick
+//      test of the editor), then GODOT_LATENCY_UPSCALING_DISABLE=1, which forces enabled = false.
+// Runtime API calls (LatencyUpscaling.reflex_mode = ...) override the result for the session.
 //
 // Pure C++: no Godot types, so the resolution rules are unit-tested.
 #pragma once
@@ -15,7 +15,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss {
+namespace lu {
 
 enum class ReflexMode : int { Off = 0, On = 1, OnBoost = 2 };
 
@@ -29,7 +29,7 @@ struct Settings {
 };
 
 // Setting keys, shared by the cfg file ("section/key") and the project settings
-// ("nvidia_dlss/section/key").
+// ("latency_upscaling/section/key").
 namespace keys {
 inline constexpr const char *ENABLED = "general/enabled";
 inline constexpr const char *ENABLE_IN_EDITOR = "general/enable_in_editor";
@@ -63,7 +63,7 @@ struct ResolvedSettings {
 // unknown keys too.
 ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers);
 
-// Parses "key=value;key=value" (the GODOT_NVIDIA_DLSS_SETTINGS environment variable) into a
+// Parses "key=value;key=value" (the GODOT_LATENCY_UPSCALING_SETTINGS environment variable) into a
 // layer. Values: true, false or a number. Malformed entries are skipped with a warning; keys
 // are validated later by resolve_settings().
 SettingsLayer parse_settings_override(const std::string &name, const std::string &text, std::vector<std::string> &warnings);
@@ -76,4 +76,4 @@ bool is_valid_fps_limit(double fps_limit);
 
 const char *reflex_mode_name(ReflexMode mode);
 
-} // namespace nvdlss
+} // namespace lu

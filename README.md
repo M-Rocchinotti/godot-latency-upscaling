@@ -1,4 +1,4 @@
-# godot-nvidia-dlss
+# godot-latency-upscaling
 
 A Godot 4.7 addon (GDExtension) that brings NVIDIA technologies to any Vulkan project without
 engine changes and without project setup. Phase 1, this version, delivers **NVIDIA Reflex**
@@ -16,7 +16,7 @@ Vulkan dispatch layer the addon installs in front of Godot at start-up.
 | NVIDIA Reflex Low Latency: Off / On / On + Boost | done | `VK_NV_low_latency2`, default On |
 | Reflex frame-rate limiter | done | driver-paced, replaces `Engine.max_fps` |
 | Latency markers (simulation, render submit, present, input, flash) | done | every frame, all modes |
-| Latency measurements (`vkGetLatencyTimingsNV`) | done | `NvidiaDLSS.get_latency_stats()` |
+| Latency measurements (`vkGetLatencyTimingsNV`) | done | `LatencyUpscaling.get_latency_stats()` |
 | Reflex Flash Indicator marker on left clicks | done | the driver decides whether to draw it |
 | Small latency overlay | done | optional, off by default |
 | Clean fallback with a readable reason | done | wrong Godot version, other GPUs, other renderers, missing driver support |
@@ -35,7 +35,7 @@ Vulkan dispatch layer the addon installs in front of Godot at start-up.
 | Multi Frame Generation (planned) | GeForce RTX 50 series | | as Frame Generation |
 
 Other GPUs, older drivers and unsupported configurations do not break anything: Godot runs
-exactly as without the addon and `NvidiaDLSS.get_reflex_status()` says why Reflex is unavailable.
+exactly as without the addon and `LatencyUpscaling.get_reflex_status()` says why Reflex is unavailable.
 
 To build from source: Python 3.10+, MSVC (Visual Studio 2022 Build Tools or a portable MSVC
 14.4x with the Windows SDK), Git. SCons is installed automatically. For the validation-layer test:
@@ -43,8 +43,8 @@ the LunarG Vulkan SDK.
 
 ## Installation
 
-1. Copy `addons/nvidia_dlss/` into your project, keeping the path, with the built DLLs in
-   `addons/nvidia_dlss/bin/` (from a release, or build them: see below).
+1. Copy `addons/latency_upscaling/` into your project, keeping the path, with the built DLLs in
+   `addons/latency_upscaling/bin/` (from a release, or build them: see below).
 2. Open the project in Godot 4.7. The GDExtension loads by itself. If you copied the folder while
    the editor was running, restart the editor once (games you start from it work immediately).
 3. Optional: Project > Project Settings > Plugins > enable **NVIDIA DLSS**. The plugin adds a status
@@ -56,30 +56,30 @@ Nothing else is needed: no autoload, no node in your scenes, no change to `proje
 ### Building
 
 ```
-git clone --recurse-submodules <repository url> godot-nvidia-dlss
-cd godot-nvidia-dlss
+git clone --recurse-submodules <repository url> godot-latency-upscaling
+cd godot-latency-upscaling
 build.cmd            # debug + release DLLs and the C++ unit tests
 build.cmd debug      # only the DLL the editor and debug exports use
 ```
 
 `build.cmd` (= `python tools/build.py`) creates `.venv/` with the pinned SCons, finds MSVC and runs
 SCons with 2 parallel jobs (`-j N` to change). MSVC is taken from, in this order: an already set up
-developer prompt (INCLUDE and LIB set); a dev-shell script named in `GODOT_NVIDIA_DLSS_DEVSHELL` or
+developer prompt (INCLUDE and LIB set); a dev-shell script named in `GODOT_LATENCY_UPSCALING_DEVSHELL` or
 `tools/.devshell_path` that runs its arguments inside the MSVC environment; SCons' Visual Studio
-detection. Output: `addons/nvidia_dlss/bin/godot_nvidia_dlss.windows.template_{debug,release}.x86_64.dll`.
+detection. Output: `addons/latency_upscaling/bin/godot_latency_upscaling.windows.template_{debug,release}.x86_64.dll`.
 
 ## Configuration
 
 Settings are resolved in this order (later wins):
 
-1. built-in defaults, identical to the shipped `addons/nvidia_dlss/nvidia_dlss.cfg`;
-2. `addons/nvidia_dlss/nvidia_dlss.cfg` (the addon's own config, edit it to change defaults);
-3. Project Settings `nvidia_dlss/...` (shown in the editor, written to `project.godot` only when
+1. built-in defaults, identical to the shipped `addons/latency_upscaling/latency_upscaling.cfg`;
+2. `addons/latency_upscaling/latency_upscaling.cfg` (the addon's own config, edit it to change defaults);
+3. Project Settings `latency_upscaling/...` (shown in the editor, written to `project.godot` only when
    you change them);
-4. the environment: `GODOT_NVIDIA_DLSS_SETTINGS="key=value;key=value"` (for example
-   `general/enable_in_editor=true;reflex/mode=2`), then `GODOT_NVIDIA_DLSS_DISABLE=1`, which
+4. the environment: `GODOT_LATENCY_UPSCALING_SETTINGS="key=value;key=value"` (for example
+   `general/enable_in_editor=true;reflex/mode=2`), then `GODOT_LATENCY_UPSCALING_DISABLE=1`, which
    disables the addon completely;
-5. calls to the `NvidiaDLSS` singleton at run time.
+5. calls to the `LatencyUpscaling` singleton at run time.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -90,24 +90,24 @@ Settings are resolved in this order (later wins):
 | `reflex/flash_indicator_marker` | `true` | send the flash marker on left mouse clicks |
 | `overlay/enabled` | `false` | show the latency overlay in games |
 
-Other environment variables: `GODOT_NVIDIA_DLSS_VERBOSE=1` prints informational lines (also
+Other environment variables: `GODOT_LATENCY_UPSCALING_VERBOSE=1` prints informational lines (also
 enabled by `--verbose`). Debug builds read two test knobs used by the fallback tests:
-`GODOT_NVIDIA_DLSS_TEST_HIDE_EXTENSIONS` and `GODOT_NVIDIA_DLSS_TEST_GODOT_VERSION`.
+`GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS` and `GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION`.
 
 ## Usage
 
-The singleton `NvidiaDLSS` is registered automatically. Reflex is On by default.
+The singleton `LatencyUpscaling` is registered automatically. Reflex is On by default.
 
 ```gdscript
 # A settings menu. NVIDIA's UI guidelines: name it "NVIDIA Reflex Low Latency" with the options
 # Off / On / On + Boost, and disable the control when Reflex is unavailable.
-reflex_option.disabled = not NvidiaDLSS.is_reflex_supported()
-NvidiaDLSS.reflex_mode = NvidiaDLSS.REFLEX_MODE_ON_BOOST
-NvidiaDLSS.reflex_fps_limit = 144.0     # instead of Engine.max_fps
-NvidiaDLSS.overlay_visible = true       # small latency overlay
+reflex_option.disabled = not LatencyUpscaling.is_reflex_supported()
+LatencyUpscaling.reflex_mode = LatencyUpscaling.REFLEX_MODE_ON_BOOST
+LatencyUpscaling.reflex_fps_limit = 144.0     # instead of Engine.max_fps
+LatencyUpscaling.overlay_visible = true       # small latency overlay
 
-print(NvidiaDLSS.get_reflex_status())   # "active" or "unavailable: <reason>"
-var stats := NvidiaDLSS.get_latency_stats()
+print(LatencyUpscaling.get_reflex_status())   # "active" or "unavailable: <reason>"
+var stats := LatencyUpscaling.get_latency_stats()
 print(stats.sim_start_to_gpu_end_ms)    # simulation start to GPU render end, last 64 frames
 ```
 
@@ -184,7 +184,7 @@ median / p95 in ms, two rounds:
 
 | Variant | Round 1 | Round 2 |
 |---|---|---|
-| No addon (`GODOT_NVIDIA_DLSS_DISABLE=1`) | 1.40 / 1.08 / 3.24 | 1.49 / 1.20 / 3.29 |
+| No addon (`GODOT_LATENCY_UPSCALING_DISABLE=1`) | 1.40 / 1.08 / 3.24 | 1.49 / 1.20 / 3.29 |
 | Layer only (Reflex off the device) | 1.43 / 1.12 / 3.28 | 1.39 / 1.07 / 3.21 |
 | Reflex Off (markers and sleep calls) | 1.70 / 1.35 / 3.56 | 1.48 / 1.13 / 3.37 |
 | Reflex On | 1.55 / 1.30 / 3.35 | 1.46 / 1.12 / 3.27 |
@@ -196,7 +196,7 @@ The layer alone is below the run-to-run noise (about 0.1 ms). The Reflex calls c
 
 | Path | Contents |
 |---|---|
-| `addons/nvidia_dlss/` | the addon: `.gdextension`, `bin/` (built DLLs), `nvidia_dlss.cfg` (defaults), editor plugin, latency overlay, licences |
+| `addons/latency_upscaling/` | the addon: `.gdextension`, `bin/` (built DLLs), `latency_upscaling.cfg` (defaults), editor plugin, latency overlay, licences |
 | `src/` | C++ sources: `hook/` (loader hook), `vk/` (dispatch layer), `reflex/`, `godot/` (singleton, bootstrap), `dlss/` (Phase 2 interfaces), `core/` |
 | `demo/` | demo scene (the repository root is the Godot project hosting demo and tests) |
 | `tests/` | GDScript integration tests, Python runners, `unit/` C++ unit tests |
@@ -212,10 +212,10 @@ The layer alone is below the run-to-run noise (about 0.1 ms). The Reflex calls c
 | "Godot x.y.z is not supported" | This build targets Godot 4.7.x only |
 | "... is not an NVIDIA GPU" / "does not expose VK_NV_low_latency2" | Other GPU vendor or an old driver: update the NVIDIA driver (551.70+) |
 | "the Vulkan loader was never requested (rendering driver 'd3d12' ...)" | The project uses D3D12 or the Compatibility renderer. Reflex needs the Vulkan driver (`rendering/rendering_device/driver.windows = "vulkan"`) |
-| "inactive in the editor" | By design: the editor only passes Vulkan calls through. Set `nvidia_dlss/general/enable_in_editor` to change that |
+| "inactive in the editor" | By design: the editor only passes Vulkan calls through. Set `latency_upscaling/general/enable_in_editor` to change that |
 | "markers only, sleep stopped: ..." | The driver rejected or did not answer the Reflex sleep; latency markers still work. After timeouts the sleep resumes with the next window swapchain (resize); after an error it stays off. Please report the driver version |
 | No latency gain | Reflex only helps when the GPU is the bottleneck; with VSync on and no VRR there is little to gain |
-| Anything else | `print(JSON.stringify(NvidiaDLSS.get_status(), "  "))` (or the Tools menu entry) shows every decision the addon made. `GODOT_NVIDIA_DLSS_DISABLE=1` turns it off without removing it |
+| Anything else | `print(JSON.stringify(LatencyUpscaling.get_status(), "  "))` (or the Tools menu entry) shows every decision the addon made. `GODOT_LATENCY_UPSCALING_DISABLE=1` turns it off without removing it |
 | Anti-cheat software complains | The addon patches `godot.exe`'s import table in memory (see `docs/ARCHITECTURE.md`). Test with your anti-cheat before shipping |
 
 ## Version

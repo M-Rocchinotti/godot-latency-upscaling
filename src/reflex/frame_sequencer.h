@@ -20,7 +20,7 @@
 #include <cstdint>
 #include <mutex>
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 
 // Values match VkLatencyMarkerNV (VK_LATENCY_MARKER_*_NV).
 enum class Marker : uint32_t {
@@ -93,4 +93,4 @@ private:
 	uint64_t last_presented_ = 0;
 };
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

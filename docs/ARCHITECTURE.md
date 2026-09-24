@@ -32,15 +32,15 @@ next to the executable, no environment variables and no registry entries.
   vkCreateSwapchainKHR / vkQueueSubmit / vkQueuePresentKHR ─► QueueHooks (reflex/reflex_ll2.cpp)
   everything else ──────────────────────────────────► real vulkan-1.dll (untouched pointers)
 
-  RenderingServer frame_pre_draw / frame_post_draw ─► godot/nvidia_dlss.cpp (markers)
-  GDExtension frame callback (end of iteration) ────► godot/nvidia_dlss.cpp (Reflex sleep)
+  RenderingServer frame_pre_draw / frame_post_draw ─► godot/latency_upscaling.cpp (markers)
+  GDExtension frame callback (end of iteration) ────► godot/latency_upscaling.cpp (Reflex sleep)
 ```
 
 | Module | Role | Godot-free (unit-tested) |
 |---|---|---|
 | `src/register_types.cpp` | Entry point; CORE / SCENE levels; startup and frame callbacks | |
 | `src/godot/bootstrap.cpp` | CORE start-up: settings, safety checks, hook installation | |
-| `src/godot/nvidia_dlss.cpp` | `NvidiaDLSS` singleton (GDScript API), frame-loop wiring, project settings | |
+| `src/godot/latency_upscaling.cpp` | `LatencyUpscaling` singleton (GDScript API), frame-loop wiring, project settings | |
 | `src/hook/iat_patch.cpp` | Generic Import Address Table patching of one PE module | yes |
 | `src/hook/loader_name.cpp` | Recognises a Vulkan loader request | yes |
 | `src/hook/loader_hook.cpp` | Patches godot.exe's `LoadLibraryA/W/ExA/ExW`, pins the DLL | |
@@ -62,7 +62,7 @@ next to the executable, no environment variables and no registry entries.
 
 | Check | Result when it fails |
 |---|---|
-| `enabled` setting (addon config, project setting, `GODOT_NVIDIA_DLSS_DISABLE=1`) | no hook: "disabled by ..." |
+| `enabled` setting (addon config, project setting, `GODOT_LATENCY_UPSCALING_DISABLE=1`) | no hook: "disabled by ..." |
 | Godot major.minor is 4.7 | no hook: "Godot x.y.z is not supported" (4.8 may change the internals the hook relies on) |
 | No `RenderingServer` exists yet | no hook, dormant: "loaded after the Vulkan device was created; restart" (the editor loads a freshly added addon at run time) |
 | godot.exe imports `LoadLibraryA/W/ExA/ExW` from a DLL | no hook: "unsupported build" |
@@ -128,7 +128,7 @@ are unavailable ("created without them"). The host never sees a failure the addo
 
 | Situation | Behaviour |
 |---|---|
-| Godot not 4.7.x, `enabled = false`, `GODOT_NVIDIA_DLSS_DISABLE=1` | no hook installed; status says why |
+| Godot not 4.7.x, `enabled = false`, `GODOT_LATENCY_UPSCALING_DISABLE=1` | no hook installed; status says why |
 | Added while the editor runs | no hook, no classes registered (dormant) until restart; the editor plugin shows "restart the editor to activate". Games started from that editor are new processes and work immediately |
 | Compatibility renderer, D3D12 driver, headless | hook installed but the Vulkan loader is never requested: nothing happens; status names the driver |
 | Non-NVIDIA GPU, driver without `VK_NV_low_latency2` (or only its revision 1, whose `vkGetLatencyTimingsNV` has another signature), no `VK_KHR_present_id`, no timeline semaphores | the device is created exactly as Godot asked (no extension added); status names what is missing |
@@ -163,7 +163,7 @@ Vulkan 1.2; Godot's instance requests 1.2, so on current drivers it is core).
 | `vkSetLatencyMarkerNV` | see 4.2 | the present ID is the frame ID |
 | `VkPresentIdKHR` | `vkQueuePresentKHR` | ID of the window's swapchain = frame ID; 0 ("none") for other windows |
 | `VkLatencySubmissionPresentIdNV` | `vkQueueSubmit` of the Reflex device | only between RENDERSUBMIT_START and _END of a frame; lets the driver attribute the frame's GPU work |
-| `vkGetLatencyTimingsNV` | `NvidiaDLSS.get_latency_stats()` / `get_latency_reports()` | the driver keeps the last 64 frames |
+| `vkGetLatencyTimingsNV` | `LatencyUpscaling.get_latency_stats()` / `get_latency_reports()` | the driver keeps the last 64 frames |
 
 ### 4.2 Marker placement
 
@@ -172,7 +172,7 @@ rendering_server_default.cpp`) and where each call goes:
 
 | Step in Godot | Addon | Marker |
 |---|---|---|
-| end of iteration N-1: GDExtension `frame` callback | `NvidiaDLSS::on_frame()` | SIMULATION_END(N-1) if frame N-1 never drew, then **sleep**, then SIMULATION_START(N), INPUT_SAMPLE(N) |
+| end of iteration N-1: GDExtension `frame` callback | `LatencyUpscaling::on_frame()` | SIMULATION_END(N-1) if frame N-1 never drew, then **sleep**, then SIMULATION_START(N), INPUT_SAMPLE(N) |
 | OS run loop: `DisplayServer::process_events()` | | input sampled inside the simulation region |
 | iteration N: physics, `process_frame`, scripts | | simulation |
 | `RenderingServer::draw()` emits `frame_pre_draw` (main thread) | `on_frame_pre_draw()` | [TRIGGER_FLASH(N) on a left click] SIMULATION_END(N); queues `on_render_frame_begin(N)` on the render thread |
@@ -223,7 +223,7 @@ NVIDIA-RTX/godot fork (branch `worktree-dlss-fg-reflex`):
 - **TRIGGER_FLASH**: "anywhere between SIMULATION_START and SIMULATION_END whenever a left mouse
   click occurs … sent unconditionally" (driver R510+ decides whether to draw the indicator).
   The left button is sampled at `frame_pre_draw` and the marker goes out before SIMULATION_END.
-  `NvidiaDLSS.trigger_flash()` sends one manually.
+  `LatencyUpscaling.trigger_flash()` sends one manually.
 - **PC Latency ping**: has no `VK_NV_low_latency2` marker (Streamline also drops it on Vulkan);
   not sent.
 
@@ -261,10 +261,10 @@ GTX 1080 (Pascal), driver 582.28, Windows 10 19045, HAGS on. The numbers are in 
 | Automatic | Needs a restart / setting / call |
 |---|---|
 | The GDExtension loads by being in `addons/` (listed in `.godot/extension_list.cfg`), in the editor, in games started from it and in exported games | Added while the editor runs: the editor itself activates after a restart |
-| Hook installation, extension injection, Reflex On by default, markers, sleep | Reflex in the editor process: `nvidia_dlss/general/enable_in_editor` |
-| `NvidiaDLSS` engine singleton, project settings shown (only saved when changed) | Overlay: `NvidiaDLSS.overlay_visible = true` or `nvidia_dlss/overlay/enabled` |
-| Fallback with a clear status on every unsupported configuration | A game's own settings menu should call `NvidiaDLSS.reflex_mode` |
-| `nvidia_dlss.cfg` packed into exports when the editor plugin is enabled | Without the plugin, exports use the identical built-in defaults |
+| Hook installation, extension injection, Reflex On by default, markers, sleep | Reflex in the editor process: `latency_upscaling/general/enable_in_editor` |
+| `LatencyUpscaling` engine singleton, project settings shown (only saved when changed) | Overlay: `LatencyUpscaling.overlay_visible = true` or `latency_upscaling/overlay/enabled` |
+| Fallback with a clear status on every unsupported configuration | A game's own settings menu should call `LatencyUpscaling.reflex_mode` |
+| `latency_upscaling.cfg` packed into exports when the editor plugin is enabled | Without the plugin, exports use the identical built-in defaults |
 
 ## 6. Phase 2: DLSS Super Resolution / DLAA (design)
 
@@ -299,7 +299,7 @@ Nothing of this is active in Phase 1; `src/dlss/` holds the interface and the ji
 6. **NVIDIA binaries**: never in this repository. On first enable the editor plugin shows the
    NVIDIA RTX SDKs licence and, after the developer accepts, fetches `streamline-sdk-v2.14.1.zip`
    from NVIDIA's GitHub release and extracts the eight production DLLs of `bin/x64/` into
-   `addons/nvidia_dlss/bin/nvidia/` (git-ignored). `tools/fetch_nvidia_sdk.py` is the command-line
+   `addons/latency_upscaling/bin/nvidia/` (git-ignored). `tools/fetch_nvidia_sdk.py` is the command-line
    stub of that step: it resolves the release and prints the plan; it does not download.
 7. **Known costs** (research §2.2): one frame of FSR2 when Godot re-configures the buffers
    (resize, settings change), the debanding flag has to be restored, and everything must be

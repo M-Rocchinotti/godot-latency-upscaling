@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 
 uint32_t PhysicalDeviceCaps::extension_version(const char *extension) const {
 	const auto it = extensions.find(extension);
@@ -13,4 +13,4 @@ bool DeviceContext::has_enabled_extension(const char *extension) const {
 	return std::find(enabled_extensions.begin(), enabled_extensions.end(), extension) != enabled_extensions.end();
 }
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

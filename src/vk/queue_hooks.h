@@ -5,7 +5,7 @@
 
 #include "vk/vk_common.h"
 
-namespace nvdlss::vk {
+namespace lu::vk {
 
 class QueueHooks {
 public:
@@ -21,4 +21,4 @@ public:
 	virtual VkResult queue_present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQueuePresentKHR next) = 0;
 };
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

@@ -20,8 +20,8 @@ compile_commands.json
 msvc_capture.log
 
 # Built addon libraries. Released as build artefacts, never committed.
-addons/nvidia_dlss/bin/*
-!addons/nvidia_dlss/bin/.gitkeep
+addons/latency_upscaling/bin/*
+!addons/latency_upscaling/bin/.gitkeep
 
 # NVIDIA binaries: the NVIDIA RTX SDKs licence forbids redistributing them stand-alone,
 # so they must never enter this repository (see THIRD_PARTY_NOTICES.md).

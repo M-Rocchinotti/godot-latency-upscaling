@@ -10,7 +10,7 @@
 #include <atomic>
 #include <mutex>
 
-namespace nvdlss::hook {
+namespace lu::hook {
 namespace {
 
 using LoadLibraryAFn = HMODULE(WINAPI *)(LPCSTR);
@@ -152,4 +152,4 @@ InstallResult install() {
 	return cached;
 }
 
-} // namespace nvdlss::hook
+} // namespace lu::hook

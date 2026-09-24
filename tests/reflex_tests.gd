@@ -24,11 +24,11 @@ func _initialize() -> void:
 
 
 func _run() -> void:
-	if not Engine.has_singleton("NvidiaDLSS"):
-		_check("singleton registered", false, "NvidiaDLSS missing")
+	if not Engine.has_singleton("LatencyUpscaling"):
+		_check("singleton registered", false, "LatencyUpscaling missing")
 		_finish()
 		return
-	_dlss = Engine.get_singleton("NvidiaDLSS")
+	_dlss = Engine.get_singleton("LatencyUpscaling")
 	await _frames(WARMUP_FRAMES)
 	await _test_device_came_through_the_layer()
 	await _test_markers_are_sent_every_frame()
@@ -213,8 +213,8 @@ func _test_minimized_window() -> void:
 func _test_overlay() -> void:
 	_dlss.overlay_visible = true
 	await _frames(2)
-	var overlay := root.get_node_or_null("NvidiaDLSSLatencyOverlay")
+	var overlay := root.get_node_or_null("LatencyUpscalingLatencyOverlay")
 	_check("overlay shown", overlay != null and _dlss.overlay_visible)
 	_dlss.overlay_visible = false
 	await _frames(2)
-	_check("overlay removed", root.get_node_or_null("NvidiaDLSSLatencyOverlay") == null and not _dlss.overlay_visible)
+	_check("overlay removed", root.get_node_or_null("LatencyUpscalingLatencyOverlay") == null and not _dlss.overlay_visible)

@@ -8,7 +8,7 @@ components it contains or builds on, and the terms that apply to NVIDIA technolo
 ### godot-cpp 10.0.0 (MIT)
 
 `thirdparty/godot-cpp` (git submodule), statically linked into
-`addons/nvidia_dlss/bin/godot_nvidia_dlss.*.dll`.
+`addons/latency_upscaling/bin/godot_latency_upscaling.*.dll`.
 
 ```
 Copyright (c) 2017-present Godot Engine contributors.

@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 
 // What the physical device offers, gathered once per vkCreateDevice.
 struct PhysicalDeviceCaps {
@@ -61,4 +61,4 @@ public:
 	virtual void on_device_destroyed(VkDevice device) = 0;
 };
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

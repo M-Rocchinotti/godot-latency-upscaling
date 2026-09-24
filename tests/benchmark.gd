@@ -34,7 +34,7 @@ func _initialize() -> void:
 	var demo: Node = load("res://demo/demo_main.tscn").instantiate()
 	demo.gpu_load = _load
 	root.add_child(demo)
-	_dlss = Engine.get_singleton("NvidiaDLSS") if Engine.has_singleton("NvidiaDLSS") else null
+	_dlss = Engine.get_singleton("LatencyUpscaling") if Engine.has_singleton("LatencyUpscaling") else null
 	_run.call_deferred()
 
 

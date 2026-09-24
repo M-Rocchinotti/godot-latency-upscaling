@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Reproducible one-command build of the godot-nvidia-dlss GDExtension.
+"""Reproducible one-command build of the godot-latency-upscaling GDExtension.
 
     build.cmd                      # debug + release DLLs and the C++ unit tests
     build.cmd debug                # only template_debug (used by the editor and debug exports)
@@ -13,7 +13,7 @@ What it does:
    build/pip-cache, so nothing is written to the system drive).
 2. Finds the MSVC environment:
    - already set up (INCLUDE and LIB exist, e.g. a "x64 Native Tools" prompt): used as is;
-   - else a dev-shell script from GODOT_NVIDIA_DLSS_DEVSHELL or tools/.devshell_path (one line,
+   - else a dev-shell script from GODOT_LATENCY_UPSCALING_DEVSHELL or tools/.devshell_path (one line,
      git-ignored). The script must run the command given to it as arguments inside its
      environment, like E:\\dev\\devshell.cmd; the build re-runs itself through it;
    - else SCons' own Visual Studio autodetection.
@@ -59,7 +59,7 @@ def ensure_venv() -> Path:
 
 
 def devshell_script() -> Path | None:
-    value = os.environ.get("GODOT_NVIDIA_DLSS_DEVSHELL", "").strip()
+    value = os.environ.get("GODOT_LATENCY_UPSCALING_DEVSHELL", "").strip()
     local = ROOT / "tools" / ".devshell_path"
     if not value and local.exists():
         value = local.read_text(encoding="utf-8").strip()

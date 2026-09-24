@@ -1,7 +1,7 @@
 // Recognises a request for the Vulkan loader in LoadLibrary* arguments.
 #pragma once
 
-namespace nvdlss::hook {
+namespace lu::hook {
 
 // True for "vulkan-1.dll" / "vulkan-1" in any letter case, with or without a directory
 // ("C:\\Windows\\System32\\vulkan-1.dll"). False for anything else, including nullptr and
@@ -9,4 +9,4 @@ namespace nvdlss::hook {
 bool is_vulkan_loader_name(const char *name);
 bool is_vulkan_loader_name(const wchar_t *name);
 
-} // namespace nvdlss::hook
+} // namespace lu::hook

@@ -5,7 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 
-namespace nvdlss {
+namespace lu {
 namespace {
 
 bool is_bool_value(double v) {
@@ -142,4 +142,4 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 	return out;
 }
 
-} // namespace nvdlss
+} // namespace lu

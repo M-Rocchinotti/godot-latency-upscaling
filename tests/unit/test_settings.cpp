@@ -2,7 +2,7 @@
 #include "hook/loader_name.h"
 #include "test_framework.h"
 
-using namespace nvdlss;
+using namespace lu;
 
 TEST(settings_defaults_match_the_shipped_config) {
 	const ResolvedSettings r = resolve_settings({});

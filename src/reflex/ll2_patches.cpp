@@ -1,6 +1,6 @@
 #include "reflex/ll2_patches.h"
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 
 SwapchainLatencyPatch::SwapchainLatencyPatch(const VkSwapchainCreateInfoKHR &info) :
 		info_(info) {
@@ -48,4 +48,4 @@ SubmitTagPatch::SubmitTagPatch(const VkSubmitInfo *submits, uint32_t count, uint
 	}
 }
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

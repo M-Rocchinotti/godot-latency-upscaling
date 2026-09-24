@@ -2,7 +2,7 @@
 
 #include <cwctype>
 
-namespace nvdlss::hook {
+namespace lu::hook {
 namespace {
 
 template <typename Char>
@@ -37,4 +37,4 @@ bool is_vulkan_loader_name(const wchar_t *name) {
 	return matches(name);
 }
 
-} // namespace nvdlss::hook
+} // namespace lu::hook

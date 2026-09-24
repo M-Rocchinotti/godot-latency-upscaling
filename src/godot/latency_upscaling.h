@@ -1,4 +1,4 @@
-// The NvidiaDLSS engine singleton: the GDScript API and the wiring of Reflex into Godot's frame
+// The LatencyUpscaling engine singleton: the GDScript API and the wiring of Reflex into Godot's frame
 // loop. Registered automatically at SCENE initialisation; projects need no setup.
 #pragma once
 
@@ -9,10 +9,10 @@
 
 #include <cstdint>
 
-namespace nvdlss {
+namespace lu {
 
-class NvidiaDLSS : public godot::Object {
-	GDCLASS(NvidiaDLSS, godot::Object)
+class LatencyUpscaling : public godot::Object {
+	GDCLASS(LatencyUpscaling, godot::Object)
 
 public:
 	enum ReflexMode {
@@ -21,10 +21,10 @@ public:
 		REFLEX_MODE_ON_BOOST = 2,
 	};
 
-	static NvidiaDLSS *get_singleton() { return singleton_; }
+	static LatencyUpscaling *get_singleton() { return singleton_; }
 
-	NvidiaDLSS();
-	~NvidiaDLSS() override;
+	LatencyUpscaling();
+	~LatencyUpscaling() override;
 
 	// --- GDScript API ---
 	godot::Dictionary get_status() const;
@@ -59,7 +59,7 @@ private:
 	void on_render_frame_end(int64_t frame_id);
 	void apply_sleep_mode();
 
-	static NvidiaDLSS *singleton_;
+	static LatencyUpscaling *singleton_;
 	ReflexMode mode_ = REFLEX_MODE_ON;
 	double fps_limit_ = 0.0;
 	bool flash_marker_ = true;
@@ -69,6 +69,6 @@ private:
 	bool signals_connected_ = false;
 };
 
-} // namespace nvdlss
+} // namespace lu
 
-VARIANT_ENUM_CAST(nvdlss::NvidiaDLSS::ReflexMode);
+VARIANT_ENUM_CAST(lu::LatencyUpscaling::ReflexMode);

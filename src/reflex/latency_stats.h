@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 
 // One VkLatencyTimingsFrameReportNV. All times are driver timestamps in microseconds.
 struct FrameReport {
@@ -48,4 +48,4 @@ struct LatencyStats {
 
 LatencyStats compute_latency_stats(const std::vector<FrameReport> &reports);
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

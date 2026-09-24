@@ -1,6 +1,6 @@
 #include "reflex/frame_sequencer.h"
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 
 const char *marker_name(Marker marker) {
 	switch (marker) {
@@ -132,4 +132,4 @@ uint64_t FrameSequencer::last_presented_id() const {
 	return last_presented_;
 }
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

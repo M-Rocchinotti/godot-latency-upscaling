@@ -1,9 +1,9 @@
 extends CanvasLayer
-## Small latency overlay of the NVIDIA DLSS addon.
+## Small latency overlay of the Latency & Upscaling addon.
 ##
-## Created by the NvidiaDLSS singleton when `NvidiaDLSS.overlay_visible = true` or the setting
-## nvidia_dlss/overlay/enabled is on; it never needs to be added to a scene by hand. It reads
-## NvidiaDLSS.get_latency_stats() four times a second, so its own cost is negligible. The glass
+## Created by the LatencyUpscaling singleton when `LatencyUpscaling.overlay_visible = true` or the setting
+## latency_upscaling/overlay/enabled is on; it never needs to be added to a scene by hand. It reads
+## LatencyUpscaling.get_latency_stats() four times a second, so its own cost is negligible. The glass
 ## panel deliberately has no backdrop blur: a blur pass would add GPU work to the very frames
 ## whose latency it reports.
 
@@ -40,10 +40,10 @@ func _process(delta: float) -> void:
 
 
 func _refresh() -> void:
-	if not Engine.has_singleton("NvidiaDLSS"):
-		_label.text = "NVIDIA DLSS addon not loaded"
+	if not Engine.has_singleton("LatencyUpscaling"):
+		_label.text = "Latency & Upscaling addon not loaded"
 		return
-	var dlss: Object = Engine.get_singleton("NvidiaDLSS")
+	var dlss: Object = Engine.get_singleton("LatencyUpscaling")
 	var lines := PackedStringArray()
 	lines.append("NVIDIA Reflex  %s" % MODE_NAMES[clampi(dlss.get_reflex_mode(), 0, 2)])
 	if not dlss.is_reflex_active():

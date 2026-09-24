@@ -33,7 +33,7 @@ IAT = "src/hook/iat_patch.cpp"
 JITTER = "src/dlss/jitter.cpp"
 REFLEX = "src/reflex/reflex_ll2.cpp"
 LL2 = "src/reflex/ll2_patches.cpp"
-SINGLETON = "src/godot/nvidia_dlss.cpp"
+SINGLETON = "src/godot/latency_upscaling.cpp"
 BOOT = "src/godot/bootstrap.cpp"
 ENTRY = "src/register_types.cpp"
 
@@ -94,7 +94,7 @@ MUTATIONS = [
     ("safety: version check removed", BOOT,
      "} else if (major != 4 || minor != 7) {", "} else if (false) {", "fallback"),
     ("safety: late load not dormant", ENTRY,
-     "\tif (nvdlss::boot_state().late_load) {", "\tif (false) {", "late load"),
+     "\tif (lu::boot_state().late_load) {", "\tif (false) {", "late load"),
 ]
 
 

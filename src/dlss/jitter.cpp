@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-namespace nvdlss::dlss {
+namespace lu::dlss {
 
 float halton(int index, int base) {
 	float f = 1;
@@ -34,4 +34,4 @@ JitterPixels jitter_in_pixels(uint64_t frame_number, uint32_t phase_count) {
 	return out;
 }
 
-} // namespace nvdlss::dlss
+} // namespace lu::dlss

@@ -4,7 +4,7 @@
 #include <cstring>
 #include <map>
 
-using namespace nvdlss::vk;
+using namespace lu::vk;
 
 namespace {
 

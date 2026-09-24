@@ -3,7 +3,7 @@
 
 #include <cstring>
 
-using namespace nvdlss::hook;
+using namespace lu::hook;
 
 namespace {
 

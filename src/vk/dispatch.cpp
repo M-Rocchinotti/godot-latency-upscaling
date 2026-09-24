@@ -10,7 +10,7 @@
 #include <map>
 #include <mutex>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 namespace {
 
 // The loader's exported entry points ("trampolines"). They dispatch through the handle they
@@ -216,7 +216,7 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 		return L.next.CreateDevice(physical_device, info, allocator, device); // invalid call: let the loader report it
 	}
 	if (!known_instance) {
-		NVDLSS_WARN_ONCE("vkCreateDevice for an instance the layer did not see being created; passing it through");
+		LU_WARN_ONCE("vkCreateDevice for an instance the layer did not see being created; passing it through");
 		return L.next.CreateDevice(physical_device, info, allocator, device);
 	}
 
@@ -366,7 +366,7 @@ PFN_vkVoidFunction find_hook(const char *name, bool device_scope);
 
 } // namespace
 
-extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL nvdlss_proxy_vkGetInstanceProcAddr(VkInstance instance, const char *name) {
+extern "C" VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL lu_proxy_vkGetInstanceProcAddr(VkInstance instance, const char *name) {
 	Layer &L = layer();
 	if (name == nullptr || !L.ready.load(std::memory_order_acquire)) {
 		return nullptr; // only reachable through the module handed out once the layer is ready
@@ -396,7 +396,7 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL hook_GetDeviceProcAddr(VkDevice device,
 
 PFN_vkVoidFunction find_hook(const char *name, bool device_scope) {
 	static const HookEntry table[] = {
-		{ "vkGetInstanceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&nvdlss_proxy_vkGetInstanceProcAddr), false, false },
+		{ "vkGetInstanceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&lu_proxy_vkGetInstanceProcAddr), false, false },
 		{ "vkCreateInstance", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateInstance), false, false },
 		{ "vkDestroyInstance", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyInstance), false, false },
 		{ "vkCreateDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateDevice), false, false },
@@ -424,7 +424,7 @@ PFN_vkVoidFunction find_hook(const char *name, bool device_scope) {
 
 // The host resolves vkGetInstanceProcAddr from the module LoadLibraryA("vulkan-1.dll") returned,
 // i.e. from this DLL: export the proxy under that name.
-#pragma comment(linker, "/EXPORT:vkGetInstanceProcAddr=nvdlss_proxy_vkGetInstanceProcAddr")
+#pragma comment(linker, "/EXPORT:vkGetInstanceProcAddr=lu_proxy_vkGetInstanceProcAddr")
 
 void register_feature(VulkanFeature *feature) {
 	Layer &L = layer();
@@ -506,4 +506,4 @@ LayerSnapshot snapshot() {
 	return L.snap;
 }
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

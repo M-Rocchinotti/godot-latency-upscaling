@@ -14,7 +14,7 @@
 
 #include <cstdint>
 
-namespace nvdlss::dlss {
+namespace lu::dlss {
 
 // Godot's Halton value in [-1, 1] (float arithmetic identical to the engine's).
 float halton(int index, int base);
@@ -32,4 +32,4 @@ struct JitterPixels {
 // FSR2 receives and the unit DLSS expects. Zero when phase_count is 0.
 JitterPixels jitter_in_pixels(uint64_t frame_number, uint32_t phase_count);
 
-} // namespace nvdlss::dlss
+} // namespace lu::dlss

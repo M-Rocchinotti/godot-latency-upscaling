@@ -11,7 +11,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 
 // vkCreateSwapchainKHR: VkSwapchainLatencyCreateInfoNV{latencyModeEnable = VK_TRUE} in front of
 // the host's chain, unless the host chained one itself (its choice is kept).
@@ -69,4 +69,4 @@ private:
 	uint32_t tagged_ = 0;
 };
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

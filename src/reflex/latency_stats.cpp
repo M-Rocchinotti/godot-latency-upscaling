@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 namespace {
 
 bool is_complete(const FrameReport &r) {
@@ -72,4 +72,4 @@ LatencyStats compute_latency_stats(const std::vector<FrameReport> &reports) {
 	return stats;
 }
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

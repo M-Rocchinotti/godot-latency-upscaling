@@ -11,7 +11,7 @@ git-ignored), else `godot` / an official Godot 4.7.2 binary name on PATH. On Win
 Usage (from anywhere):
     python tools/godot.py --headless --import
     python tools/godot.py --script res://tests/reflex_tests.gd
-    python tools/godot.py --env GODOT_NVIDIA_DLSS_DISABLE=1 res://demo/demo_main.tscn --quit-after 300
+    python tools/godot.py --env GODOT_LATENCY_UPSCALING_DISABLE=1 res://demo/demo_main.tscn --quit-after 300
 
 Options handled here (not passed to Godot):
     --timeout N          kill the engine (and its children) after N seconds (default 900)

@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 namespace {
 
 // The host's chain is const from the host's point of view; the in-place edits below are
@@ -114,4 +114,4 @@ std::vector<std::string> DeviceCreatePatch::enabled_extensions() const {
 	return std::vector<std::string>(names_.begin(), names_.end());
 }
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

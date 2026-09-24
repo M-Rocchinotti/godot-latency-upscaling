@@ -6,7 +6,7 @@
 // its sleep semaphore, the tracked window swapchain and the marker sequencer.
 //
 // Frame-loop mapping (why each call sits where it does) is documented in docs/ARCHITECTURE.md
-// and in godot/nvidia_dlss.cpp.
+// and in godot/latency_upscaling.cpp.
 #pragma once
 
 #include "core/settings.h"
@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 
 // How long one Reflex sleep may take before it counts as "the driver did not signal".
 // Frame-rate limits are clamped to >= 10 fps (100 ms), so a legitimate sleep is shorter.
@@ -162,7 +162,7 @@ public:
 	VkResult queue_submit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence, PFN_vkQueueSubmit next) override;
 	VkResult queue_present(VkQueue queue, const VkPresentInfoKHR *info, PFN_vkQueuePresentKHR next) override;
 
-	// --- Godot side (see godot/nvidia_dlss.cpp for the frame-loop placement) ---
+	// --- Godot side (see godot/latency_upscaling.cpp for the frame-loop placement) ---
 	void set_sleep_mode(const SleepMode &mode);
 	// The device driving the window, once its swapchain exists.
 	std::shared_ptr<Ll2Device> active_device();
@@ -196,4 +196,4 @@ private:
 	std::atomic<Ll2Device *> fast_device_{ nullptr };
 };
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

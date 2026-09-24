@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-using namespace nvdlss::reflex;
+using namespace lu::reflex;
 
 namespace {
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run every test suite of godot-nvidia-dlss.
+"""Run every test suite of godot-latency-upscaling.
 
     python tests/run_all.py                 # everything below except benchmark and mutations
     python tests/run_all.py --only reflex   # suites whose name contains a word
@@ -41,7 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from log_scan import problems_in  # noqa: E402
 
 EXTENSION_LIST = ROOT / ".godot" / "extension_list.cfg"
-HIDE = "GODOT_NVIDIA_DLSS_TEST_HIDE_EXTENSIONS"
+HIDE = "GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS"
 
 
 def godot(args: list[str], log: str, env: dict[str, str] | None = None, timeout: int = 300,
@@ -57,8 +57,8 @@ def godot(args: list[str], log: str, env: dict[str, str] | None = None, timeout:
 
 def status_of(output: str) -> dict:
     for line in output.splitlines():
-        if line.startswith("NVDLSS_STATUS "):
-            return json.loads(line[len("NVDLSS_STATUS "):])
+        if line.startswith("LU_STATUS "):
+            return json.loads(line[len("LU_STATUS "):])
     return {}
 
 
@@ -120,7 +120,7 @@ def suite_editor_with_reflex() -> bool:
     override; the editor ignores override.cfg): the editor's main window gets latency mode, its
     other windows pass through, and nothing reports an error."""
     code, out = godot(["--editor", "--quit-after", "300"], "test_editor_reflex",
-                      {"GODOT_NVIDIA_DLSS_SETTINGS": "general/enable_in_editor=true"})
+                      {"GODOT_LATENCY_UPSCALING_SETTINGS": "general/enable_in_editor=true"})
     problems = problems_in(out)
     active = "Reflex active in this process" in out
     return result("editor with Reflex enabled", code == 0 and active and not problems,
@@ -138,8 +138,8 @@ def capture(name: str, env: dict[str, str]) -> tuple[bytes | None, list[str]]:
 
 def suite_pass_through() -> bool:
     runs = {
-        "baseline_a": {"GODOT_NVIDIA_DLSS_DISABLE": "1"},
-        "baseline_b": {"GODOT_NVIDIA_DLSS_DISABLE": "1"},  # control: is the scene deterministic at all?
+        "baseline_a": {"GODOT_LATENCY_UPSCALING_DISABLE": "1"},
+        "baseline_b": {"GODOT_LATENCY_UPSCALING_DISABLE": "1"},  # control: is the scene deterministic at all?
         "hook_reflex": {},
         "hook_only": {HIDE: "VK_NV_low_latency2"},  # layer in place, nothing added
     }
@@ -165,12 +165,12 @@ FALLBACKS = [
      lambda s: not s["reflex"]["supported"] and "VK_KHR_present_id" in s["reflex"]["reason"]
      and not s["vulkan"]["added_device_extensions"],
      "Reflex unavailable naming VK_KHR_present_id, nothing added"),
-    ("wrong Godot version", [], {"GODOT_NVIDIA_DLSS_TEST_GODOT_VERSION": "4.8.0"},
+    ("wrong Godot version", [], {"GODOT_LATENCY_UPSCALING_TEST_GODOT_VERSION": "4.8.0"},
      lambda s: not s["hook"]["installed"] and "4.8.0 is not supported" in s["hook"]["reason"]
      and not s["vulkan"]["loader_intercepted"] and not s["reflex"]["supported"],
      "no hook, reason names the version"),
-    ("disabled by environment", [], {"GODOT_NVIDIA_DLSS_DISABLE": "1"},
-     lambda s: not s["hook"]["installed"] and "GODOT_NVIDIA_DLSS_DISABLE" in s["hook"]["reason"],
+    ("disabled by environment", [], {"GODOT_LATENCY_UPSCALING_DISABLE": "1"},
+     lambda s: not s["hook"]["installed"] and "GODOT_LATENCY_UPSCALING_DISABLE" in s["hook"]["reason"],
      "no hook, reason names the variable"),
     ("Compatibility renderer", ["--rendering-method", "gl_compatibility"], {},
      lambda s: s["hook"]["installed"] and not s["hook"]["active"] and "never requested" in s["hook"]["reason"]
@@ -196,7 +196,7 @@ def suite_fallbacks() -> bool:
             # D3D12 driver fails to create its swapchain on the reference GTX 1080). If it fails
             # the same way without the addon, the case cannot be tested here: report, don't fail.
             base_code, base_out = godot(args + ["--script", "res://tests/print_status.gd", "--", "--frames=30"],
-                                        log + "_without_addon", {"GODOT_NVIDIA_DLSS_DISABLE": "1"})
+                                        log + "_without_addon", {"GODOT_LATENCY_UPSCALING_DISABLE": "1"})
             if base_code != 0 and base_code == code and not status_of(base_out):
                 print(f"SKIP  fallback: {name}  (Godot exits with {code} here even without the addon)", flush=True)
                 continue
@@ -257,7 +257,7 @@ def suite_validation() -> bool:
     env_base = {"VK_ADD_LAYER_PATH": str(sdk / "Bin")}
     args = ["--gpu-validation", "--verbose", "--script", "res://tests/reflex_tests.gd"]
     runs = {}
-    for name, extra in (("baseline", {"GODOT_NVIDIA_DLSS_DISABLE": "1"}), ("hook", {})):
+    for name, extra in (("baseline", {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}), ("hook", {})):
         code, out = godot(args, f"test_validation_{name}", {**env_base, **extra}, timeout=600, medium=True)
         messages = [l.strip() for l in out.splitlines() if VALIDATION_LINE.search(l)]
         runs[name] = (code, messages, out)
@@ -286,13 +286,13 @@ def suite_archive() -> bool:
     import tarfile
 
     names = tarfile.open(fileobj=io.BytesIO(proc.stdout)).getnames()
-    unexpected = [n for n in names if not (n.startswith("addons/nvidia_dlss") or n in ("LICENSE", "THIRD_PARTY_NOTICES.md", "addons"))]
-    required = ["addons/nvidia_dlss/nvidia_dlss.gdextension", "addons/nvidia_dlss/LICENSE",
-                "addons/nvidia_dlss/THIRD_PARTY_NOTICES.md", "addons/nvidia_dlss/README.md", "LICENSE"]
+    unexpected = [n for n in names if not (n.startswith("addons/latency_upscaling") or n in ("LICENSE", "THIRD_PARTY_NOTICES.md", "addons"))]
+    required = ["addons/latency_upscaling/latency_upscaling.gdextension", "addons/latency_upscaling/LICENSE",
+                "addons/latency_upscaling/THIRD_PARTY_NOTICES.md", "addons/latency_upscaling/README.md", "LICENSE"]
     missing = [r for r in required if r not in names]
     # The addon ships on its own (Asset Library): its licence files must match the repository's.
-    stale = [f"addons/nvidia_dlss/{name} differs from {name}" for name in ("LICENSE", "THIRD_PARTY_NOTICES.md")
-             if (ROOT / name).read_bytes() != (ROOT / "addons" / "nvidia_dlss" / name).read_bytes()]
+    stale = [f"addons/latency_upscaling/{name} differs from {name}" for name in ("LICENSE", "THIRD_PARTY_NOTICES.md")
+             if (ROOT / name).read_bytes() != (ROOT / "addons" / "latency_upscaling" / name).read_bytes()]
     return result("archive", not unexpected and not missing and not stale, f"{len(names)} entries",
                   unexpected[:10] + missing + stale)
 

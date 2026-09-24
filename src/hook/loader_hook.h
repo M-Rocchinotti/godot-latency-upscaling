@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::hook {
+namespace lu::hook {
 
 struct InstallResult {
 	bool installed = false;
@@ -27,4 +27,4 @@ bool pin_addon_module();
 // Patches the imports of the process executable (after pinning the DLL). Idempotent.
 InstallResult install();
 
-} // namespace nvdlss::hook
+} // namespace lu::hook

@@ -44,18 +44,18 @@ std::string describe_pair(const A &a, const B &b) {
 
 #define CHECK_EQ(actual, expected)                                                                                  \
 	do {                                                                                                            \
-		const auto &nvdlss_a_ = (actual);                                                                           \
-		const auto &nvdlss_e_ = (expected);                                                                         \
-		if (!(nvdlss_a_ == nvdlss_e_)) {                                                                            \
-			unit::report_failure(__FILE__, __LINE__, "CHECK_EQ(" #actual ", " #expected "): " + unit::describe_pair(nvdlss_a_, nvdlss_e_)); \
+		const auto &lu_a_ = (actual);                                                                           \
+		const auto &lu_e_ = (expected);                                                                         \
+		if (!(lu_a_ == lu_e_)) {                                                                            \
+			unit::report_failure(__FILE__, __LINE__, "CHECK_EQ(" #actual ", " #expected "): " + unit::describe_pair(lu_a_, lu_e_)); \
 		}                                                                                                           \
 	} while (false)
 
 #define CHECK_NEAR(actual, expected, tolerance)                                                                     \
 	do {                                                                                                            \
-		const double nvdlss_a_ = static_cast<double>(actual);                                                       \
-		const double nvdlss_e_ = static_cast<double>(expected);                                                     \
-		if (!(std::fabs(nvdlss_a_ - nvdlss_e_) <= (tolerance))) {                                                   \
-			unit::report_failure(__FILE__, __LINE__, "CHECK_NEAR(" #actual ", " #expected "): " + unit::describe_pair(nvdlss_a_, nvdlss_e_)); \
+		const double lu_a_ = static_cast<double>(actual);                                                       \
+		const double lu_e_ = static_cast<double>(expected);                                                     \
+		if (!(std::fabs(lu_a_ - lu_e_) <= (tolerance))) {                                                   \
+			unit::report_failure(__FILE__, __LINE__, "CHECK_NEAR(" #actual ", " #expected "): " + unit::describe_pair(lu_a_, lu_e_)); \
 		}                                                                                                           \
 	} while (false)

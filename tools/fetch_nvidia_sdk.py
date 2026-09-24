@@ -36,7 +36,7 @@ FILES = [
     "bin/x64/nvngx_dlss.dll",
     "bin/x64/nvngx_dlssg.dll",
 ]
-TARGET = "addons/nvidia_dlss/bin/nvidia/"
+TARGET = "addons/latency_upscaling/bin/nvidia/"
 LICENCES = {
     "Streamline source and sl.* plugins": "https://github.com/NVIDIA-RTX/Streamline/blob/main/license.txt",
     "DLSS runtime (nvngx_*.dll): NVIDIA RTX SDKs licence": "https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt",
@@ -45,7 +45,7 @@ LICENCES = {
 
 def release_asset() -> dict:
     url = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/{TAG}"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "godot-nvidia-dlss"})
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "godot-latency-upscaling"})
     with urllib.request.urlopen(request, timeout=30) as response:
         release = json.load(response)
     for asset in release.get("assets", []):

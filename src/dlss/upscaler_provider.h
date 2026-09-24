@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::dlss {
+namespace lu::dlss {
 
 enum class QualityMode { DLAA, Quality, Balanced, Performance, UltraPerformance };
 
@@ -78,4 +78,4 @@ public:
 	virtual bool evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &inputs) = 0;
 };
 
-} // namespace nvdlss::dlss
+} // namespace lu::dlss

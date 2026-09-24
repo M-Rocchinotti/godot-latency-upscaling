@@ -1,9 +1,9 @@
 extends Node3D
-## Demo of the NVIDIA DLSS addon (Phase 1: Reflex).
+## Demo of the Latency & Upscaling addon (Phase 1: Reflex).
 ##
 ## A moving scene, a mouse-look camera (hold the right mouse button) to feel input latency, and a
 ## "GPU load" control that makes the GPU the bottleneck, which is when Reflex lowers latency.
-## The panel talks to the NvidiaDLSS singleton; nothing in this project configures the addon.
+## The panel talks to the LatencyUpscaling singleton; nothing in this project configures the addon.
 
 const GRID := 20
 const SPACING := 2.2
@@ -28,7 +28,7 @@ var _dlss: Object
 
 
 func _ready() -> void:
-	_dlss = Engine.get_singleton("NvidiaDLSS") if Engine.has_singleton("NvidiaDLSS") else null
+	_dlss = Engine.get_singleton("LatencyUpscaling") if Engine.has_singleton("LatencyUpscaling") else null
 	_build_world()
 	_build_panel()
 	gpu_load = gpu_load
@@ -187,7 +187,7 @@ func _build_panel() -> void:
 	if _dlss == null:
 		_mode_button.disabled = true
 		overlay.disabled = true
-		_status_label.text = "The NVIDIA DLSS addon is not loaded."
+		_status_label.text = "The Latency & Upscaling addon is not loaded."
 	else:
 		_mode_button.select(_dlss.reflex_mode)
 		overlay.button_pressed = _dlss.overlay_visible

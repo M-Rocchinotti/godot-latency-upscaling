@@ -17,10 +17,10 @@ Phase 0 (repository and build) and Phase 1 (Vulkan hook layer and NVIDIA Reflex)
 - NVIDIA Reflex through `VK_NV_low_latency2`: Off / On / On + Boost, frame-rate limit, sleep
   before input sampling, all latency markers, present IDs on presents and submissions, latency
   reports through `vkGetLatencyTimingsNV`, flash-indicator marker on left clicks.
-- `NvidiaDLSS` engine singleton (auto-registered): Reflex API, status with reasons, latency
+- `LatencyUpscaling` engine singleton (auto-registered): Reflex API, status with reasons, latency
   statistics and raw reports, optional latency overlay.
-- Settings: addon defaults in `addons/nvidia_dlss/nvidia_dlss.cfg`, optional project-setting
-  overrides, `GODOT_NVIDIA_DLSS_SETTINGS` environment overrides, `GODOT_NVIDIA_DLSS_DISABLE=1`
+- Settings: addon defaults in `addons/latency_upscaling/latency_upscaling.cfg`, optional project-setting
+  overrides, `GODOT_LATENCY_UPSCALING_SETTINGS` environment overrides, `GODOT_LATENCY_UPSCALING_DISABLE=1`
   kill switch.
 - Works with Godot's default and separate render-thread models; one Reflex sleep per presented
   frame; a sleep that times out is suspended until the next window swapchain.

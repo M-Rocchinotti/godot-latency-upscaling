@@ -7,7 +7,7 @@
 #endif
 #include <vulkan/vulkan.h>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 
 // First structure of type `type` in a pNext chain, or nullptr.
 inline const VkBaseInStructure *find_in_chain(const void *next, VkStructureType type) {
@@ -30,4 +30,4 @@ DispatchKey dispatch_key(Handle handle) {
 	return handle != VK_NULL_HANDLE ? *reinterpret_cast<const void *const *>(handle) : nullptr;
 }
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

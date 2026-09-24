@@ -88,8 +88,8 @@ def main(argv: list[str]) -> int:
         print(f"{names[r['mode']]:<12}{fmt(r['frame_ms']):>26}{fmt(r['latency_ms']):>28}{r['sleep_ms']:>9.2f}")
 
     variants = [
-        ("no addon", ["--modes=-"], {"GODOT_NVIDIA_DLSS_DISABLE": "1"}),
-        ("layer only", ["--modes=-"], {"GODOT_NVIDIA_DLSS_TEST_HIDE_EXTENSIONS": "VK_NV_low_latency2"}),
+        ("no addon", ["--modes=-"], {"GODOT_LATENCY_UPSCALING_DISABLE": "1"}),
+        ("layer only", ["--modes=-"], {"GODOT_LATENCY_UPSCALING_TEST_HIDE_EXTENSIONS": "VK_NV_low_latency2"}),
         ("Reflex Off", ["--modes=0"], {}),
         ("Reflex On", ["--modes=1"], {}),
     ]

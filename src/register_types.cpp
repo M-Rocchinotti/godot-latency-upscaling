@@ -2,13 +2,13 @@
 //
 // CORE level  (before the DisplayServer and the Vulkan device exist): settings, safety checks,
 //             hook installation (godot/bootstrap.cpp).
-// SCENE level (the Vulkan device exists): the NvidiaDLSS class and engine singleton, project
+// SCENE level (the Vulkan device exists): the LatencyUpscaling class and engine singleton, project
 //             settings in the editor.
 // Main-loop callbacks: startup (every engine singleton is registered, the main loop exists:
 //             frame signals, overlay) and frame (end of every main-loop iteration: Reflex sleep).
 #include "core/log.h"
 #include "godot/bootstrap.h"
-#include "godot/nvidia_dlss.h"
+#include "godot/latency_upscaling.h"
 
 #include <gdextension_interface.h>
 
@@ -21,18 +21,18 @@ using namespace godot;
 
 namespace {
 
-constexpr const char *SINGLETON_NAME = "NvidiaDLSS";
-nvdlss::NvidiaDLSS *g_singleton = nullptr;
+constexpr const char *SINGLETON_NAME = "LatencyUpscaling";
+lu::LatencyUpscaling *g_singleton = nullptr;
 
 void initialize(ModuleInitializationLevel level) {
 	if (level == MODULE_INITIALIZATION_LEVEL_CORE) {
-		nvdlss::bootstrap_core();
+		lu::bootstrap_core();
 		return;
 	}
 	if (level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-	if (nvdlss::boot_state().late_load) {
+	if (lu::boot_state().late_load) {
 		// Loaded into a running editor (the addon was just added): the Vulkan device already exists,
 		// so nothing can be activated before a restart. Registering classes now is also unsafe:
 		// Godot 4.7.2 crashes when a `--headless --import` run exits right after loading an extension
@@ -40,11 +40,11 @@ void initialize(ModuleInitializationLevel level) {
 		// the editor plugin reports "restart the editor to activate".
 		return;
 	}
-	GDREGISTER_CLASS(nvdlss::NvidiaDLSS);
-	g_singleton = memnew(nvdlss::NvidiaDLSS);
+	GDREGISTER_CLASS(lu::LatencyUpscaling);
+	g_singleton = memnew(lu::LatencyUpscaling);
 	Engine::get_singleton()->register_singleton(SINGLETON_NAME, g_singleton);
 	if (Engine::get_singleton()->is_editor_hint()) {
-		nvdlss::NvidiaDLSS::register_project_settings();
+		lu::LatencyUpscaling::register_project_settings();
 	}
 }
 
@@ -57,7 +57,7 @@ void uninitialize(ModuleInitializationLevel level) {
 	} else if (level == MODULE_INITIALIZATION_LEVEL_CORE) {
 		// The Vulkan layer stays in place (the DLL is pinned) but must stop printing through an
 		// engine that is shutting down.
-		nvdlss::log::set_sink(nullptr);
+		lu::log::set_sink(nullptr);
 	}
 }
 
@@ -77,7 +77,7 @@ void on_frame() {
 
 extern "C" {
 
-GDExtensionBool GDE_EXPORT godot_nvidia_dlss_init(GDExtensionInterfaceGetProcAddress get_proc_address,
+GDExtensionBool GDE_EXPORT godot_latency_upscaling_init(GDExtensionInterfaceGetProcAddress get_proc_address,
 		GDExtensionClassLibraryPtr library, GDExtensionInitialization *initialization) {
 	GDExtensionBinding::InitObject init(get_proc_address, library, initialization);
 	init.register_initializer(initialize);

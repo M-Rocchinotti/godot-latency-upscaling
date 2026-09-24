@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::vk {
+namespace lu::vk {
 
 struct DeviceFeatureRequest {
 	bool timeline_semaphore = false;
@@ -68,4 +68,4 @@ private:
 	bool changed_ = false;
 };
 
-} // namespace nvdlss::vk
+} // namespace lu::vk

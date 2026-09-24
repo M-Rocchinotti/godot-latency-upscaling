@@ -8,7 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 
-namespace nvdlss::reflex {
+namespace lu::reflex {
 namespace {
 
 constexpr uint32_t NVIDIA_VENDOR_ID = 0x10DE;
@@ -660,4 +660,4 @@ ReflexFeature::Status ReflexFeature::status() {
 	return s;
 }
 
-} // namespace nvdlss::reflex
+} // namespace lu::reflex

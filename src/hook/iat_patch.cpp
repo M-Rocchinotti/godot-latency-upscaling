@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-namespace nvdlss::hook {
+namespace lu::hook {
 namespace {
 
 bool write_pointer(void **slot, void *value) {
@@ -107,4 +107,4 @@ void restore_imports(const std::vector<IatSlot> &slots) {
 	}
 }
 
-} // namespace nvdlss::hook
+} // namespace lu::hook

@@ -1,7 +1,7 @@
 #include "dlss/jitter.h"
 #include "test_framework.h"
 
-using namespace nvdlss::dlss;
+using namespace lu::dlss;
 
 TEST(jitter_halton_matches_godot) {
 	// Godot's get_halton_value (renderer_scene_cull.cpp:55-64) maps the radical inverse to [-1, 1].

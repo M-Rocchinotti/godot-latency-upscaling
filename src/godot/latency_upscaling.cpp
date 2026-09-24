@@ -1,4 +1,4 @@
-#include "godot/nvidia_dlss.h"
+#include "godot/latency_upscaling.h"
 
 #include "core/log.h"
 #include "core/settings.h"
@@ -22,11 +22,11 @@
 
 using namespace godot;
 
-namespace nvdlss {
+namespace lu {
 namespace {
 
-constexpr const char *OVERLAY_SCRIPT = "res://addons/nvidia_dlss/overlay/latency_overlay.gd";
-constexpr const char *OVERLAY_NODE_NAME = "NvidiaDLSSLatencyOverlay";
+constexpr const char *OVERLAY_SCRIPT = "res://addons/latency_upscaling/overlay/latency_overlay.gd";
+constexpr const char *OVERLAY_NODE_NAME = "LatencyUpscalingLatencyOverlay";
 
 PackedStringArray to_packed(const std::vector<std::string> &list) {
 	PackedStringArray out;
@@ -73,9 +73,9 @@ Dictionary report_to_dictionary(const reflex::FrameReport &r) {
 
 } // namespace
 
-NvidiaDLSS *NvidiaDLSS::singleton_ = nullptr;
+LatencyUpscaling *LatencyUpscaling::singleton_ = nullptr;
 
-NvidiaDLSS::NvidiaDLSS() {
+LatencyUpscaling::LatencyUpscaling() {
 	singleton_ = this;
 	const Settings &settings = boot_state().resolved.settings;
 	mode_ = static_cast<ReflexMode>(settings.reflex_mode);
@@ -83,27 +83,27 @@ NvidiaDLSS::NvidiaDLSS() {
 	flash_marker_ = settings.reflex_flash_indicator;
 }
 
-NvidiaDLSS::~NvidiaDLSS() {
+LatencyUpscaling::~LatencyUpscaling() {
 	if (singleton_ == this) {
 		singleton_ = nullptr;
 	}
 }
 
-void NvidiaDLSS::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("get_status"), &NvidiaDLSS::get_status);
-	ClassDB::bind_method(D_METHOD("is_reflex_supported"), &NvidiaDLSS::is_reflex_supported);
-	ClassDB::bind_method(D_METHOD("is_reflex_active"), &NvidiaDLSS::is_reflex_active);
-	ClassDB::bind_method(D_METHOD("get_reflex_status"), &NvidiaDLSS::get_reflex_status);
-	ClassDB::bind_method(D_METHOD("set_reflex_mode", "mode"), &NvidiaDLSS::set_reflex_mode);
-	ClassDB::bind_method(D_METHOD("get_reflex_mode"), &NvidiaDLSS::get_reflex_mode);
-	ClassDB::bind_method(D_METHOD("set_reflex_fps_limit", "fps"), &NvidiaDLSS::set_reflex_fps_limit);
-	ClassDB::bind_method(D_METHOD("get_reflex_fps_limit"), &NvidiaDLSS::get_reflex_fps_limit);
-	ClassDB::bind_method(D_METHOD("get_latency_stats"), &NvidiaDLSS::get_latency_stats);
-	ClassDB::bind_method(D_METHOD("get_latency_reports"), &NvidiaDLSS::get_latency_reports);
-	ClassDB::bind_method(D_METHOD("trigger_flash"), &NvidiaDLSS::trigger_flash);
-	ClassDB::bind_method(D_METHOD("set_overlay_visible", "visible"), &NvidiaDLSS::set_overlay_visible);
-	ClassDB::bind_method(D_METHOD("is_overlay_visible"), &NvidiaDLSS::is_overlay_visible);
-	ClassDB::bind_method(D_METHOD("get_version"), &NvidiaDLSS::get_version);
+void LatencyUpscaling::_bind_methods() {
+	ClassDB::bind_method(D_METHOD("get_status"), &LatencyUpscaling::get_status);
+	ClassDB::bind_method(D_METHOD("is_reflex_supported"), &LatencyUpscaling::is_reflex_supported);
+	ClassDB::bind_method(D_METHOD("is_reflex_active"), &LatencyUpscaling::is_reflex_active);
+	ClassDB::bind_method(D_METHOD("get_reflex_status"), &LatencyUpscaling::get_reflex_status);
+	ClassDB::bind_method(D_METHOD("set_reflex_mode", "mode"), &LatencyUpscaling::set_reflex_mode);
+	ClassDB::bind_method(D_METHOD("get_reflex_mode"), &LatencyUpscaling::get_reflex_mode);
+	ClassDB::bind_method(D_METHOD("set_reflex_fps_limit", "fps"), &LatencyUpscaling::set_reflex_fps_limit);
+	ClassDB::bind_method(D_METHOD("get_reflex_fps_limit"), &LatencyUpscaling::get_reflex_fps_limit);
+	ClassDB::bind_method(D_METHOD("get_latency_stats"), &LatencyUpscaling::get_latency_stats);
+	ClassDB::bind_method(D_METHOD("get_latency_reports"), &LatencyUpscaling::get_latency_reports);
+	ClassDB::bind_method(D_METHOD("trigger_flash"), &LatencyUpscaling::trigger_flash);
+	ClassDB::bind_method(D_METHOD("set_overlay_visible", "visible"), &LatencyUpscaling::set_overlay_visible);
+	ClassDB::bind_method(D_METHOD("is_overlay_visible"), &LatencyUpscaling::is_overlay_visible);
+	ClassDB::bind_method(D_METHOD("get_version"), &LatencyUpscaling::get_version);
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "reflex_mode", PROPERTY_HINT_ENUM, "Off,On,On + Boost"), "set_reflex_mode", "get_reflex_mode");
 	ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "reflex_fps_limit", PROPERTY_HINT_RANGE, "0,1000,1"), "set_reflex_fps_limit", "get_reflex_fps_limit");
@@ -140,37 +140,37 @@ void NvidiaDLSS::_bind_methods() {
 // Details and the reasoning per marker: docs/ARCHITECTURE.md.
 // ---------------------------------------------------------------------------------------------
 
-void NvidiaDLSS::connect_frame_signals() {
+void LatencyUpscaling::connect_frame_signals() {
 	// Engine singletons are only reachable by name once Godot has registered them, which happens
 	// after the SCENE initialisation level: hence this runs from the startup callback.
 	if (signals_connected_ || !boot_state().reflex_enabled || !Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
-	RenderingServer::get_singleton()->connect("frame_pre_draw", callable_mp(this, &NvidiaDLSS::on_frame_pre_draw));
+	RenderingServer::get_singleton()->connect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
 	signals_connected_ = true;
 }
 
-void NvidiaDLSS::disconnect_frame_signals() {
+void LatencyUpscaling::disconnect_frame_signals() {
 	if (!signals_connected_ || !Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
-	RenderingServer::get_singleton()->disconnect("frame_pre_draw", callable_mp(this, &NvidiaDLSS::on_frame_pre_draw));
+	RenderingServer::get_singleton()->disconnect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
 	signals_connected_ = false;
 }
 
-void NvidiaDLSS::on_startup() {
+void LatencyUpscaling::on_startup() {
 	connect_frame_signals();
 	if (boot_state().resolved.settings.overlay_enabled) {
 		set_overlay_visible(true);
 	}
 	if (is_reflex_active() && Engine::get_singleton()->get_max_fps() > 0) {
 		log::warning("Engine.max_fps is %d: Godot's limiter sleeps after the Reflex sleep and adds latency. "
-					 "Use NvidiaDLSS.reflex_fps_limit (or nvidia_dlss/reflex/fps_limit) instead.",
+					 "Use LatencyUpscaling.reflex_fps_limit (or latency_upscaling/reflex/fps_limit) instead.",
 				Engine::get_singleton()->get_max_fps());
 	}
 }
 
-void NvidiaDLSS::on_frame() {
+void LatencyUpscaling::on_frame() {
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
@@ -180,7 +180,7 @@ void NvidiaDLSS::on_frame() {
 		// once (after the present) in the default model. frame_post_draw cannot be used: with a
 		// separate render thread it is deferred and may arrive during the next frame's draw.
 		RenderingServer::get_singleton()->call_on_render_thread(
-				callable_mp(this, &NvidiaDLSS::on_render_frame_end).bind(drawn_frame_id_));
+				callable_mp(this, &LatencyUpscaling::on_render_frame_end).bind(drawn_frame_id_));
 		drawn_frame_id_ = 0;
 	}
 	reflex::FrameSequencer &sequencer = device->sequencer();
@@ -189,7 +189,7 @@ void NvidiaDLSS::on_frame() {
 	sequencer.begin_simulation();
 }
 
-void NvidiaDLSS::on_frame_pre_draw() {
+void LatencyUpscaling::on_frame_pre_draw() {
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
@@ -210,11 +210,11 @@ void NvidiaDLSS::on_frame_pre_draw() {
 		// right before this frame's _draw(), which was not queued yet.
 		drawn_frame_id_ = static_cast<int64_t>(frame_id);
 		RenderingServer::get_singleton()->call_on_render_thread(
-				callable_mp(this, &NvidiaDLSS::on_render_frame_begin).bind(drawn_frame_id_));
+				callable_mp(this, &LatencyUpscaling::on_render_frame_begin).bind(drawn_frame_id_));
 	}
 }
 
-void NvidiaDLSS::on_render_frame_begin(int64_t frame_id) {
+void LatencyUpscaling::on_render_frame_begin(int64_t frame_id) {
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
@@ -222,7 +222,7 @@ void NvidiaDLSS::on_render_frame_begin(int64_t frame_id) {
 	device->sequencer().render_begin(static_cast<uint64_t>(frame_id));
 }
 
-void NvidiaDLSS::on_render_frame_end(int64_t frame_id) {
+void LatencyUpscaling::on_render_frame_end(int64_t frame_id) {
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
@@ -234,47 +234,47 @@ void NvidiaDLSS::on_render_frame_end(int64_t frame_id) {
 // API
 // ---------------------------------------------------------------------------------------------
 
-String NvidiaDLSS::get_version() const {
-	return NVDLSS_VERSION;
+String LatencyUpscaling::get_version() const {
+	return LU_VERSION;
 }
 
-void NvidiaDLSS::apply_sleep_mode() {
+void LatencyUpscaling::apply_sleep_mode() {
 	reflex::SleepMode mode;
-	mode.mode = static_cast<nvdlss::ReflexMode>(mode_);
+	mode.mode = static_cast<lu::ReflexMode>(mode_);
 	mode.minimum_interval_us = fps_limit_to_interval_us(fps_limit_);
 	reflex::ReflexFeature::get().set_sleep_mode(mode);
 }
 
-void NvidiaDLSS::set_reflex_mode(ReflexMode mode) {
+void LatencyUpscaling::set_reflex_mode(ReflexMode mode) {
 	ERR_FAIL_COND_MSG(mode < REFLEX_MODE_OFF || mode > REFLEX_MODE_ON_BOOST, "Reflex mode must be REFLEX_MODE_OFF, REFLEX_MODE_ON or REFLEX_MODE_ON_BOOST.");
 	mode_ = mode;
 	apply_sleep_mode();
 }
 
-NvidiaDLSS::ReflexMode NvidiaDLSS::get_reflex_mode() const {
+LatencyUpscaling::ReflexMode LatencyUpscaling::get_reflex_mode() const {
 	return mode_;
 }
 
-void NvidiaDLSS::set_reflex_fps_limit(double fps) {
+void LatencyUpscaling::set_reflex_fps_limit(double fps) {
 	ERR_FAIL_COND_MSG(!is_valid_fps_limit(fps), vformat("Reflex frame-rate limit must be 0 (none) or between %d and %d.",
 														 static_cast<int>(MIN_FPS_LIMIT), static_cast<int>(MAX_FPS_LIMIT)));
 	fps_limit_ = fps;
 	apply_sleep_mode();
 }
 
-double NvidiaDLSS::get_reflex_fps_limit() const {
+double LatencyUpscaling::get_reflex_fps_limit() const {
 	return fps_limit_;
 }
 
-bool NvidiaDLSS::is_reflex_supported() const {
+bool LatencyUpscaling::is_reflex_supported() const {
 	return reflex::ReflexFeature::get().status().supported;
 }
 
-bool NvidiaDLSS::is_reflex_active() const {
+bool LatencyUpscaling::is_reflex_active() const {
 	return reflex::ReflexFeature::get().status().active;
 }
 
-String NvidiaDLSS::get_reflex_status() const {
+String LatencyUpscaling::get_reflex_status() const {
 	const reflex::ReflexFeature::Status s = reflex::ReflexFeature::get().status();
 	if (s.active) {
 		return s.reason.empty() ? String("active") : String("active (") + String::utf8(s.reason.c_str()) + ")";
@@ -282,13 +282,13 @@ String NvidiaDLSS::get_reflex_status() const {
 	return String("unavailable: ") + String::utf8(s.reason.c_str());
 }
 
-void NvidiaDLSS::trigger_flash() {
+void LatencyUpscaling::trigger_flash() {
 	if (std::shared_ptr<reflex::Ll2Device> device = active_reflex_device()) {
 		device->sequencer().request_flash();
 	}
 }
 
-Dictionary NvidiaDLSS::get_status() const {
+Dictionary LatencyUpscaling::get_status() const {
 	const BootState &boot = boot_state();
 	const vk::LayerSnapshot layer = vk::snapshot();
 	RenderingServer *rs = RenderingServer::get_singleton();
@@ -300,7 +300,7 @@ Dictionary NvidiaDLSS::get_status() const {
 	}
 
 	Dictionary d;
-	d["version"] = NVDLSS_VERSION;
+	d["version"] = LU_VERSION;
 	d["godot_version"] = String::utf8(boot.godot_version.c_str());
 	d["editor"] = boot.editor;
 
@@ -396,7 +396,7 @@ Dictionary NvidiaDLSS::get_status() const {
 	return d;
 }
 
-Dictionary NvidiaDLSS::get_latency_stats() const {
+Dictionary LatencyUpscaling::get_latency_stats() const {
 	Dictionary d;
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	const reflex::LatencyStats stats = reflex::compute_latency_stats(device ? device->latency_reports() : std::vector<reflex::FrameReport>());
@@ -426,7 +426,7 @@ Dictionary NvidiaDLSS::get_latency_stats() const {
 	return d;
 }
 
-Array NvidiaDLSS::get_latency_reports() const {
+Array LatencyUpscaling::get_latency_reports() const {
 	Array out;
 	if (std::shared_ptr<reflex::Ll2Device> device = active_reflex_device()) {
 		for (const reflex::FrameReport &r : device->latency_reports()) {
@@ -436,11 +436,11 @@ Array NvidiaDLSS::get_latency_reports() const {
 	return out;
 }
 
-bool NvidiaDLSS::is_overlay_visible() const {
+bool LatencyUpscaling::is_overlay_visible() const {
 	return overlay_id_ != 0 && ObjectDB::get_instance(overlay_id_) != nullptr;
 }
 
-void NvidiaDLSS::set_overlay_visible(bool visible) {
+void LatencyUpscaling::set_overlay_visible(bool visible) {
 	if (Engine::get_singleton()->is_editor_hint() || visible == is_overlay_visible()) {
 		return;
 	}
@@ -461,7 +461,7 @@ void NvidiaDLSS::set_overlay_visible(bool visible) {
 	overlay_id_ = overlay->get_instance_id();
 }
 
-void NvidiaDLSS::register_project_settings() {
+void LatencyUpscaling::register_project_settings() {
 	ProjectSettings *ps = ProjectSettings::get_singleton();
 	const Settings &defaults = boot_state().addon_defaults;
 	struct Definition {
@@ -498,4 +498,4 @@ void NvidiaDLSS::register_project_settings() {
 	}
 }
 
-} // namespace nvdlss
+} // namespace lu

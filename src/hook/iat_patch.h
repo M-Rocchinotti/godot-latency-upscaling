@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace nvdlss::hook {
+namespace lu::hook {
 
 struct IatSlot {
 	void **slot = nullptr; // address inside the module's IAT
@@ -30,4 +30,4 @@ std::vector<IatSlot> patch_imports(HMODULE module, const char *function, void *r
 // Writes the original pointers back.
 void restore_imports(const std::vector<IatSlot> &slots);
 
-} // namespace nvdlss::hook
+} // namespace lu::hook

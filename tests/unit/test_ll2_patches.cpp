@@ -1,8 +1,8 @@
 #include "reflex/ll2_patches.h"
 #include "test_framework.h"
 
-using namespace nvdlss::reflex;
-using nvdlss::vk::find_in_chain;
+using namespace lu::reflex;
+using lu::vk::find_in_chain;
 
 namespace {
 

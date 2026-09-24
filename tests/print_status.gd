@@ -1,5 +1,5 @@
 extends SceneTree
-## Prints the addon status as one JSON line ("NVDLSS_STATUS {...}") after a number of frames,
+## Prints the addon status as one JSON line ("LU_STATUS {...}") after a number of frames,
 ## then quits. Used by the fallback tests and handy for manual checks:
 ##     python tools/godot.py --script res://tests/print_status.gd -- --frames=60
 
@@ -17,13 +17,13 @@ func _process(_delta: float) -> bool:
 	if _frames_left > 0:
 		return false
 	var status := {}
-	if Engine.has_singleton("NvidiaDLSS"):
-		status = Engine.get_singleton("NvidiaDLSS").get_status()
+	if Engine.has_singleton("LatencyUpscaling"):
+		status = Engine.get_singleton("LatencyUpscaling").get_status()
 		var rd := RenderingServer.get_rendering_device()
 		if rd != null:
 			# The VkDevice Godot renders with, to compare with the one created through the layer.
 			status["godot_vk_device"] = rd.get_driver_resource(RenderingDevice.DRIVER_RESOURCE_LOGICAL_DEVICE, RID(), 0)
 	else:
-		status["error"] = "NvidiaDLSS singleton not registered"
-	print("NVDLSS_STATUS " + JSON.stringify(status))
+		status["error"] = "LatencyUpscaling singleton not registered"
+	print("LU_STATUS " + JSON.stringify(status))
 	return true

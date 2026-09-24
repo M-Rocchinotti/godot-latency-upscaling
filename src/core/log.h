@@ -8,7 +8,7 @@
 
 #include <atomic>
 
-namespace nvdlss::log {
+namespace lu::log {
 
 enum class Level { Info, Warning, Error };
 
@@ -25,14 +25,14 @@ void info(const char *format, ...);
 void warning(const char *format, ...);
 void error(const char *format, ...);
 
-} // namespace nvdlss::log
+} // namespace lu::log
 
 // Emits a warning the first time the enclosing statement runs, then stays silent. Use it
 // for conditions that would otherwise repeat every frame.
-#define NVDLSS_WARN_ONCE(...)                                            \
+#define LU_WARN_ONCE(...)                                            \
 	do {                                                                 \
-		static std::atomic<bool> nvdlss_warned_once_{ false };           \
-		if (!nvdlss_warned_once_.exchange(true)) {                       \
-			::nvdlss::log::warning(__VA_ARGS__);                         \
+		static std::atomic<bool> lu_warned_once_{ false };           \
+		if (!lu_warned_once_.exchange(true)) {                       \
+			::lu::log::warning(__VA_ARGS__);                         \
 		}                                                                \
 	} while (false)

@@ -1,7 +1,7 @@
 #include "reflex/latency_stats.h"
 #include "test_framework.h"
 
-using namespace nvdlss::reflex;
+using namespace lu::reflex;
 
 namespace {
 
