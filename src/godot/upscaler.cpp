@@ -484,10 +484,13 @@ void Upscaler::run_takeovers() {
 		config->set_texture_mipmap_bias(snap.mipmap_bias);
 		config->set_anisotropic_filtering_level(static_cast<RenderingServer::ViewportAnisotropicFiltering>(snap.anisotropic_filtering));
 		rb->configure(config);
-		// The target-size output, as RenderSceneBuffersRD::ensure_upscaled() would create it.
+		// The target-size output, as RenderSceneBuffersRD::ensure_upscaled() would create it, plus
+		// copy-to (VK_IMAGE_USAGE_TRANSFER_DST_BIT): DLSS clears its output with vkCmdClearColorImage
+		// inside the evaluation (VUID-vkCmdClearColorImage-image-00002, seen on the RTX 5080).
 		const Ref<RDTextureFormat> color_format = rd->texture_get_format(rb->get_color_texture());
 		const uint32_t usage = RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT | RenderingDevice::TEXTURE_USAGE_STORAGE_BIT |
-				RenderingDevice::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RenderingDevice::TEXTURE_USAGE_INPUT_ATTACHMENT_BIT;
+				RenderingDevice::TEXTURE_USAGE_COLOR_ATTACHMENT_BIT | RenderingDevice::TEXTURE_USAGE_INPUT_ATTACHMENT_BIT |
+				RenderingDevice::TEXTURE_USAGE_CAN_COPY_TO_BIT;
 		rb->create_texture(buffers_context(), upscaled_name(), color_format->get_format(), usage,
 				RenderingDevice::TEXTURE_SAMPLES_1, rb->get_target_size(), 1, 1, true, false);
 		views_[rt].reset = true;
