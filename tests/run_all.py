@@ -19,6 +19,8 @@ Suites (headed ones open a window: a swapchain is needed for Reflex):
                               Godot's UBO, image quality and conventions, velocity, motion
   upscaler (native)           the same, recorded natively into Godot's command buffer by the
                               layer's marker interception; equals Godot's own recording bit for bit
+  rtx harness                 tools/rtx_remote.py's preflight returns and logs only the GPU load and
+                              two yes/no answers (tests/test_rtx_remote.py)
   nvidia runtime              fetching the NVIDIA runtime: tools/fetch_nvidia_sdk.py and the editor
                               dialog (licence acceptance, lock file, archive handling) with synthetic
                               archives; NVIDIA's real archive against the lock when a copy is in
@@ -145,6 +147,16 @@ def suite_nvidia_runtime() -> bool:
     if not cached.exists():
         skip("nvidia runtime: real archive", f"no copy of {manifest['asset']} in {RUNTIME_ZIP_CACHE}")
     return all_ok
+
+
+def suite_rtx_harness() -> bool:
+    # The remote RTX harness's privacy rule: only the GPU load and two yes/no answers leave the PC.
+    proc = subprocess.run([sys.executable, str(ROOT / "tests" / "test_rtx_remote.py")], cwd=ROOT,
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
+    summary = re.search(r"Ran (\d+) tests", proc.stderr)
+    return result("rtx harness: preflight privacy", proc.returncode == 0,
+                  f"{summary.group(1) if summary else '?'} Python tests",
+                  [l for l in proc.stderr.splitlines() if l.startswith(("FAIL:", "ERROR:"))])
 
 
 def suite_import() -> bool:
@@ -534,6 +546,7 @@ SUITES = [
     ("pass-through", suite_pass_through),
     ("upscaler", suite_upscaler),
     ("nvidia runtime", suite_nvidia_runtime),
+    ("rtx harness", suite_rtx_harness),
     ("fallback", suite_fallbacks),
     ("editor", suite_editor),
     ("editor reflex", suite_editor_with_reflex),

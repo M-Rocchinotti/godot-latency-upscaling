@@ -11,9 +11,11 @@ enforces, so no caller can break them by accident:
   Without it every Godot run must be --headless, and the probe creates no surface.
 - A windowed run is short (at most WINDOW_MAX_SECONDS, then it is stopped), opens a normal window
   that does not take the keyboard focus, and only starts when the PC looks idle: `preflight` checks
-  the GPU load, the foreground window (fullscreen? a game or launcher?) inside the user's session,
-  and refuses otherwise. Every windowed run is logged in docs/RTX_WINDOWED_RUNS.md (when, what,
-  how long, outcome).
+  the GPU load and, inside the user's session, whether a fullscreen app is in front and whether a
+  known game is running, and refuses otherwise. Nothing about what the user is doing leaves that
+  PC: the check itself reduces what it sees to those two yes/no answers (no process, app or window
+  name is returned, printed or logged). Every windowed run is logged in docs/RTX_WINDOWED_RUNS.md
+  (when, what, how long, outcome, the preflight's answers).
 - Every process this script starts runs from inside the folder; `cleanup` stops exactly those
   (matched by executable path) and removes the scheduled tasks it created (name prefix below).
 
@@ -47,7 +49,7 @@ Commands:
                                  elevated and the Vulkan loader would ignore VK_ADD_LAYER_PATH;
                                  --validation adds that for tools/vklayer/ (and --gpu-validation)
     preflight                    read-only: is the PC idle enough for a short window? (GPU load,
-                                 foreground window of the user's session, known game launchers)
+                                 fullscreen app in front yes/no, known game running yes/no)
     collect NAME                 fetch runs\\NAME\\ (log, exit code, PNG captures) to build/rtx/NAME/
     cleanup [--purge]            stop our processes, delete our tasks; --purge removes the folder
     selftest                     all of the above without a window (deploy, probe, SSH and session
@@ -75,12 +77,19 @@ TASK_PREFIX = "claude-rtx-test-"
 WINDOW_MAX_SECONDS = 120  # the user's condition for windowed runs: brief, at most about two minutes
 WINDOW_LOG = ROOT / "docs" / "RTX_WINDOWED_RUNS.md"
 GPU_BUSY_PERCENT = 25  # average GPU load above this: someone is using the GPU (a game, a render)
-# Foreground processes that mean "the user is playing": launchers and common game hosts.
-GAME_PROCESSES = {
+# Known games: running at all means "the user is playing". Known launchers count only when in front
+# (they idle in the background on many PCs). The preflight compares against these lists on the PC
+# and returns only the yes/no answer.
+GAME_PROCESSES = [
+    "minecraft", "minecraft.windows", "robloxplayerbeta", "fortniteclient-win64-shipping", "valorant-win64-shipping",
+    "cs2", "dota2", "gta5", "gta5_enhanced", "rdr2", "eldenring", "overwatch", "r5apex", "leagueoflegends",
+]
+LAUNCHER_PROCESSES = [
     "steam", "steamwebhelper", "epicgameslauncher", "battle.net", "galaxyclient", "riotclientservices", "leagueclient",
-    "origin", "eadesktop", "ubisoftconnect", "upc", "xboxapp", "gamingservices", "minecraft", "javaw", "robloxplayerbeta",
-    "fortniteclient-win64-shipping", "valorant-win64-shipping", "cs2", "dota2", "gta5", "rdr2", "eldenring",
-}
+    "origin", "eadesktop", "ubisoftconnect", "upc", "xboxapp",
+]
+# The only fields the preflight may return from the user's session.
+PREFLIGHT_FIELDS = {"fullscreen_in_front", "game_running"}
 GODOT_EXES = ["Godot_v4.7.2-stable_win64.exe", "Godot_v4.7.2-stable_win64_console.exe"]
 
 
@@ -149,7 +158,7 @@ def cmd_status(r: Remote) -> int:
 $ErrorActionPreference = 'SilentlyContinue'
 'host: ' + $env:COMPUTERNAME
 'gpu: ' + (& nvidia-smi --query-gpu=name,driver_version,utilization.gpu,memory.used --format=csv,noheader)
-'sessions:'; (& query user) | ForEach-Object {{ '  ' + $_ }}
+'interactive session: ' + $(if ((& query user) -match 'Active') {{ 'yes' }} else {{ 'no' }})
 'free C: GB: ' + [math]::Round((Get-PSDrive C).Free / 1GB, 1)
 $root = {q(r.root)}
 'folder: ' + $(if (Test-Path $root) {{ $root + ' (' + [math]::Round(((Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum) / 1MB, 1) + ' MB)' }} else {{ 'absent' }})
@@ -286,21 +295,65 @@ public static class LuWin {
     [DllImport("user32.dll")] public static extern bool GetMonitorInfo(IntPtr m, ref MONITORINFO i);
 }
 '@
+# Everything below stays on this PC: names are compared here and only two yes/no answers are
+# written out (no process, app or window name).
+$games = @(__GAMES__)
+$launchers = @(__LAUNCHERS__)
+$shell = @('explorer', 'shellexperiencehost', 'searchhost', 'startmenuexperiencehost', 'lockapp')
+$fullscreen = $false
+$launcherInFront = $false
 $h = [LuWin]::GetForegroundWindow()
-$out = @{ foreground_process = ''; fullscreen = $false }
 if ($h -ne [IntPtr]::Zero) {
     $procId = 0; [void][LuWin]::GetWindowThreadProcessId($h, [ref]$procId)
     $p = Get-Process -Id $procId -ErrorAction SilentlyContinue
-    $out.foreground_process = if ($p) { $p.ProcessName } else { '' }
+    $front = if ($p) { $p.ProcessName.ToLower() } else { '' }
     $r = New-Object LuWin+RECT; [void][LuWin]::GetWindowRect($h, [ref]$r)
     $mi = New-Object LuWin+MONITORINFO; $mi.cbSize = [Runtime.InteropServices.Marshal]::SizeOf($mi)
     [void][LuWin]::GetMonitorInfo([LuWin]::MonitorFromWindow($h, 2), [ref]$mi)
     $m = $mi.rcMonitor
-    $shell = @('explorer', 'ShellExperienceHost', 'SearchHost', 'StartMenuExperienceHost', 'LockApp')
-    $out.fullscreen = ($r.L -le $m.L -and $r.T -le $m.T -and $r.R -ge $m.R -and $r.B -ge $m.B) -and ($shell -notcontains $out.foreground_process)
+    $fullscreen = ($r.L -le $m.L -and $r.T -le $m.T -and $r.R -ge $m.R -and $r.B -ge $m.B) -and ($shell -notcontains $front)
+    $launcherInFront = $launchers -contains $front
+    $front = $null; $p = $null
 }
-$out | ConvertTo-Json -Compress | Set-Content -Path (Join-Path $env:LU_RUN_DIR 'preflight.json') -Encoding UTF8
+$gameRunning = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $games -contains $_.ProcessName.ToLower() }).Count -gt 0
+@{ fullscreen_in_front = [bool]$fullscreen; game_running = [bool]($gameRunning -or $launcherInFront) } |
+    ConvertTo-Json -Compress | Set-Content -Path (Join-Path $env:LU_RUN_DIR 'preflight.json') -Encoding UTF8
 """
+
+
+def preflight_script() -> str:
+    """The check that runs inside the user's session, with the game and launcher lists filled in."""
+    listed = lambda names: ", ".join("'" + n.replace("'", "") + "'" for n in names)  # noqa: E731
+    return PREFLIGHT_PS.replace("__GAMES__", listed(GAME_PROCESSES)).replace("__LAUNCHERS__", listed(LAUNCHER_PROCESSES))
+
+
+def preflight_answers(raw: str) -> dict | None:
+    """The preflight's JSON reduced to the allowed fields, or None when it holds anything else
+    (then nothing of it is shown or logged)."""
+    try:
+        answers = json.loads(raw.strip().splitlines()[-1].lstrip("\ufeff"))
+    except (json.JSONDecodeError, IndexError):
+        return None
+    if not isinstance(answers, dict) or set(answers) != PREFLIGHT_FIELDS or not all(isinstance(v, bool) for v in answers.values()):
+        return None
+    return answers
+
+
+def preflight_summary(gpu_load: float, answers: dict) -> tuple[list[str], str]:
+    """(problems, summary) for the log: the GPU load and the two yes/no answers, nothing else."""
+    problems = []
+    if gpu_load < 0:
+        problems.append("GPU load unknown")
+    elif gpu_load > GPU_BUSY_PERCENT:
+        problems.append("GPU busy")
+    if answers["fullscreen_in_front"]:
+        problems.append("fullscreen app in front")
+    if answers["game_running"]:
+        problems.append("game running")
+    load = f"GPU {gpu_load:.0f} %" if gpu_load >= 0 else "GPU load unknown"
+    summary = (f"{load}, {'a' if answers['fullscreen_in_front'] else 'no'} fullscreen app in front, "
+               f"{'a' if answers['game_running'] else 'no'} game running")
+    return problems, summary
 
 
 def cmd_preflight(r: Remote, quiet: bool = False) -> tuple[bool, str]:
@@ -319,7 +372,7 @@ def cmd_preflight(r: Remote, quiet: bool = False) -> tuple[bool, str]:
     r.ps(f"$d = {q(d)}; Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $d; New-Item -ItemType Directory -Force -Path $d | Out-Null")
     STAGE.mkdir(parents=True, exist_ok=True)
     local_ps1 = STAGE / "preflight.ps1"
-    local_ps1.write_text(PREFLIGHT_PS, encoding="utf-8-sig")
+    local_ps1.write_text(preflight_script(), encoding="utf-8-sig")
     ps1 = d + "\\preflight.ps1"
     r.scp_to(local_ps1, ps1)
     local_ps1.unlink()
@@ -348,22 +401,10 @@ Remove-Item -Recurse -Force $d
 
     if "NO_INTERACTIVE_SESSION" in out:
         return refuse("nobody is logged on interactively")
-    try:
-        fg = json.loads(out.strip().splitlines()[-1].lstrip("\ufeff"))
-    except (json.JSONDecodeError, IndexError):
-        return refuse(f"the foreground check gave no result ({out.strip()[-300:]})")
-    process = str(fg.get("foreground_process", ""))
-    problems = []
-    if gpu_load < 0:
-        problems.append("GPU load unknown")
-    elif gpu_load > GPU_BUSY_PERCENT:
-        problems.append(f"GPU busy ({gpu_load:.0f} % average)")
-    if fg.get("fullscreen"):
-        problems.append(f"a fullscreen window is in front ({process})")
-    if process.lower() in GAME_PROCESSES:
-        problems.append(f"a game or game launcher is in front ({process})")
-    # Only the process name and whether it is fullscreen: window titles can be private.
-    summary = f"GPU {gpu_load:.0f} %, foreground {process or '-'} ({'fullscreen' if fg.get('fullscreen') else 'windowed'})"
+    answers = preflight_answers(out)
+    if answers is None:
+        return refuse("the preflight gave no usable answer")  # its output is never echoed
+    problems, summary = preflight_summary(gpu_load, answers)
     if not quiet:
         print(("OK    " if not problems else "BUSY  ") + summary + ("" if not problems else "; " + "; ".join(problems)))
     return not problems, summary if not problems else summary + "; " + "; ".join(problems)
@@ -376,7 +417,7 @@ def log_windowed_run(name: str, args: list[str], when: str, seconds: str, outcom
             "Every run that opened a window on the user's RTX 5080 PC (after the user's \"WINDOW OK\"), written by\n"
             "`tools/rtx_remote.py session --window-ok`. Runs are short (at most "
             f"{WINDOW_MAX_SECONDS} s), in a normal window that does not take the\n"
-            "keyboard focus, and start only when `preflight` finds the PC idle (GPU load, foreground window).\n\n"
+            "keyboard focus, and start only when `preflight` finds the PC idle (GPU load, no fullscreen app or game in front).\n\n"
             "| Start (the RTX PC's local time) | Run | What | Duration | Outcome | PC state before |\n"
             "|---|---|---|---|---|---|\n", encoding="utf-8", newline="\n")
     what = " ".join(a for a in args if not a.startswith("--log-file")).replace("|", "\\|")

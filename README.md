@@ -343,8 +343,10 @@ the tools into one folder there, runs Godot headless over SSH or inside the user
 through a one-shot scheduled task, collects logs and in-engine captures, and cleans up. It refuses
 any run that would open a window unless `--window-ok` is given, which is reserved for runs the
 PC's owner has agreed to; such runs are short (at most 120 s), start only when a preflight finds the
-PC idle (no GPU load, no fullscreen window or game in front), open a normal window without taking
-the focus, and are logged in `docs/RTX_WINDOWED_RUNS.md`. `python tools/rtx_remote.py selftest`
+PC idle (low GPU load, no fullscreen app in front, no known game running), open a normal window
+without taking the focus, and are logged in `docs/RTX_WINDOWED_RUNS.md`. The preflight reduces what
+it sees on that PC to those two yes/no answers there; no process, app or window name is returned,
+printed or logged (`tests/test_rtx_remote.py`). `python tools/rtx_remote.py selftest`
 checks the whole chain without a window; `build/tools/vk_probe.exe` (`build.cmd vk_probe`) reports
 what a GPU's Vulkan driver offers for Reflex, DLSS and Frame Generation, and
 `build/tools/sl_probe.exe` (`build.cmd sl_probe`) what Streamline says about DLSS on it (support,
