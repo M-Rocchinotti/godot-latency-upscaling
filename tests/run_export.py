@@ -11,10 +11,12 @@ GDExtensions initialise, so an exported game honours them whether or not the edi
 Steps: build the release DLL, write a temporary Windows export preset, export with
 --export-release, then run the exported demo.console.exe headless (no window: the hook and the
 device-extension injection still happen; Reflex needs a swapchain, so "active" is only asserted
-in the headed run_all suite). Three configurations, each restoring project.godot afterwards:
-  A defaults                              -> hook installed, device gets the extensions
-  B latency_upscaling/general/enabled=false, EDITOR PLUGIN DISABLED -> hook NOT installed
+in the headed run_all suite). Four configurations, each restoring project.godot afterwards:
+  A defaults                              -> hook installed, device gets the extensions; with the
+                                             NVIDIA runtime fetched, it ships in nvidia/
+  B latency_upscaling/general/enabled=false, EDITOR PLUGIN DISABLED -> hook NOT installed, no warning
   C latency_upscaling/reflex/mode=2                                 -> read as On + Boost
+  D EDITOR PLUGIN DISABLED (runtime fetched) -> no nvidia/, and the export warns about it
 Ends "export test: <n> passed, <n> failed"; exit code is the number of failures.
 """
 from __future__ import annotations
@@ -31,6 +33,8 @@ RUNNER = ROOT / "tools" / "godot.py"
 EXPORT_DIR = ROOT / "build" / "export"
 PRESET = ROOT / "export_presets.cfg"
 PROJECT = ROOT / "project.godot"
+
+WARNING_PLUGIN_OFF = "editor plugin is disabled, so this Windows export does not carry the NVIDIA DLSS runtime"
 
 PRESET_TEXT = """[preset.0]
 
@@ -149,6 +153,18 @@ def main() -> int:
                   not missing and not extra and dlss.get("runtime_missing") == [] and
                   str(dlss.get("runtime_dir", "")).replace("/", "\\").lower() == str(shipped).lower(),
                   f"missing {missing}, unexpected {extra}, game sees {dlss.get('runtime_dir')!r} missing {dlss.get('runtime_missing')}")
+            check("A defaults: no warning about a disabled editor plugin", WARNING_PLUGIN_OFF not in out,
+                  "warned" if WARNING_PLUGIN_OFF in out else "silent")
+            # D: the editor plugin disabled (DLSS on, runtime installed): the export goes without the
+            # runtime, and says so (nvidia_runtime_export_check.gd, registered by the extension).
+            original = set_project("", disable_plugin=True)
+            try:
+                code, out_d = export()
+            finally:
+                PROJECT.write_bytes(original.encode("utf-8"))
+            check("D plugin off: the export warns that it does not carry the NVIDIA runtime",
+                  code == 0 and WARNING_PLUGIN_OFF in out_d and not (EXPORT_DIR / manifest["export_folder"]).exists(),
+                  f"exit {code}, warned {WARNING_PLUGIN_OFF in out_d}, nvidia/ exported {(EXPORT_DIR / manifest['export_folder']).exists()}")
         else:
             print("SKIP  A defaults: NVIDIA runtime export (the runtime is not fetched here)")
 
@@ -163,6 +179,8 @@ def main() -> int:
         src = b.get("settings", {}).get("general/enabled", {}).get("source", "")
         check("B plugin off + enabled=false: hook NOT installed", hook.get("installed") is False and "project setting" in src,
               f"installed={hook.get('installed')} reason={hook.get('reason')!r} source={src!r}")
+        check("B plugin off + enabled=false: no runtime warning (the addon is off anyway)", WARNING_PLUGIN_OFF not in out,
+              "warned" if WARNING_PLUGIN_OFF in out else "silent")
 
         # C: reflex/mode=2 read as On + Boost
         original = set_project("\n[latency_upscaling]\n\nreflex/mode=2\n", disable_plugin=False)

@@ -10,6 +10,7 @@
 #include "reflex/reflex_ll2.h"
 #include "vk/dispatch.h"
 
+#include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/input.hpp>
 #include <godot_cpp/classes/main_loop.hpp>
@@ -29,6 +30,7 @@ namespace {
 
 constexpr const char *OVERLAY_SCRIPT = "res://addons/latency_upscaling/overlay/latency_overlay.gd";
 constexpr const char *OVERLAY_NODE_NAME = "LatencyUpscalingLatencyOverlay";
+constexpr const char *EXPORT_CHECK_SCRIPT = "res://addons/latency_upscaling/nvidia_runtime_export_check.gd";
 
 PackedStringArray to_packed(const std::vector<std::string> &list) {
 	PackedStringArray out;
@@ -197,7 +199,39 @@ void LatencyUpscaling::disconnect_frame_signals() {
 	signals_connected_ = false;
 }
 
+// The NVIDIA runtime ships with Windows exports through the editor plugin's export plugin, so an
+// export made while the plugin is disabled goes without it. This check runs in every editor session
+// (the extension is loaded whether or not the plugin is enabled) and warns at export time. It needs
+// no editor bindings: EditorPlugin::add_export_plugin only forwards to the editor's exporter, so an
+// EditorPlugin instance outside the scene tree is enough to reach it.
+void LatencyUpscaling::register_export_check() {
+	if (export_host_ != nullptr || !Engine::get_singleton()->is_editor_hint()) {
+		return;
+	}
+	const Ref<Resource> script = ResourceLoader::get_singleton()->load(EXPORT_CHECK_SCRIPT);
+	const Variant host = ClassDBSingleton::get_singleton()->instantiate("EditorPlugin");
+	Object *host_object = host;
+	if (script.is_null() || host_object == nullptr) {
+		log::warning("could not register the export check (%s)", script.is_null() ? "script missing" : "no EditorPlugin");
+		return;
+	}
+	export_check_ = script->call("new");
+	host_object->call("add_export_plugin", export_check_);
+	export_host_ = host_object;
+}
+
+void LatencyUpscaling::unregister_export_check() {
+	if (export_host_ == nullptr) {
+		return;
+	}
+	export_host_->call("remove_export_plugin", export_check_);
+	export_host_->call("free");
+	export_host_ = nullptr;
+	export_check_ = Variant();
+}
+
 void LatencyUpscaling::on_startup() {
+	register_export_check();
 	configure_upscaler();
 	connect_frame_signals();
 	if (boot_state().resolved.settings.overlay_enabled) {
@@ -325,6 +359,7 @@ void LatencyUpscaling::release_upscaler() {
 }
 
 void LatencyUpscaling::on_shutdown() {
+	unregister_export_check();
 	Upscaler::get().shutdown();
 	if (Engine::get_singleton()->has_singleton("RenderingServer")) {
 		RenderingServer *rs = RenderingServer::get_singleton();
