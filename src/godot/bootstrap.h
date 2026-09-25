@@ -28,6 +28,9 @@ struct BootState {
 	std::string dlss_runtime_dir; // where the NVIDIA runtime for DLSS is looked for (UTF-8)
 	std::vector<std::string> dlss_runtime_missing; // its Super Resolution files not found there
 	bool dlss_streamline = false; // the NVIDIA runtime is loaded and Vulkan goes through Streamline
+	std::string dlss_runtime_reason; // why the NVIDIA runtime was not loaded ("" when it was)
+	std::string dlss_project_id; // the project ID handed to NGX (dlss/project_id.h)
+	std::string dlss_project_id_source; // "project setting" or "derived from application/config/name"
 	std::vector<std::string> hidden_extensions; // debug-build test knob
 	// Debug-build test knob: "reference" runs the reference upscaler through RenderingDevice,
 	// "native" records it natively into Godot's command buffer (marker interception).
@@ -49,7 +52,10 @@ inline constexpr const char *ENV_TEST_FAULT = "GODOT_LATENCY_UPSCALING_TEST_FAUL
 inline constexpr const char *ENV_TEST_UPSCALER = "GODOT_LATENCY_UPSCALING_TEST_UPSCALER"; // "reference" / "native"
 inline constexpr const char *ENV_TEST_READBACK_FRAMES = "GODOT_LATENCY_UPSCALING_TEST_READBACK_FRAMES"; // e.g. "40"
 inline constexpr const char *ENV_TEST_FORCE_STREAMLINE = "GODOT_LATENCY_UPSCALING_TEST_FORCE_STREAMLINE"; // "1"
+inline constexpr const char *ENV_TEST_RUNTIME_DIR = "GODOT_LATENCY_UPSCALING_TEST_RUNTIME_DIR"; // another runtime folder
 
 inline constexpr const char *PROJECT_SETTING_PREFIX = "latency_upscaling/";
+// A string project setting, outside the numeric settings of core/settings.h.
+inline constexpr const char *PROJECT_ID_SETTING = "latency_upscaling/dlss/project_id";
 
 } // namespace lu

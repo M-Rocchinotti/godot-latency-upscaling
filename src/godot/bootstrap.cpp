@@ -4,6 +4,7 @@
 #include "core/testing.h"
 #include "dlss/dlss_feature.h"
 #include "dlss/gpu_precheck.h"
+#include "dlss/project_id.h"
 #include "dlss/runtime_files.h"
 #include "dlss/streamline.h"
 #include "hook/loader_hook.h"
@@ -58,6 +59,29 @@ bool vulkan_rendering_expected(std::string &why) {
 // Loads Streamline when a GPU can run DLSS (or `force`): a temporary instance lists the GPUs, the
 // addon's own checks come first, Streamline's verdict second. Returns the backend with the host's
 // Vulkan routed through Streamline, or nullptr with `reason`.
+// The project ID for NGX: the project setting when it is GUID-like, else derived from the project's
+// name (dlss/project_id.h).
+void resolve_project_id(std::vector<std::string> &warnings) {
+	ProjectSettings *ps = ProjectSettings::get_singleton();
+	const String configured = ps->has_setting(PROJECT_ID_SETTING) ? String(ps->get_setting(PROJECT_ID_SETTING)).strip_edges() : String();
+	if (!configured.is_empty()) {
+		const std::string id = configured.utf8().get_data();
+		if (dlss::is_guid_like(id)) {
+			g_state.dlss_project_id = id;
+			g_state.dlss_project_id_source = "project setting";
+			return;
+		}
+		warnings.push_back(std::string("project setting '") + PROJECT_ID_SETTING + "' = '" + id +
+				"' ignored (expected a GUID like a0f57b54-1daf-4934-90ae-c4035c19df04)");
+	}
+	const String name = ps->get_setting("application/config/name", "");
+	const PackedByteArray digest = (String(dlss::PROJECT_ID_SEED_PREFIX) + name).sha256_buffer();
+	if (digest.size() == 32) {
+		g_state.dlss_project_id = dlss::project_id_from_digest(digest.ptr());
+		g_state.dlss_project_id_source = "derived from application/config/name";
+	}
+}
+
 dlss::UpscalerProvider *load_streamline(const std::wstring &runtime_dir, bool force, std::string &reason) {
 	dlss::Streamline &streamline = dlss::Streamline::get();
 	bool load_failed = false;
@@ -68,7 +92,7 @@ dlss::UpscalerProvider *load_streamline(const std::wstring &runtime_dir, bool fo
 				if (!why.empty() && !force) {
 					return false;
 				}
-				if (load_failed || (!streamline.loaded() && !streamline.load(runtime_dir, why))) {
+				if (load_failed || (!streamline.loaded() && !streamline.load(runtime_dir, g_state.dlss_project_id, why))) {
 					load_failed = true;
 					return false;
 				}
@@ -267,7 +291,21 @@ void bootstrap_core() {
 	// Vulkan calls go through Streamline's interposer (see dlss/streamline.h). Otherwise nothing of
 	// NVIDIA's is loaded and the API reports why DLSS is unavailable.
 	if (g_state.hook_installed && !g_state.editor) {
-		const dlss::RuntimeFiles runtime = dlss::check_runtime_files(dlss::default_runtime_dir());
+		std::wstring runtime_dir = dlss::default_runtime_dir();
+#ifdef DEBUG_ENABLED
+		// Tests: another runtime folder (e.g. one with an unsigned interposer, which must be refused).
+		const String test_dir = os->get_environment(ENV_TEST_RUNTIME_DIR);
+		if (!test_dir.is_empty()) {
+			runtime_dir = reinterpret_cast<const wchar_t *>(test_dir.utf16().get_data());
+		}
+#endif
+		std::vector<std::string> id_warnings;
+		resolve_project_id(id_warnings);
+		for (const std::string &warning : id_warnings) {
+			log::warning("%s", warning.c_str());
+			g_state.resolved.warnings.push_back(warning);
+		}
+		const dlss::RuntimeFiles runtime = dlss::check_runtime_files(runtime_dir);
 		g_state.dlss_runtime_dir = dlss::to_utf8(runtime.dir);
 		g_state.dlss_runtime_missing = runtime.missing;
 		std::string no_backend;
@@ -294,6 +332,7 @@ void bootstrap_core() {
 			backend = load_streamline(runtime.dir, force, no_backend);
 		}
 		g_state.dlss_streamline = backend != nullptr;
+		g_state.dlss_runtime_reason = backend != nullptr ? std::string() : no_backend;
 		dlss::DlssFeature::get().configure(backend, no_backend, g_state.hidden_extensions);
 		vk::register_feature(&dlss::DlssFeature::get());
 		if (backend != nullptr) {

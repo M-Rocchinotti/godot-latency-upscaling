@@ -155,7 +155,7 @@ Streamline::Api &Streamline::api() const {
 	return api;
 }
 
-bool Streamline::load(const std::wstring &runtime_dir, std::string &reason) {
+bool Streamline::load(const std::wstring &runtime_dir, const std::string &project_id, std::string &reason) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (initialized_) {
 		return true;
@@ -213,7 +213,9 @@ bool Streamline::load(const std::wstring &runtime_dir, std::string &reason) {
 	pref.numFeaturesToLoad = 1;
 	pref.engine = sl::EngineType::eCustom;
 	pref.engineVersion = "Godot 4.7";
-	pref.projectId = "0a1c5b38-6e3f-4d7a-9c21-4b8e5f2d7a90"; // godot-latency-upscaling
+	static std::string project;
+	project = project_id; // Streamline may keep the pointer
+	pref.projectId = project.c_str(); // per project: latency_upscaling/dlss/project_id or derived from its name
 	pref.renderAPI = sl::RenderAPI::eVulkan;
 	const sl::Result r = a.Init(pref, sl::kSDKVersion);
 	if (r != sl::Result::eOk) {

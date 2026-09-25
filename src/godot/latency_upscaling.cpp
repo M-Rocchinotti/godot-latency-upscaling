@@ -582,6 +582,8 @@ Dictionary LatencyUpscaling::get_status() const {
 	entry(keys::DLSS_ENABLED, s.dlss_enabled);
 	entry(keys::DLSS_QUALITY, static_cast<int>(s.dlss_quality));
 	entry(keys::DLSS_PRESET, static_cast<int>(s.dlss_preset));
+	entry(keys::DLSS_CUT_ANGLE, s.dlss_cut_angle_degrees);
+	entry(keys::DLSS_CUT_DISTANCE, s.dlss_cut_distance);
 	d["settings"] = settings;
 	Dictionary upscaling = Upscaler::get().status();
 	Dictionary dlss;
@@ -596,6 +598,11 @@ Dictionary LatencyUpscaling::get_status() const {
 		runtime_missing.push_back(String::utf8(name.c_str()));
 	}
 	dlss["runtime_missing"] = runtime_missing;
+	// Why the NVIDIA runtime was not loaded, even where the GPU check already rules DLSS out (e.g. an
+	// interposer without NVIDIA's signature).
+	dlss["runtime_reason"] = String::utf8(boot.dlss_runtime_reason.c_str());
+	dlss["project_id"] = String::utf8(boot.dlss_project_id.c_str());
+	dlss["project_id_source"] = String::utf8(boot.dlss_project_id_source.c_str());
 	upscaling["dlss"] = dlss;
 	d["upscaling"] = upscaling;
 	d["warnings"] = to_packed(boot.resolved.warnings);
@@ -691,6 +698,22 @@ void LatencyUpscaling::register_project_settings() {
 		{ keys::DLSS_CUT_ANGLE, defaults.dlss_cut_angle_degrees, PROPERTY_HINT_RANGE, "0,180,0.1,degrees", false },
 		{ keys::DLSS_CUT_DISTANCE, defaults.dlss_cut_distance, PROPERTY_HINT_RANGE, "0,1000,0.01,or_greater,suffix:m", false },
 	};
+	// The project ID for NGX: a string, so not part of the numeric settings above. Empty means
+	// "derived from application/config/name" (dlss/project_id.h).
+	const String project_id = PROJECT_ID_SETTING;
+	if (!ps->has_setting(project_id)) {
+		ps->set_setting(project_id, String());
+	}
+	ps->set_initial_value(project_id, String());
+	Dictionary id_info;
+	id_info["name"] = project_id;
+	id_info["type"] = Variant::STRING;
+	id_info["hint"] = PROPERTY_HINT_PLACEHOLDER_TEXT;
+	id_info["hint_string"] = "derived from application/config/name";
+	ps->add_property_info(id_info);
+	ps->set_as_basic(project_id, true);
+	ps->set_restart_if_changed(project_id, true);
+
 	for (const Definition &def : definitions) {
 		const String name = String(PROJECT_SETTING_PREFIX) + def.key;
 		// Like GLOBAL_DEF: a value equal to the initial value is not written to project.godot, so

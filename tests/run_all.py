@@ -234,6 +234,21 @@ def suite_pass_through() -> bool:
 
 
 # (name, engine args, env, expected-status predicate, description of the expectation)
+# A runtime folder whose sl.interposer.dll is not signed by NVIDIA (the addon's own, unsigned, debug
+# DLL under that name). The other files are placeholders: nothing may get as far as loading them.
+UNSIGNED_RUNTIME = ROOT / "build" / "test_runtime_unsigned"
+
+
+def expected_project_id() -> str:
+    """The project ID the addon derives for NGX when latency_upscaling/dlss/project_id is not set
+    (src/dlss/project_id.h): a version-8 UUID from SHA-256("godot-latency-upscaling:" + the name)."""
+    name = re.search(r'^config/name="(.*)"$', (ROOT / "project.godot").read_text(encoding="utf-8"), re.M).group(1)
+    b = bytearray(hashlib.sha256(("godot-latency-upscaling:" + name).encode("utf-8")).digest()[:16])
+    b[6] = (b[6] & 0x0F) | 0x80
+    b[8] = (b[8] & 0x3F) | 0x80
+    h = b.hex()
+    return f"{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}"
+
 FALLBACKS = [
     ("extension missing", [], {HIDE: "VK_NV_low_latency2"},
      lambda s: s["hook"]["active"] and not s["reflex"]["supported"] and "VK_NV_low_latency2" in s["reflex"]["reason"]
@@ -287,11 +302,32 @@ FALLBACKS = [
      and "VK_KHR_push_descriptor" not in s["vulkan"]["added_device_extensions"] and s["reflex"]["supported"],
      "Godot records the reference upscaler itself; nothing intercepted, push descriptors not added, Reflex unaffected",
      [r"native recording unavailable"], "res://tests/upscaler_run.gd"),
+    # The NVIDIA runtime's interposer must carry NVIDIA's signature: an unsigned one is refused before
+    # it is loaded, the status says why, and Vulkan stays on the real loader (Reflex unaffected).
+    ("unsigned Streamline interposer", [],
+     {"GODOT_LATENCY_UPSCALING_TEST_FORCE_STREAMLINE": "1", "GODOT_LATENCY_UPSCALING_TEST_RUNTIME_DIR": str(UNSIGNED_RUNTIME)},
+     lambda s: not s["upscaling"]["dlss"]["available"] and "does not carry NVIDIA's signature" in s["upscaling"]["dlss"]["runtime_reason"]
+     and s["upscaling"]["dlss"]["runtime_dir"].replace("/", "\\").lower() == str(UNSIGNED_RUNTIME).lower()
+     and not s["upscaling"]["dlss"]["runtime_missing"] and not s["vulkan"]["loader_override_active"]
+     and s["vulkan"]["loader_override"] == "" and s["reflex"]["supported"]
+     and s["upscaling"]["dlss"]["project_id"] == expected_project_id()
+     and s["upscaling"]["dlss"]["project_id_source"] == "derived from application/config/name",
+     "refused before loading: the reason names the signature, Vulkan is not routed through it, Reflex unaffected; "
+     "the project ID is derived from the project's name"),
 ]
+
+
+def prepare_unsigned_runtime() -> None:
+    UNSIGNED_RUNTIME.mkdir(parents=True, exist_ok=True)
+    own = ROOT / "addons" / "latency_upscaling" / "bin" / "godot_latency_upscaling.windows.template_debug.x86_64.dll"
+    (UNSIGNED_RUNTIME / "sl.interposer.dll").write_bytes(own.read_bytes())
+    for name in ("sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"):
+        (UNSIGNED_RUNTIME / name).write_bytes(b"placeholder: never loaded")
 
 
 def suite_fallbacks() -> bool:
     all_ok = True
+    prepare_unsigned_runtime()
     for entry in FALLBACKS:
         name, args, env, predicate, expectation = entry[:5]
         expected_warnings = entry[5] if len(entry) > 5 else []  # warnings the case provokes on purpose

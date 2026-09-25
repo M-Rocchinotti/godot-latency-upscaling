@@ -50,6 +50,7 @@ PURE_SOURCES = [
     "src/dlss/dlss_feature.cpp",
     "src/dlss/dlss_recorder.cpp",
     "src/dlss/jitter.cpp",
+    "src/dlss/project_id.cpp",
     "src/dlss/runtime_files.cpp",
     "src/dlss/sl_signature.cpp",
     "src/dlss/streamline.cpp",

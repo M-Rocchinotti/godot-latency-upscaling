@@ -31,7 +31,8 @@ public:
 
 	// CORE initialisation: verifies sl.interposer.dll's NVIDIA signature, loads it and initialises
 	// Streamline for Vulkan with DLSS only (no over-the-air updates: only the pinned files run).
-	bool load(const std::wstring &runtime_dir, std::string &reason);
+	// `project_id`: the project's GUID-like ID for NGX (dlss/project_id.h).
+	bool load(const std::wstring &runtime_dir, const std::string &project_id, std::string &reason);
 	// Undoes load() while no Vulkan call went through Streamline yet (no GPU supports DLSS).
 	void unload();
 	bool loaded() const;
