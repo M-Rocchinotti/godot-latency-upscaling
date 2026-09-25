@@ -189,13 +189,17 @@ void MarkerInterceptor::dispatch(VkCommandBuffer command_buffer, uint32_t x, uin
 			}
 		}
 	}
-	if (!state.recorder->record(dispatch)) {
+	const bool recorded = state.recorder->record(dispatch);
+	// Godot's state is bound again either way: a recorder may have recorded state changes before it
+	// gave up (Streamline declining an evaluation after binding its own pipeline), and the marker
+	// dispatch that then runs must see exactly what Godot bound for it.
+	restore(command_buffer, state);
+	if (!recorded) {
 		declined_.fetch_add(1, std::memory_order_relaxed);
 		next_.dispatch(command_buffer, x, y, z);
 		return;
 	}
 	substituted_.fetch_add(1, std::memory_order_relaxed);
-	restore(command_buffer, state);
 }
 
 void MarkerInterceptor::restore(VkCommandBuffer command_buffer, const Tracked &state) const {

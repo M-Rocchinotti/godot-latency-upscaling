@@ -50,8 +50,9 @@ public:
 	virtual ~MarkerRecorder() = default;
 	// Records the replacement for the marker's vkCmdDispatch into dispatch.command_buffer, using
 	// function pointers that do not go through the layer's hooks. Returns true when it recorded
-	// (the marker dispatch is then dropped and Godot's state bound again), false when it recorded
-	// nothing (the marker dispatch runs). Called on the thread recording the command buffer,
+	// the replacement (the marker dispatch is then dropped), false when it gave up (the marker
+	// dispatch runs). Either way Godot's compute state is bound again afterwards, so a recorder that
+	// changed state before giving up does not break the marker dispatch. Called on the thread recording the command buffer,
 	// without any lock held. A recorder must stay valid for the rest of the process once it was
 	// registered (the addon's recorders are never destroyed).
 	virtual bool record(const MarkerDispatch &dispatch) = 0;

@@ -213,13 +213,53 @@ TEST(interceptor_runs_the_marker_dispatch_when_the_recorder_declines) {
 		"bind_sets cb=256 bp=1 layout=51 first=0 sets=64 dyn=64",
 		"push cb=256 layout=51 stages=32 offset=0 size=48 first=1",
 		"recorder",
-		"dispatch cb=256 8,4,1", // nothing to rebind: the recorder recorded nothing
+		// Godot's state is bound again before the marker dispatch runs.
+		"bind_pipeline cb=256 bp=1 p=161",
+		"bind_sets cb=256 bp=1 layout=51 first=0 sets=64 dyn=64",
+		"push cb=256 layout=51 stages=32 offset=0 size=48 first=1",
+		"dispatch cb=256 8,4,1",
 	};
 	CHECK(take_log() == expected);
 	const InterceptorStats s = mi.stats();
 	CHECK_EQ(s.marker_dispatches, 1u);
 	CHECK_EQ(s.substituted, 0u);
 	CHECK_EQ(s.declined, 1u);
+}
+
+// A recorder that binds its own pipeline (as Streamline does inside an evaluation) and then gives up.
+class PartialRecorder : public MarkerRecorder {
+public:
+	bool record(const MarkerDispatch &dispatch) override {
+		log_call("recorder");
+		fake_bind_pipeline(dispatch.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, OTHER);
+		fake_push(dispatch.command_buffer, LAYOUT, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4, "cccc");
+		return false;
+	}
+};
+
+TEST(interceptor_rebinds_the_hosts_state_when_a_recorder_declines_after_recording) {
+	reset_log();
+	MarkerInterceptor mi;
+	mi.set_next(fakes());
+	PartialRecorder recorder;
+	CHECK(mi.add_marker(MARKER, &recorder));
+	record_marker_list(mi, CB1);
+	const std::vector<std::string> expected = {
+		"bind_pipeline cb=256 bp=1 p=161",
+		"bind_sets cb=256 bp=1 layout=51 first=0 sets=64 dyn=64",
+		"push cb=256 layout=51 stages=32 offset=0 size=48 first=1",
+		"recorder",
+		"bind_pipeline cb=256 bp=1 p=178", // the recorder's own state...
+		"push cb=256 layout=51 stages=32 offset=0 size=4 first=99",
+		"bind_pipeline cb=256 bp=1 p=161", // ...is replaced by Godot's before the marker runs
+		"bind_sets cb=256 bp=1 layout=51 first=0 sets=64 dyn=64",
+		"push cb=256 layout=51 stages=32 offset=0 size=48 first=1",
+		"dispatch cb=256 8,4,1",
+	};
+	CHECK(take_log() == expected);
+	const InterceptorStats s = mi.stats();
+	CHECK_EQ(s.declined, 1u);
+	CHECK_EQ(s.substituted, 0u);
 }
 
 TEST(interceptor_tracks_only_while_the_marker_is_the_bound_compute_pipeline) {
