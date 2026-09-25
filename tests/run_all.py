@@ -92,6 +92,10 @@ def result(name: str, ok: bool, detail: str = "", problems: list[str] | None = N
 ALLOWED_SKIPS = {
     "fallback: D3D12 driver": "Godot 4.7.2's own D3D12 driver crashes on the reference GTX 1080, with or "
                               "without the addon; the refusal path is covered by code review and the status tests",
+    "nvidia runtime: real archive": "NVIDIA's release archive (276 MB) is never downloaded by the tests and is not "
+                                    "in a clean clone; the synthetic-archive checks run regardless. With a copy in "
+                                    "build/cache/nvidia/ (fetched by a developer who accepted NVIDIA's licences) the "
+                                    "real archive is also installed against the lock",
     "reflex (separate render thread): second native window":
         "Godot 4.7.2 crashes (signal 11 in the driver) when a second native window is used under the separate "
         "render thread, with the addon disabled too; the same check runs in the default thread model and as a "
