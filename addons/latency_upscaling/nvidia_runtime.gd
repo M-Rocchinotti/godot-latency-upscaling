@@ -26,6 +26,19 @@ static func lock() -> Dictionary:
 	return parsed if parsed is Dictionary else {}
 
 
+## Bytes of NVIDIA's release archive and of the files taken from it, as the lock records them
+## (0 without a lock): what a download needs before anything is fetched.
+static func archive_size() -> int:
+	return int(lock().get("size", 0))
+
+
+static func installed_size() -> int:
+	var total := 0
+	for info: Dictionary in (lock().get("files", {}) as Dictionary).values():
+		total += int(info.get("size", 0))
+	return total
+
+
 static func sha256_bytes(data: PackedByteArray) -> String:
 	var context := HashingContext.new()
 	context.start(HashingContext.HASH_SHA256)
@@ -86,14 +99,34 @@ static func sha256_file(path: String) -> String:
 	return context.finish().hex_encode()
 
 
+## Whether `text` is the licence file `lic` of the pinned release: "" when its SHA-256 is the one
+## `pinned` (normally lock()) records for that file of NVIDIA's archive, otherwise why not.
+static func licence_text_problem(text: PackedByteArray, lic: Dictionary, pinned: Dictionary) -> String:
+	var file := str(lic.get("file", ""))
+	var expected := str((pinned.get("files", {}) as Dictionary).get(file, {}).get("sha256", ""))
+	if expected == "":
+		return "no SHA-256 for %s in %s" % [file, LOCK_PATH.get_file()]
+	var actual := sha256_bytes(text)
+	if actual != expected:
+		return "the text is not %s of the pinned release (SHA-256 %s, expected %s)" % [file, actual, expected]
+	return ""
+
+
 ## Installs the manifest's files from the release zip into `target` and records the acceptance.
-## Refuses unless `accepted` (the developer ticked the licence box). Nothing is written unless every
-## file is in the archive and, with a `pinned` lock (normally lock()), the archive and every file
-## match its SHA-256. Returns "" on success, otherwise what went wrong.
-static func install_from_zip(zip_path: String, target: String, accepted: bool, accepted_by: String,
+## Refuses unless `accepted` (the developer ticked the licence box) and `acceptance` says who
+## accepted, when and how: {"accepted_by", "accepted_on" (YYYY-MM-DD), "how", optional
+## "recorded_with"}. The record never claims the acceptance for the tool. Nothing is written unless
+## every file is in the archive and, with a `pinned` lock (normally lock()), the archive and every
+## file match its SHA-256. Returns "" on success, otherwise what went wrong.
+static func install_from_zip(zip_path: String, target: String, accepted: bool, acceptance: Dictionary,
 		pinned: Dictionary = {}) -> String:
 	if not accepted:
 		return "the NVIDIA licences were not accepted: nothing was installed"
+	if str(acceptance.get("accepted_by", "")).strip_edges() == "" or str(acceptance.get("how", "")).strip_edges() == "":
+		return "the acceptance does not say who accepted the licences and how: nothing was installed"
+	var accepted_on := str(acceptance.get("accepted_on", ""))
+	if not RegEx.create_from_string("^\\d{4}-\\d{2}-\\d{2}$").search(accepted_on):
+		return "the acceptance date '%s' is not YYYY-MM-DD: nothing was installed" % accepted_on
 	var m := manifest()
 	if m.is_empty():
 		return "cannot read " + MANIFEST_PATH
@@ -108,6 +141,7 @@ static func install_from_zip(zip_path: String, target: String, accepted: bool, a
 		return "cannot open " + zip_path
 	var names := reader.get_files()
 	var members := {} # file name -> archive path
+	var installed_sha := {} # file name -> SHA-256
 	for wanted: String in m["files"]:
 		# That exact path, at the archive root or under one top-level folder (never deeper).
 		var depth := wanted.count("/")
@@ -123,9 +157,10 @@ static func install_from_zip(zip_path: String, target: String, accepted: bool, a
 	var error := ""
 	for file_name: String in members:
 		var data := reader.read_file(members[file_name])
+		installed_sha[file_name] = sha256_bytes(data)
 		if not pinned.is_empty():
 			var expected := str((pinned.get("files", {}) as Dictionary).get(file_name, {}).get("sha256", ""))
-			if sha256_bytes(data) != expected:
+			if installed_sha[file_name] != expected:
 				error = "%s does not match the pinned SHA-256" % file_name
 				break
 		# Written under the manifest's own file name: archive paths never reach the disk.
@@ -151,18 +186,25 @@ static func install_from_zip(zip_path: String, target: String, accepted: bool, a
 		return error
 	var files := members.keys()
 	files.sort()
+	# The licences accepted, as the installed files that hold them (the same schema as
+	# tools/fetch_nvidia_sdk.py writes).
 	var licences := []
 	for lic: Dictionary in m["licences"]:
-		licences.append({"name": lic["name"], "page": lic["page"]})
+		licences.append({"name": lic["name"], "file": lic["file"], "sha256": installed_sha.get(lic["file"], ""),
+				"text": lic["text"]})
 	var record := {
-		"accepted_at": Time.get_datetime_string_from_system(true) + "Z",
-		"accepted_by": accepted_by,
+		"accepted_by": str(acceptance["accepted_by"]).strip_edges(),
+		"accepted_on": accepted_on,
+		"how": str(acceptance["how"]).strip_edges(),
 		"licences": licences,
 		"repository": m["repository"],
 		"tag": m["tag"],
+		"commit": m.get("commit", ""),
 		"asset": m["asset"],
 		"sha256": sha256_file(zip_path),
 		"files": files,
+		"recorded_at": Time.get_datetime_string_from_system(true) + "Z",
+		"recorded_with": str(acceptance.get("recorded_with", "the editor dialog of the Latency & Upscaling plugin")),
 	}
 	var record_file := FileAccess.open(target_abs.path_join(str(m["acceptance_record"])), FileAccess.WRITE)
 	if record_file == null:

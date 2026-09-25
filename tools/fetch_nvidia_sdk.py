@@ -12,18 +12,28 @@ a download that does not match the lock is not installed.
 
     python tools/fetch_nvidia_sdk.py                  # dry run: resolve the release, print the plan
     python tools/fetch_nvidia_sdk.py --offline        # the pinned plan, without network access
-    python tools/fetch_nvidia_sdk.py --show-licences  # print the licence texts
-    python tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences
+    python tools/fetch_nvidia_sdk.py --show-licences  # print the licence texts of the pinned release
+    python tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences --accepted-by "Your Name"
                                                       # download, verify, extract, record the acceptance
 Options for --download:
-    --zip PATH       use a local copy of the release zip instead of downloading it
-    --target DIR     extract somewhere else than the manifest's target (tests)
-    --write-lock     (maintainers) record the archive's and the files' SHA-256 in the lock file
-                     instead of checking them against it
+    --accepted-by WHO    required: the person (or company) accepting NVIDIA's licences
+    --accepted-on DATE   when they accepted (YYYY-MM-DD; default: today), e.g. when you run the tool
+                         for someone who accepted earlier
+    --how TEXT           how they accepted (default: by running this command after reading the texts)
+    --zip PATH           use a local copy of the release zip instead of downloading it
+    --target DIR         extract somewhere else than the manifest's target (tests)
+    --write-lock         (maintainers) record the archive's and the files' SHA-256 in the lock file
+                         instead of checking them against it
 
---download refuses to run without --accept-nvidia-licences: passing it states that you have read
-and accept every licence --show-licences prints. The acceptance is recorded next to the DLLs
-(licence_acceptance.json). Exit codes: 0 done, 1 failure, 2 refused (licences not accepted).
+The licence texts shown (--show-licences, and the editor dialog) are the licence files of the pinned
+release: fetched from the release's commit on GitHub and checked against the SHA-256 the lock
+records for the same files in NVIDIA's archive (nvngx_dlss.license.txt, license.txt).
+
+--download refuses to run without --accept-nvidia-licences and --accepted-by: passing them states
+that the person named has read and accepts every licence --show-licences prints. The tool never
+accepts anything itself: licence_acceptance.json next to the DLLs records who accepted, when and
+how, and which licence files (with their SHA-256) of which release. Exit codes: 0 done, 1 failure,
+2 refused (licences not accepted).
 """
 from __future__ import annotations
 
@@ -158,20 +168,46 @@ def write_lock(m: dict, asset_url: str, asset_sha: str, asset_size: int, files: 
     return LOCK_PATH
 
 
-def record_acceptance(target: Path, m: dict, sha: str, files: list[str], accepted_by: str) -> Path:
+def accepted_licences(m: dict, files: dict[str, dict]) -> list[dict]:
+    """The licences accepted, as the files of the installed release that hold them."""
+    return [{"name": lic["name"], "file": lic["file"], "sha256": files.get(lic["file"], {}).get("sha256", ""),
+             "text": lic["text"]} for lic in m["licences"]]
+
+
+def record_acceptance(target: Path, m: dict, sha: str, files: dict[str, dict], acceptance: dict) -> Path:
+    """licence_acceptance.json: who accepted which licence files of which release, when and how.
+    `acceptance` holds "accepted_by", "accepted_on" and "how" as the person gave them."""
     record = {
-        "accepted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-        "accepted_by": accepted_by,
-        "licences": [{"name": lic["name"], "page": lic["page"]} for lic in m["licences"]],
+        "accepted_by": acceptance["accepted_by"],
+        "accepted_on": acceptance["accepted_on"],
+        "how": acceptance["how"],
+        "licences": accepted_licences(m, files),
         "repository": m["repository"],
         "tag": m["tag"],
+        "commit": m["commit"],
         "asset": m["asset"],
         "sha256": sha,
-        "files": files,
+        "files": sorted(files),
+        "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "recorded_with": "tools/fetch_nvidia_sdk.py",
     }
     path = target / m["acceptance_record"]
     path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def acceptance_from(argv: list[str]) -> dict:
+    """Who accepted, when and how, from the command line. Raises ValueError when --accepted-by is
+    missing or --accepted-on is not a date."""
+    who = (value_of(argv, "--accepted-by") or "").strip()
+    if not who:
+        raise ValueError("--accepted-by is required: name the person (or company) accepting NVIDIA's licences")
+    on = value_of(argv, "--accepted-on") or datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    datetime.date.fromisoformat(on)  # ValueError when it is not YYYY-MM-DD
+    how = (value_of(argv, "--how") or "").strip() or (
+        "ran tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences after reading the licence files of the "
+        "pinned release (--show-licences)")
+    return {"accepted_by": who, "accepted_on": on, "how": how}
 
 
 def print_plan(m: dict, offline: bool) -> int:
@@ -191,34 +227,57 @@ def print_plan(m: dict, offline: bool) -> int:
     for name in m["files"]:
         print(f"  {name}")
     print_licence_list(m)
-    print("Dry run: nothing was downloaded. Download with --download --accept-nvidia-licences.")
+    print("Dry run: nothing was downloaded. Download with --download --accept-nvidia-licences --accepted-by \"Your Name\".")
     return 0
 
 
 def print_licence_list(m: dict) -> None:
     print("Licences you must read and accept first (python tools/fetch_nvidia_sdk.py --show-licences):")
     for lic in m["licences"]:
-        print(f"  {lic['name']}: {lic['page']}")
+        print(f"  {lic['name']}: {lic['file']} of {m['asset']} ({lic['page']})")
+
+
+def pinned_licence_text(m: dict, lic: dict, lock: dict | None) -> str:
+    """The licence text of the pinned release: fetched from the release's commit and, with a lock,
+    checked against the SHA-256 of the same file in NVIDIA's archive. Raises ValueError otherwise."""
+    with http_get(lic["text"]) as response:
+        data = response.read()
+    if lock is not None:
+        expected = lock.get("files", {}).get(lic["file"], {}).get("sha256")
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != expected:
+            raise ValueError(f"the text at {lic['text']} (SHA-256 {actual}) is not {lic['file']} of {m['asset']} ({expected})")
+    return data.decode("utf-8", errors="replace")
 
 
 def show_licences(m: dict) -> int:
+    lock = load_lock(m)
+    failed = False
     for lic in m["licences"]:
         print("=" * 100)
-        print(f"{lic['name']}  ({lic['page']})")
+        print(f"{lic['name']}: {lic['file']} of {m['asset']} ({m['repository']} {m['tag']}, commit {m['commit'][:12]})")
         print("=" * 100)
         try:
-            with http_get(lic["text"]) as response:
-                print(response.read().decode("utf-8", errors="replace"))
-        except (urllib.error.URLError, TimeoutError) as error:
-            print(f"(could not fetch the text: {error}; read it at {lic['page']})")
-    return 0
+            text = pinned_licence_text(m, lic, lock)
+            print(text)
+            print(f"(verified: identical to {lic['file']} in {m['asset']}, SHA-256 from {LOCK_PATH.name})" if lock
+                  else "(not verified: no lock file)")
+        except (urllib.error.URLError, TimeoutError, ValueError) as error:
+            failed = True
+            print(f"(could not show the pinned text: {error}; read it at {lic['page']})")
+    return 1 if failed else 0
 
 
 def run_download(m: dict, argv: list[str]) -> int:
     if "--accept-nvidia-licences" not in argv:
         print("Refused: downloading the NVIDIA runtime means accepting NVIDIA's licences.", file=sys.stderr)
         print_licence_list(m)
-        print("Read them, then run again with --accept-nvidia-licences.", file=sys.stderr)
+        print("Read them, then run again with --accept-nvidia-licences --accepted-by \"Your Name\".", file=sys.stderr)
+        return 2
+    try:
+        acceptance = acceptance_from(argv)
+    except ValueError as error:
+        print(f"Refused: {error}", file=sys.stderr)
         return 2
     target = Path(value_of(argv, "--target")) if value_of(argv, "--target") else res_to_path(m["target"])
     local_zip = value_of(argv, "--zip")
@@ -250,7 +309,7 @@ def run_download(m: dict, argv: list[str]) -> int:
     except (urllib.error.URLError, TimeoutError, LookupError, ValueError, OSError, zipfile.BadZipFile) as error:
         print(f"Failed: {error}", file=sys.stderr)
         return 1
-    record = record_acceptance(target, m, sha, list(files), "command line (--accept-nvidia-licences)")
+    record = record_acceptance(target, m, sha, files, acceptance)
     print(f"Extracted {len(files)} files into {target}:")
     for name, info in files.items():
         print(f"  {name}  {info['size']:>10} bytes  SHA-256 {info['sha256']}")
@@ -258,7 +317,7 @@ def run_download(m: dict, argv: list[str]) -> int:
         print(f"Lock written: {write_lock(m, url, sha, size, files)}")
     elif lock is not None:
         print(f"Every file matches {LOCK_PATH.name}.")
-    print(f"Acceptance recorded in {record}")
+    print(f"Acceptance recorded in {record}: {acceptance['accepted_by']}, {acceptance['accepted_on']}")
     return 0
 
 

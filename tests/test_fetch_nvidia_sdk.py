@@ -67,7 +67,7 @@ class FetchTests(unittest.TestCase):
 
     def test_accepted_download_extracts_exactly_the_manifest_files_and_records_it(self) -> None:
         archive = make_zip(self.tmp / "release.zip", release_members())
-        code = self.run_main("--download", "--accept-nvidia-licences", "--zip", str(archive), "--target", str(self.target))
+        code = self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--zip", str(archive), "--target", str(self.target))
         self.assertEqual(code, 0)
         expected = sorted(Path(f).name for f in self.m["files"])
         installed = sorted(p.name for p in self.target.iterdir() if p.name != self.m["acceptance_record"])
@@ -79,9 +79,60 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(record["files"], expected)
         self.assertEqual(record["tag"], self.m["tag"])
         self.assertEqual(record["sha256"], hashlib.sha256(archive.read_bytes()).hexdigest())
-        self.assertIn("--accept-nvidia-licences", record["accepted_by"])
-        self.assertEqual([lic["page"] for lic in record["licences"]], [lic["page"] for lic in self.m["licences"]])
+        # Who accepted, when and how, as given: the tool never claims the acceptance for itself.
+        self.assertEqual(record["accepted_by"], "Test Person")
+        self.assertRegex(record["accepted_on"], r"^\d{4}-\d{2}-\d{2}$")
+        self.assertIn("--accept-nvidia-licences", record["how"])
+        self.assertEqual(record["recorded_with"], "tools/fetch_nvidia_sdk.py")
+        self.assertEqual(record["commit"], self.m["commit"])
+        # The licences accepted are the installed licence files, with their SHA-256.
+        self.assertEqual([lic["file"] for lic in record["licences"]], [lic["file"] for lic in self.m["licences"]])
+        for lic in record["licences"]:
+            self.assertEqual(lic["sha256"], hashlib.sha256((self.target / lic["file"]).read_bytes()).hexdigest())
         self.assertFalse(any(p.name.startswith(".staging_") for p in self.target.iterdir()))
+
+    def test_the_acceptance_names_who_when_and_how(self) -> None:
+        archive = make_zip(self.tmp / "release.zip", release_members())
+        base = ["--download", "--accept-nvidia-licences", "--zip", str(archive), "--target", str(self.target)]
+        self.assertEqual(self.run_main(*base), 2)  # nobody named: refused
+        self.assertFalse(self.target.exists())
+        self.assertEqual(self.run_main(*base, "--accepted-by", "  "), 2)
+        self.assertEqual(self.run_main(*base, "--accepted-by", "X", "--accepted-on", "24.09.2026"), 2)  # not a date
+        self.assertFalse(self.target.exists())
+        code = self.run_main(*base, "--accepted-by", "the project owner", "--accepted-on", "2026-09-24",
+                             "--how", "in the conversation, relayed by the CEO agent")
+        self.assertEqual(code, 0)
+        record = json.loads((self.target / self.m["acceptance_record"]).read_text(encoding="utf-8"))
+        self.assertEqual((record["accepted_by"], record["accepted_on"], record["how"]),
+                         ("the project owner", "2026-09-24", "in the conversation, relayed by the CEO agent"))
+        self.assertNotEqual(record["recorded_at"][:10], "")
+
+    def test_the_licences_are_the_pinned_release_files(self) -> None:
+        self.assertRegex(self.m["commit"], r"^[0-9a-f]{40}$")
+        names = {Path(f).name for f in self.m["files"]}
+        for lic in self.m["licences"]:
+            self.assertIn(lic["file"], names)  # a file of the archive, checked against the lock
+            self.assertIn(self.m["commit"], lic["text"])  # never a moving branch
+            self.assertIn(self.m["commit"], lic["page"])
+            self.assertNotIn("/main/", lic["text"])
+
+    def test_licence_texts_are_shown_only_when_they_match_the_lock(self) -> None:
+        lic = self.m["licences"][0]
+        good = b"the licence text of the pinned release\n"
+        lock = {"files": {lic["file"]: {"sha256": hashlib.sha256(good).hexdigest()}}}
+        with mock.patch.object(fetch, "http_get", lambda url, accept="*/*": io.BytesIO(good)):
+            self.assertEqual(fetch.pinned_licence_text(self.m, lic, lock), good.decode())
+        with mock.patch.object(fetch, "http_get", lambda url, accept="*/*": io.BytesIO(b"another text")):
+            with self.assertRaises(ValueError):
+                fetch.pinned_licence_text(self.m, lic, lock)
+
+    def test_the_repository_lock_pins_the_licence_files(self) -> None:
+        real_lock = ROOT / "addons" / "latency_upscaling" / "nvidia_runtime.lock.json"
+        if not real_lock.exists():
+            self.skipTest("no lock yet")
+        lock = json.loads(real_lock.read_text(encoding="utf-8"))
+        for lic in self.m["licences"]:
+            self.assertRegex(lock["files"][lic["file"]]["sha256"], r"^[0-9a-f]{64}$")
 
     def test_files_under_a_top_level_folder_are_found(self) -> None:
         archive = make_zip(self.tmp / "release.zip", release_members("streamline-sdk-v2.14.1/"))
@@ -91,7 +142,7 @@ class FetchTests(unittest.TestCase):
         members = release_members()
         del members["bin/x64/nvngx_dlss.dll"]
         archive = make_zip(self.tmp / "release.zip", members)
-        code = self.run_main("--download", "--accept-nvidia-licences", "--zip", str(archive), "--target", str(self.target))
+        code = self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--zip", str(archive), "--target", str(self.target))
         self.assertEqual(code, 1)
         self.assertEqual([p for p in self.target.glob("*") if p.is_file()], [])
 
@@ -150,7 +201,7 @@ class FetchTests(unittest.TestCase):
 
     def test_the_lock_is_written_and_then_enforced(self) -> None:
         archive = make_zip(self.tmp / "release.zip", release_members())
-        code = self.run_main("--download", "--accept-nvidia-licences", "--write-lock", "--zip", str(archive),
+        code = self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--write-lock", "--zip", str(archive),
                              "--target", str(self.target))
         self.assertEqual(code, 0)
         lock = json.loads(fetch.LOCK_PATH.read_text(encoding="utf-8"))
@@ -161,19 +212,19 @@ class FetchTests(unittest.TestCase):
         name = "sl.dlss.dll"
         self.assertEqual(lock["files"][name]["sha256"], hashlib.sha256(FAKE + b"bin/x64/" + name.encode()).hexdigest())
         # The same archive installs against the lock.
-        self.assertEqual(self.run_main("--download", "--accept-nvidia-licences", "--zip", str(archive),
+        self.assertEqual(self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--zip", str(archive),
                                        "--target", str(self.tmp / "again")), 0)
         # A different archive does not, and nothing of it is written.
         members = release_members()
         members["bin/x64/sl.dlss.dll"] = b"tampered"
         tampered = make_zip(self.tmp / "tampered.zip", members)
         other = self.tmp / "other"
-        self.assertEqual(self.run_main("--download", "--accept-nvidia-licences", "--zip", str(tampered), "--target", str(other)), 1)
+        self.assertEqual(self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--zip", str(tampered), "--target", str(other)), 1)
         self.assertFalse(other.exists() and any(p.suffix == ".dll" for p in other.iterdir()))
         # Even with the archive hash made to match, a file that differs from the lock is refused.
         lock["sha256"] = hashlib.sha256(tampered.read_bytes()).hexdigest()
         fetch.LOCK_PATH.write_text(json.dumps(lock), encoding="utf-8")
-        self.assertEqual(self.run_main("--download", "--accept-nvidia-licences", "--zip", str(tampered), "--target", str(other)), 1)
+        self.assertEqual(self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--zip", str(tampered), "--target", str(other)), 1)
         self.assertFalse(other.exists() and any(p.suffix == ".dll" for p in other.iterdir()))
 
     def test_a_lock_for_another_release_is_an_error(self) -> None:

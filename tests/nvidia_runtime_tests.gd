@@ -15,6 +15,7 @@ const Runtime := preload("res://addons/latency_upscaling/nvidia_runtime.gd")
 const RuntimeDialog := preload("res://addons/latency_upscaling/nvidia_runtime_dialog.gd")
 const FAKE := "synthetic test file, not an NVIDIA binary\n"
 const WORK := "user://lu_nvidia_runtime_test"
+const ACCEPTANCE := {"accepted_by": "test", "accepted_on": "2026-09-24", "how": "a test"}
 
 var _passed := 0
 var _failed := 0
@@ -112,35 +113,44 @@ func _test_manifest() -> void:
 func _test_install() -> void:
 	var zip := _make_zip("release.zip", "streamline-sdk-v2.14.1/", "", {"streamline-sdk-v2.14.1/bin/x64/sl.unrelated.dll": FAKE})
 	var target := WORK.path_join("target_install")
-	var refused := Runtime.install_from_zip(zip, target, false, "test")
+	var refused := Runtime.install_from_zip(zip, target, false, ACCEPTANCE)
 	_check("install refuses without the licence acceptance", refused != "" and _dlls(target).is_empty(), refused)
-	var message := Runtime.install_from_zip(zip, target, true, "test")
+	var message := Runtime.install_from_zip(zip, target, true, ACCEPTANCE)
 	_check("install writes exactly the manifest's files, flat", message == "" and _dlls(target) == _expected_dlls(),
 			"%s %s" % [message, _dlls(target)])
 	_check("installed files are the archive's", FileAccess.get_file_as_string(target.path_join("sl.dlss.dll")) == FAKE + "bin/x64/sl.dlss.dll"
 			and FileAccess.get_file_as_string(target.path_join("license.txt")) == FAKE + "license.txt")
 	var record := Runtime.acceptance(target)
-	_check("the acceptance is recorded (who, which licences, which archive)",
-			record.get("accepted_by") == "test" and (record.get("licences", []) as Array).size() == 2
-			and record.get("sha256") == Runtime.sha256_file(zip) and record.get("tag") == Runtime.manifest()["tag"], "%s" % record)
+	var licences_ok := (record.get("licences", []) as Array).size() == 2
+	for lic: Dictionary in record.get("licences", []):
+		licences_ok = licences_ok and lic.get("sha256") == Runtime.sha256_file(target.path_join(str(lic.get("file"))))
+	_check("the acceptance is recorded (who, when, how, which licence files, which archive)",
+			record.get("accepted_by") == "test" and record.get("accepted_on") == "2026-09-24" and record.get("how") == "a test"
+			and licences_ok and record.get("sha256") == Runtime.sha256_file(zip) and record.get("tag") == Runtime.manifest()["tag"]
+			and record.get("commit") == Runtime.manifest()["commit"], "%s" % record)
+	for incomplete: Dictionary in [{"accepted_on": "2026-09-24", "how": "x"}, {"accepted_by": "x", "accepted_on": "2026-09-24"},
+			{"accepted_by": "x", "accepted_on": "24.09.2026", "how": "x"}]:
+		var other := WORK.path_join("target_unnamed")
+		var why := Runtime.install_from_zip(zip, other, true, incomplete)
+		_check("install refuses an acceptance without who, how or a date (%s)" % incomplete, why != "" and _dlls(other).is_empty(), why)
 	_check("the runtime counts as installed afterwards", Runtime.is_installed(target) and Runtime.missing_files(target).is_empty())
 	_check("no staging folder is left behind", not DirAccess.dir_exists_absolute(_abs(target).path_join(".staging")))
 
 	# The real archive also has external/ngx-sdk/license.txt: only the root license.txt is taken.
 	var nested := _make_zip("nested.zip", "streamline/", "", {"streamline/external/ngx-sdk/license.txt": "another licence"})
 	var target_nested := WORK.path_join("target_nested")
-	var nested_error := Runtime.install_from_zip(nested, target_nested, true, "test")
+	var nested_error := Runtime.install_from_zip(nested, target_nested, true, ACCEPTANCE)
 	_check("a deeper file with the same name is not taken", nested_error == ""
 			and FileAccess.get_file_as_string(target_nested.path_join("license.txt")) == FAKE + "license.txt", nested_error)
 
 	var incomplete := _make_zip("incomplete.zip", "", "nvngx_dlss.dll")
 	var target2 := WORK.path_join("target_incomplete")
-	var error := Runtime.install_from_zip(incomplete, target2, true, "test")
+	var error := Runtime.install_from_zip(incomplete, target2, true, ACCEPTANCE)
 	_check("an incomplete archive installs nothing", error.contains("nvngx_dlss.dll") and _dlls(target2).is_empty(), error)
 
 	var hostile := _make_zip("hostile.zip", "../") # "../" as the top-level folder
 	var target3 := WORK.path_join("deep/deeper/target_hostile")
-	Runtime.install_from_zip(hostile, target3, true, "test")
+	Runtime.install_from_zip(hostile, target3, true, ACCEPTANCE)
 	_check("archive paths never reach the disk", _dlls(target3) == _expected_dlls()
 			and not DirAccess.dir_exists_absolute(_abs(WORK).path_join("deep/bin"))
 			and not DirAccess.dir_exists_absolute(_abs(WORK).path_join("deep/deeper/bin")))
@@ -159,17 +169,17 @@ func _test_lock() -> void:
 		files[file.get_file()] = {"sha256": Runtime.sha256_bytes((FAKE + file).to_utf8_buffer())}
 	var pinned := {"tag": m["tag"], "asset": m["asset"], "sha256": Runtime.sha256_file(zip), "files": files}
 	var target := WORK.path_join("target_locked")
-	_check("an archive matching the lock installs", Runtime.install_from_zip(zip, target, true, "test", pinned) == ""
+	_check("an archive matching the lock installs", Runtime.install_from_zip(zip, target, true, ACCEPTANCE, pinned) == ""
 			and _dlls(target) == _expected_dlls())
 	var wrong_file := pinned.duplicate(true)
 	wrong_file["files"]["sl.dlss.dll"]["sha256"] = "0".repeat(64)
 	var target2 := WORK.path_join("target_lock_file_mismatch")
-	var error := Runtime.install_from_zip(zip, target2, true, "test", wrong_file)
+	var error := Runtime.install_from_zip(zip, target2, true, ACCEPTANCE, wrong_file)
 	_check("a file that differs from the lock installs nothing", error.contains("sl.dlss.dll") and _dlls(target2).is_empty(), error)
 	var wrong_zip := pinned.duplicate(true)
 	wrong_zip["sha256"] = "0".repeat(64)
 	var target3 := WORK.path_join("target_lock_zip_mismatch")
-	var error2 := Runtime.install_from_zip(zip, target3, true, "test", wrong_zip)
+	var error2 := Runtime.install_from_zip(zip, target3, true, ACCEPTANCE, wrong_zip)
 	_check("an archive that differs from the lock installs nothing", error2.contains("does not match") and _dlls(target3).is_empty(), error2)
 
 
@@ -179,7 +189,7 @@ func _test_real_archive() -> void:
 		print("SKIP real archive: GODOT_LATENCY_UPSCALING_TEST_RUNTIME_ZIP is not set")
 		return
 	var target := WORK.path_join("target_real")
-	var error := Runtime.install_from_zip(zip, target, true, "test", Runtime.lock())
+	var error := Runtime.install_from_zip(zip, target, true, ACCEPTANCE, Runtime.lock())
 	var installed := PackedStringArray()
 	for file in DirAccess.get_files_at(_abs(target)):
 		installed.append(file)
@@ -221,9 +231,23 @@ func _test_dialog() -> void:
 	var result := await _download(dialog)
 	_check("Download installs the runtime after the acceptance", result.size() == 2 and result[0] == true
 			and _dlls(target) == _expected_dlls(), "%s" % [result])
-	_check("the dialog records that the developer ticked the licence box",
-			str(Runtime.acceptance(target).get("accepted_by", "")).contains("licence box"))
+	var record := Runtime.acceptance(target)
+	_check("the dialog records the developer's acceptance (who, when, how), not the tool's",
+			str(record.get("accepted_by", "")).begins_with("the developer using the Godot editor")
+			and str(record.get("how", "")).contains("ticked") and str(record.get("accepted_on", "")).length() == 10
+			and str(record.get("recorded_with", "")).contains("dialog"), "%s" % record)
 	dialog.queue_free()
+
+	# The download folder: by default next to the runtime's folder (like the command-line tool);
+	# without one, Download stays off.
+	var dialog2 := _new_dialog(WORK.path_join("target_folder"), zip)
+	await process_frame
+	_check("the archive is downloaded next to the runtime's folder by default",
+			(dialog2.get("_folder") as LineEdit).text == _abs(WORK), (dialog2.get("_folder") as LineEdit).text)
+	dialog2.set_accepted(true)
+	dialog2.set_download_folder("")
+	_check("without a download folder Download stays off", not dialog2.is_download_enabled())
+	dialog2.queue_free()
 
 
 func _licence_texts(dialog: Node) -> int:
@@ -266,6 +290,7 @@ func _serve() -> void:
 func _download(dialog: ConfirmationDialog) -> Array:
 	var outcome := []
 	dialog.finished.connect(func(ok: bool, message: String) -> void: outcome.append_array([ok, message]), CONNECT_ONE_SHOT)
+	await _await_licences(dialog) # Download only works once the licence texts are shown
 	dialog.set_accepted(true)
 	dialog.confirmed.emit()
 	for i in 600:
@@ -311,6 +336,71 @@ func _test_download_path() -> void:
 	var outcome2 := await _download(dialog2)
 	_check("download path: a SHA-256 mismatch installs nothing", outcome2.size() == 2 and outcome2[0] == false
 			and str(outcome2[1]).contains("SHA-256") and _dlls(target2).is_empty(), "%s" % [outcome2])
+	_check("download path: the downloaded archive is removed afterwards, also after a failure",
+			not DirAccess.dir_exists_absolute(_abs(WORK).path_join(".lu_nvidia_download")))
 	dialog2.queue_free()
+
+	# A download folder chosen by the developer that does not exist: nothing is fetched.
+	_routes[release_path] = ["application/json", JSON.stringify({"assets": [{"name": m["asset"], "size": zip_bytes.size(),
+			"digest": "sha256:" + sha, "browser_download_url": base + "/asset.zip"}]}).to_utf8_buffer()]
+	var target3 := WORK.path_join("target_missing_folder")
+	var dialog3 := _new_dialog(target3, "")
+	dialog3.api_base_override = base
+	dialog3.set_download_folder(_abs(WORK).path_join("no_such_folder"))
+	var outcome3 := await _download(dialog3)
+	_check("download path: a download folder that does not exist is reported, nothing installed",
+			outcome3.size() == 2 and outcome3[0] == false and str(outcome3[1]).contains("does not exist") and _dlls(target3).is_empty(),
+			"%s" % [outcome3])
+	dialog3.queue_free()
+
+	await _test_licence_verification(base)
 	_server.stop()
 	_server = null
+
+
+# The licence texts shown are the pinned release's licence files: a text whose SHA-256 is not the
+# lock's is not shown and keeps Download off, even with the box ticked.
+func _test_licence_verification(base: String) -> void:
+	var licences: Array = Runtime.manifest()["licences"]
+	var texts := ["licence text zero\n", "licence text one\n"]
+	var pinned := {"files": {}}
+	for i in licences.size():
+		pinned["files"][licences[i]["file"]] = {"sha256": Runtime.sha256_bytes(texts[i].to_utf8_buffer())}
+	_routes["/licence0"] = ["text/plain", texts[0].to_utf8_buffer()]
+	_routes["/licence1"] = ["text/plain", "a different text\n".to_utf8_buffer()]
+	var dialog := _verifying_dialog(base, pinned)
+	await _await_licences(dialog)
+	dialog.set_accepted(true)
+	var views: Array = dialog.find_children("*", "TextEdit", true, false)
+	_check("a licence text that is not the pinned file is not shown and Download stays off",
+			not dialog.licences_verified() and not dialog.is_download_enabled() and (views[1] as TextEdit).text.begins_with("Not shown")
+			and (views[0] as TextEdit).text == texts[0], "%s | %s" % [(views[0] as TextEdit).text, (views[1] as TextEdit).text])
+	dialog.queue_free()
+	_routes["/licence1"] = ["text/plain", texts[1].to_utf8_buffer()]
+	var dialog2 := _verifying_dialog(base, pinned)
+	await _await_licences(dialog2)
+	_check("verified licence texts are shown; Download needs the box ticked too",
+			dialog2.licences_verified() and not dialog2.is_download_enabled())
+	dialog2.set_accepted(true)
+	_check("with verified texts and the box ticked Download is on", dialog2.is_download_enabled())
+	dialog2.queue_free()
+
+
+func _verifying_dialog(base: String, pinned: Dictionary) -> ConfirmationDialog:
+	var dialog: ConfirmationDialog = RuntimeDialog.new()
+	dialog.licence_url_overrides = PackedStringArray([base + "/licence0", base + "/licence1"])
+	dialog.pinned_override = pinned
+	dialog.target_override = WORK.path_join("target_verification")
+	root.add_child(dialog)
+	return dialog
+
+
+func _await_licences(dialog: ConfirmationDialog) -> void:
+	for i in 600:
+		_serve()
+		var loading := false
+		for view in dialog.find_children("*", "TextEdit", true, false):
+			loading = loading or (view as TextEdit).text.begins_with("Loading")
+		if not loading:
+			return
+		await process_frame

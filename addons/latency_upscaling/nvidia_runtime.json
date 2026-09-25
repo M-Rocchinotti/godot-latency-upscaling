@@ -2,6 +2,7 @@
 	"comment": "Where the NVIDIA runtime for DLSS comes from. Read by the editor plugin (nvidia_runtime.gd) and tools/fetch_nvidia_sdk.py. Nothing listed here is part of this addon: the files are fetched from NVIDIA's release on the developer's machine, after the developer accepted NVIDIA's licences.",
 	"repository": "NVIDIA-RTX/Streamline",
 	"tag": "v2.14.1",
+	"commit": "2122257e0fce486f91b385aa63b9a09b0a34b363",
 	"asset": "streamline-sdk-v2.14.1.zip",
 	"files": [
 		"bin/x64/sl.interposer.dll",
@@ -34,16 +35,19 @@
 	"export_folder": "nvidia",
 	"target": "res://addons/latency_upscaling/bin/nvidia",
 	"acceptance_record": "licence_acceptance.json",
+	"licences_comment": "The licences to accept are the licence files of the pinned release: 'file' is the file in the archive (its SHA-256 is in nvidia_runtime.lock.json), 'text' the same file at the release's commit on GitHub. The editor dialog and tools/fetch_nvidia_sdk.py --show-licences show 'text' only after checking that its SHA-256 is the locked one, so the text accepted is the text that ships with the DLLs.",
 	"licences": [
 		{
-			"name": "NVIDIA RTX SDKs licence (DLSS runtime, nvngx_*.dll)",
-			"page": "https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt",
-			"text": "https://raw.githubusercontent.com/NVIDIA/DLSS/main/LICENSE.txt"
+			"name": "NVIDIA RTX SDKs licence (the DLSS runtime, nvngx_dlss.dll)",
+			"file": "nvngx_dlss.license.txt",
+			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt",
+			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt"
 		},
 		{
 			"name": "Streamline licence (MIT, sl.*.dll)",
-			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/main/license.txt",
-			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/main/license.txt"
+			"file": "license.txt",
+			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt",
+			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt"
 		}
 	]
 }
