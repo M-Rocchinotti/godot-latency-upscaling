@@ -332,6 +332,34 @@ func _test_velocity_fill() -> void:
 	_check("pixels with geometry keep Godot's vectors unchanged", copied[0].length() > 1e-4 and (copied[1] - copied[0]).length() < 1e-6,
 			detail_geo)
 
+	# After a resize Godot re-configures the buffers (freeing the fill's texture and uniform set): the
+	# fill follows the new size and aspect.
+	var takeovers: int = _status()["takeovers"]
+	var window_before := DisplayServer.window_get_size()
+	var target_before: Vector2i = _status()["target_size"]
+	DisplayServer.window_set_size(Vector2i(1000, 600))
+	for i in 120:
+		await process_frame
+		if _status()["takeovers"] > takeovers and _status()["target_size"] == Vector2i(1000, 600):
+			break
+	await _frames(6)
+	var resized: Vector2i = _status()["target_size"]
+	var tan_half_h2 := tan_half_v * float(resized.x) / float(resized.y)
+	var expected_x2 := -tan(step) * cos(sky_pitch) / (2.0 * tan_half_h2)
+	var after_resize: Array = await _fill_velocity_for(sky_pitch, "yaw", step)
+	var detail_resize := "target %s: filled %s, expected x %.6f; error '%s'" % [resized, after_resize[1], expected_x2, _status()["error"]]
+	print("FILL after resize " + detail_resize)
+	_check("after a resize the fill follows the new size and aspect (sky yaw within 3%)",
+			resized == Vector2i(1000, 600) and abs(after_resize[1].x - expected_x2) < abs(expected_x2) * 0.03
+			and _status()["error"] == "", detail_resize)
+	takeovers = _status()["takeovers"]
+	DisplayServer.window_set_size(window_before) # the size the other tests' captures were taken at
+	for i in 120:
+		await process_frame
+		if _status()["takeovers"] > takeovers and _status()["target_size"] == target_before:
+			break
+	await _frames(6)
+
 
 # The camera strafes at a constant speed; the result at the last pose is compared with a
 # supersampled still of that pose.

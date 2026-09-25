@@ -522,6 +522,22 @@ def suite_upscaler() -> bool:
         measured = [l for l in out.splitlines() if l.startswith(("STILL ", "VELOCITY ", "FILL ", "MOTION "))]
         all_ok &= result(f"upscaler ({backend})", ok, summary.group(0) if summary else f"exit {code}, no summary",
                          fails + problems + measured)
+    # Camera cuts end to end: thresholds from the settings (not the test hook), and the camera
+    # tracking before each frame with Reflex off on the device (tests/upscaler_cuts_run.gd).
+    for label, settings, extra_env, args in (
+        ("cut settings", "dlss/quality=4;dlss/cut_angle_degrees=1;dlss/cut_distance=0.5", {},
+         ["--expect-angle=1", "--expect-distance=0.5"]),
+        ("Reflex off", "dlss/quality=4;reflex/mode=0", {HIDE: "VK_NV_low_latency2"}, ["--reflex-off"]),
+    ):
+        code, out = godot(["--script", "res://tests/upscaler_cuts_run.gd", "--"] + args,
+                          f"test_upscaler_cuts_{label.replace(' ', '_')}",
+                          {"GODOT_LATENCY_UPSCALING_TEST_UPSCALER": "reference", "GODOT_LATENCY_UPSCALING_SETTINGS": settings,
+                           **extra_env}, timeout=300)
+        summary = re.search(r"cut run: (\d+) passed, (\d+) failed", out)
+        problems = problems_in(out)
+        ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
+        all_ok &= result(f"upscaler ({label})", ok, summary.group(0) if summary else f"exit {code}, no summary",
+                         [l for l in out.splitlines() if l.startswith("FAIL")] + problems)
     return all_ok
 
 
