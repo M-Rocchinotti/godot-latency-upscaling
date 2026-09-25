@@ -33,6 +33,10 @@ struct Settings {
 	bool dlss_enabled = true;
 	upscale::Quality dlss_quality = upscale::Quality::Auto;
 	upscale::Preset dlss_preset = upscale::Preset::Default;
+	// Camera-cut detection (upscale/camera_cut.h): a larger turn or move in one frame resets the
+	// upscaler's history. 0 disables that test.
+	double dlss_cut_angle_degrees = 60.0;
+	double dlss_cut_distance = 10.0;
 };
 
 // Setting keys, shared by the cfg file ("section/key") and the project settings
@@ -47,6 +51,8 @@ inline constexpr const char *OVERLAY_ENABLED = "overlay/enabled";
 inline constexpr const char *DLSS_ENABLED = "dlss/enabled";
 inline constexpr const char *DLSS_QUALITY = "dlss/quality";
 inline constexpr const char *DLSS_PRESET = "dlss/preset";
+inline constexpr const char *DLSS_CUT_ANGLE = "dlss/cut_angle_degrees";
+inline constexpr const char *DLSS_CUT_DISTANCE = "dlss/cut_distance";
 } // namespace keys
 
 // Every key the addon understands, in display order.

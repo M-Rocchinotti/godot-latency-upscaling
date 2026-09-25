@@ -15,7 +15,30 @@ TEST(settings_builtin_defaults) {
 	CHECK(r.settings.dlss_enabled); // NVIDIA UI guidelines: on (Auto) where DLSS is available
 	CHECK(r.settings.dlss_quality == lu::upscale::Quality::Auto);
 	CHECK(r.settings.dlss_preset == lu::upscale::Preset::Default);
+	CHECK_EQ(r.settings.dlss_cut_angle_degrees, 60.0);
+	CHECK_EQ(r.settings.dlss_cut_distance, 10.0);
 	CHECK(r.warnings.empty());
+}
+
+TEST(settings_cut_thresholds_are_validated) {
+	SettingsLayer good{ "project setting", { { keys::DLSS_CUT_ANGLE, 45.0 }, { keys::DLSS_CUT_DISTANCE, 0.0 } } };
+	ResolvedSettings r = resolve_settings({ good });
+	CHECK_EQ(r.settings.dlss_cut_angle_degrees, 45.0);
+	CHECK_EQ(r.settings.dlss_cut_distance, 0.0); // 0 = translation never counts as a cut
+	CHECK(r.warnings.empty());
+	SettingsLayer edge{ "project setting", { { keys::DLSS_CUT_ANGLE, 180.0 }, { keys::DLSS_CUT_DISTANCE, 2.5 } } };
+	r = resolve_settings({ edge });
+	CHECK_EQ(r.settings.dlss_cut_angle_degrees, 180.0);
+	CHECK_EQ(r.settings.dlss_cut_distance, 2.5);
+	SettingsLayer bad{ "env", { { keys::DLSS_CUT_ANGLE, 181.0 }, { keys::DLSS_CUT_DISTANCE, -1.0 } } };
+	r = resolve_settings({ good, bad });
+	CHECK_EQ(r.settings.dlss_cut_angle_degrees, 45.0); // bad values ignored
+	CHECK_EQ(r.settings.dlss_cut_distance, 0.0);
+	CHECK_EQ(r.warnings.size(), size_t(2));
+	SettingsLayer negative_angle{ "env", { { keys::DLSS_CUT_ANGLE, -5.0 } } };
+	r = resolve_settings({ negative_angle });
+	CHECK_EQ(r.settings.dlss_cut_angle_degrees, 60.0);
+	CHECK_EQ(r.warnings.size(), size_t(1));
 }
 
 TEST(settings_dlss_values_are_validated) {

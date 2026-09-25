@@ -32,6 +32,8 @@ const std::vector<const char *> &all_setting_keys() {
 		keys::DLSS_ENABLED,
 		keys::DLSS_QUALITY,
 		keys::DLSS_PRESET,
+		keys::DLSS_CUT_ANGLE,
+		keys::DLSS_CUT_DISTANCE,
 	};
 	return list;
 }
@@ -142,6 +144,20 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 					accepted = false;
 				} else {
 					out.settings.dlss_preset = static_cast<upscale::Preset>(static_cast<int>(value));
+				}
+			} else if (key == keys::DLSS_CUT_ANGLE) {
+				if (!std::isfinite(value) || value < 0.0 || value > 180.0) {
+					out.warnings.push_back(describe(layer, key, value, "0 (off) to 180 degrees"));
+					accepted = false;
+				} else {
+					out.settings.dlss_cut_angle_degrees = value;
+				}
+			} else if (key == keys::DLSS_CUT_DISTANCE) {
+				if (!std::isfinite(value) || value < 0.0) {
+					out.warnings.push_back(describe(layer, key, value, "0 (off) or a distance in world units"));
+					accepted = false;
+				} else {
+					out.settings.dlss_cut_distance = value;
 				}
 			} else if (key == keys::REFLEX_FPS_LIMIT) {
 				if (!is_valid_fps_limit(value)) {

@@ -59,6 +59,7 @@ PURE_SOURCES = [
     "src/reflex/latency_stats.cpp",
     "src/reflex/ll2_patches.cpp",
     "src/reflex/reflex_ll2.cpp",
+    "src/upscale/camera_cut.cpp",
     "src/upscale/native_reference.cpp",
     "src/upscale/quality.cpp",
     "src/upscale/upscale_feature.cpp",
