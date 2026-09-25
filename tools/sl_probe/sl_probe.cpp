@@ -12,8 +12,14 @@
 // It is the addon's own requirement path, tried outside Godot (tools/rtx_remote.py runs it on the
 // RTX test machine over SSH).
 //
+// After printing, the probe ends its process at once, without Streamline's teardown: over SSH (a
+// non-interactive session) slShutdown blocks for minutes (measured on the RTX 5080 test machine,
+// driver 591.86: past a 90 s limit, every time), and the process exit releases everything anyway.
+// --teardown runs slShutdown and destroys the device and instance first (in a desktop session).
+//
 //     build: python tools/build.py sl_probe      -> build/tools/sl_probe.exe
-//     run:   build/tools/sl_probe.exe [runtime folder]   (default: addons/latency_upscaling/bin/nvidia)
+//     run:   build/tools/sl_probe.exe [runtime folder] [--verbose] [--teardown]
+//            (default folder: addons/latency_upscaling/bin/nvidia)
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
@@ -79,6 +85,7 @@ void stage(const char *what) {
 }
 
 bool g_verbose = false; // --verbose: every Streamline log line on stderr as it arrives
+bool g_teardown = false; // --teardown: slShutdown, destroy the device and instance before exiting
 
 void log_callback(sl::LogType type, const char *message) {
 	std::string line = message != nullptr ? message : "";
@@ -119,6 +126,17 @@ int fail(const std::string &message) {
 	return 1;
 }
 
+
+// Ends the process right after the result is out, without running Streamline's teardown or any
+// DLL's detach code (see the note at the top).
+[[noreturn]] void finish_without_teardown() {
+	stage("done (no teardown)");
+	std::fflush(stdout);
+	std::fflush(stderr);
+	TerminateProcess(GetCurrentProcess(), 0);
+	ExitProcess(0); // not reached
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t **argv) {
@@ -126,6 +144,8 @@ int wmain(int argc, wchar_t **argv) {
 	for (int i = 1; i < argc; ++i) {
 		if (std::wcscmp(argv[i], L"--verbose") == 0) {
 			g_verbose = true;
+		} else if (std::wcscmp(argv[i], L"--teardown") == 0) {
+			g_teardown = true;
 		} else {
 			dir = argv[i];
 		}
@@ -349,6 +369,9 @@ int wmain(int argc, wchar_t **argv) {
 		print_log();
 		std::printf("}\n");
 		std::fflush(stdout);
+		if (!g_teardown) {
+			finish_without_teardown();
+		}
 		stage("slShutdown");
 		const DWORD shutdown_start = GetTickCount();
 		slShutdown(); // before the device goes away (Streamline's rule)
@@ -361,6 +384,9 @@ int wmain(int argc, wchar_t **argv) {
 		print_log();
 		std::printf("}\n");
 		std::fflush(stdout);
+		if (!g_teardown) {
+			finish_without_teardown();
+		}
 		slShutdown();
 	}
 	stage("done");
