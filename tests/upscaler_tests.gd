@@ -18,7 +18,15 @@ extends SceneTree
 ##               the one in use), and is in the range of Godot's own FSR2
 ##   velocity    a camera yaw / pitch of known size gives the expected centre velocity: current ->
 ##               previous, UV units, Y down (the convention DLSS and FSR2 expect)
+##   fill        the sky (no geometry, Godot writes no motion there after the takeover) gets the
+##               camera's motion from Godot's own formula (godot/velocity_fill.h): the expected
+##               centre velocity for a yaw and a pitch with the centre on the sky; derived from depth
+##               on static geometry, the formula equals Godot's vectors under a turn and a strafe;
+##               elsewhere the fill copies Godot's vectors unchanged
 ##   motion      with the camera moving, correct motion vectors beat flipped ones
+##   cuts        history resets on exactly the frame of a 150 degree turn, a 20 m jump, a switch to
+##               another camera (whose first frame is upscaled too) and reset_dlss_history(); none
+##               under fast normal motion, none for a turn with the detection off
 ##   native      (native backend) every marker dispatch is replaced by the native recording, which
 ##               equals Godot's own recording of the same shader from the same jitter phase, and is
 ##               what reaches the screen; (reference backend) nothing is intercepted
@@ -126,7 +134,9 @@ func _run() -> void:
 	await _test_jitter()
 	await _test_still()
 	await _test_velocity()
+	await _test_velocity_fill()
 	await _test_motion()
+	await _test_cuts()
 	await _test_native()
 	_finish()
 
@@ -212,14 +222,21 @@ func _velocity_for(axis: String, step: float) -> Vector2:
 		else:
 			_camera.rotation.x = start + step * (i + 1)
 		await process_frame
-	var samples: Array = _status()["velocity_samples"]
+	var median := _median_tail(_status()["velocity_samples"])
+	_reset_camera()
+	return median
+
+
+# Per-component median of the last 12 read-backs.
+func _median_tail(samples: Array) -> Vector2:
 	var tail := samples.slice(max(0, samples.size() - 12))
+	if tail.is_empty():
+		return Vector2(INF, INF)
 	var xs: Array = tail.map(func(v: Vector2) -> float: return v.x)
 	var ys: Array = tail.map(func(v: Vector2) -> float: return v.y)
 	xs.sort()
 	ys.sort()
-	_reset_camera()
-	return Vector2(xs[xs.size() / 2], ys[ys.size() / 2]) if not tail.is_empty() else Vector2(INF, INF)
+	return Vector2(xs[xs.size() / 2], ys[ys.size() / 2])
 
 
 func _test_velocity() -> void:
@@ -248,6 +265,74 @@ func _test_velocity() -> void:
 			"yaw.y %.6f pitch.x %.6f" % [yaw.y, pitch.x])
 
 
+# Centre velocity (Godot's, filled) while the camera, pitched by `pitch`, turns by `step` per frame
+# about `axis` ("yaw" or "pitch") and strafes by `strafe` per frame.
+func _fill_velocity_for(pitch: float, axis: String, step: float, strafe: float = 0.0) -> Array:
+	_reset_camera()
+	_camera.rotation.x = pitch
+	await _frames(4)
+	_lu._request_upscaler_readbacks(24)
+	var start_yaw := _camera.rotation.y
+	var start_pitch := _camera.rotation.x
+	var start_x := _camera.position.x
+	for i in 30:
+		if axis == "yaw":
+			_camera.rotation.y = start_yaw + step * (i + 1)
+		else:
+			_camera.rotation.x = start_pitch + step * (i + 1)
+		_camera.position.x = start_x + strafe * (i + 1)
+		await process_frame
+	var s := _status()
+	var result := [_median_tail(s["velocity_samples"]), _median_tail(s["filled_velocity_samples"])]
+	_reset_camera()
+	return result
+
+
+func _test_velocity_fill() -> void:
+	_lu.dlss_enabled = true
+	_lu._set_upscaler_test_conventions(1, 1, 1)
+	_lu._set_upscaler_test_velocity_fill(0)
+	await _frames(20)
+	var step := 0.004 # radians per frame
+	var target: Vector2i = _status()["target_size"]
+	var tan_half_v := tan(deg_to_rad(_camera.fov) * 0.5)
+	var tan_half_h := tan_half_v * float(target.x) / float(target.y)
+	# Pitched up by 35 degrees the centre sees only the sky (the bars end 3 m up). A rotation moves
+	# every point the same way whatever its depth, so the expected vectors are those of _test_velocity.
+	var sky_pitch := deg_to_rad(35.0)
+	var expected_x := -tan(step) * cos(sky_pitch) / (2.0 * tan_half_h)
+	var expected_y := -tan(step) / (2.0 * tan_half_v)
+	var yaw: Array = await _fill_velocity_for(sky_pitch, "yaw", step)
+	var pitch: Array = await _fill_velocity_for(sky_pitch, "pitch", step)
+	_results["velocity_fill_sky"] = {"yaw_godot": [yaw[0].x, yaw[0].y], "yaw_filled": [yaw[1].x, yaw[1].y],
+			"pitch_godot": [pitch[0].x, pitch[0].y], "pitch_filled": [pitch[1].x, pitch[1].y], "expected": [expected_x, expected_y]}
+	var detail := "sky, yaw: Godot %s, filled %s; pitch: Godot %s, filled %s; expected (%.6f, %.6f)" % [
+		yaw[0], yaw[1], pitch[0], pitch[1], expected_x, expected_y]
+	print("FILL " + detail)
+	_check("sky: Godot writes no motion there after the takeover (why the fill exists)",
+			yaw[0].length() < abs(expected_x) * 0.02 and pitch[0].length() < abs(expected_y) * 0.02, detail)
+	_check("sky: the filled vector of a yaw is the camera's (X, within 3%)",
+			abs(yaw[1].x - expected_x) < abs(expected_x) * 0.03 and abs(yaw[1].y) < abs(expected_x) * 0.1, detail)
+	_check("sky: the filled vector of a pitch is the camera's (Y down, within 3%)",
+			abs(pitch[1].y - expected_y) < abs(expected_y) * 0.03 and abs(pitch[1].x) < abs(expected_y) * 0.1, detail)
+
+	# The formula against Godot's own vectors: every pixel derived from depth (debug mode), static
+	# geometry at the centre (the floor), the camera turning and strafing.
+	_lu._set_upscaler_test_velocity_fill(1)
+	var derived: Array = await _fill_velocity_for(deg_to_rad(-12.0), "yaw", step, 0.02)
+	_lu._set_upscaler_test_velocity_fill(0)
+	var copied: Array = await _fill_velocity_for(deg_to_rad(-12.0), "yaw", step, 0.02)
+	_results["velocity_fill_geometry"] = {"godot": [derived[0].x, derived[0].y], "derived": [derived[1].x, derived[1].y],
+			"copied_godot": [copied[0].x, copied[0].y], "copied": [copied[1].x, copied[1].y]}
+	var detail_geo := "geometry under turn + strafe: Godot %s, derived from depth %s; far-plane mode: Godot %s, filled %s" % [
+		derived[0], derived[1], copied[0], copied[1]]
+	print("FILL " + detail_geo)
+	_check("the fill's formula equals Godot's vectors on static geometry (within 2%)",
+			derived[0].length() > 1e-4 and (derived[1] - derived[0]).length() < derived[0].length() * 0.02 + 2e-5, detail_geo)
+	_check("pixels with geometry keep Godot's vectors unchanged", copied[0].length() > 1e-4 and (copied[1] - copied[0]).length() < 1e-6,
+			detail_geo)
+
+
 # The camera strafes at a constant speed; the result at the last pose is compared with a
 # supersampled still of that pose.
 func _moving(motion: float, name: String) -> Image:
@@ -274,6 +359,101 @@ func _test_motion() -> void:
 	var detail := "PSNR dB under camera motion: correct vectors %.2f, flipped %.2f" % [p["correct"], p["flipped"]]
 	print("MOTION " + detail)
 	_check("Godot's motion vectors, used as current -> previous, beat flipped ones", p["correct"] > p["flipped"] + 2.0, detail)
+
+
+# --- camera cuts ------------------------------------------------------------------------------------
+
+func _resets() -> Dictionary:
+	return _status()["history_resets"].duplicate()
+
+
+func _total(resets: Dictionary) -> int:
+	var sum := 0
+	for key: String in resets:
+		sum += int(resets[key])
+	return sum
+
+
+# Applies `change` to the camera once and returns the status of the frame that shows it, with the
+# resets it added (reason -> count).
+func _after_change(change: Callable) -> Array:
+	var before := _resets()
+	change.call()
+	await process_frame # the frame drawn after the change
+	var s := _status()
+	var added := {}
+	for key: String in s["history_resets"]:
+		var n: int = int(s["history_resets"][key]) - int(before.get(key, 0))
+		if n != 0:
+			added[key] = n
+	return [s, added]
+
+
+func _test_cuts() -> void:
+	var takeovers: int = _status()["takeovers"]
+	_lu.dlss_enabled = true # the motion test's truth capture left it off: one takeover follows
+	_lu._set_upscaler_test_conventions(1, 1, 1)
+	_lu._set_upscaler_test_cut_thresholds(60.0, 10.0)
+	_reset_camera()
+	for i in 120:
+		await process_frame
+		if _status()["takeovers"] > takeovers and _status()["active"]:
+			break
+	await _frames(8) # the takeover's own reset is counted on the next upscaled frame
+
+	# Normal motion, even fast, keeps the history.
+	var before := _resets()
+	for i in 40:
+		_camera.rotation.y += deg_to_rad(1.2)
+		_camera.position.x += 0.05
+		await process_frame
+	var after := _resets()
+	_check("a fast turn (1.2 degrees per frame) and a strafe keep the history", _total(after) == _total(before),
+			"resets before %s, after %s" % [before, after])
+
+	_reset_camera()
+	await _frames(4)
+	var r: Array = await _after_change(func() -> void: _camera.rotation.y += deg_to_rad(150.0))
+	_check("a 150 degree turn resets the history on that very frame",
+			r[1] == {"rotation": 1} and r[0]["frames_since_reset"] == 1 and r[0]["last_reset_reason"] == "rotation",
+			"added %s, frames since reset %d" % [r[1], r[0]["frames_since_reset"]])
+
+	_reset_camera()
+	await _frames(4)
+	r = await _after_change(func() -> void: _camera.position.z += 20.0)
+	_check("a 20 m jump resets the history on that very frame",
+			r[1] == {"translation": 1} and r[0]["frames_since_reset"] == 1, "added %s, frames since reset %d" % [r[1], r[0]["frames_since_reset"]])
+
+	_reset_camera()
+	await _frames(4)
+	var other := Camera3D.new()
+	other.fov = _camera.fov
+	root.add_child(other)
+	other.global_transform = _camera.global_transform # the same view: only the switch itself is a cut
+	await _frames(2)
+	var upscaled: int = _status()["frames_upscaled"]
+	r = await _after_change(func() -> void: other.make_current())
+	_check("a switch to another camera resets the history on its first frame, which is upscaled",
+			r[1] == {"camera_switch": 1} and r[0]["frames_since_reset"] == 1 and r[0]["frames_upscaled"] == upscaled + 1,
+			"added %s, frames since reset %d, frames upscaled +%d" % [r[1], r[0]["frames_since_reset"], r[0]["frames_upscaled"] - upscaled])
+	r = await _after_change(func() -> void: _camera.make_current())
+	_check("switching back is a camera switch too", r[1] == {"camera_switch": 1}, "added %s" % r[1])
+	other.queue_free()
+
+	_lu._set_upscaler_test_cut_thresholds(0.0, 0.0)
+	await _frames(4)
+	r = await _after_change(func() -> void: _camera.rotation.y += deg_to_rad(150.0))
+	_lu._set_upscaler_test_cut_thresholds(60.0, 10.0)
+	_check("with the thresholds at 0 a 150 degree turn keeps the history", r[1].is_empty() and r[0]["frames_since_reset"] > 1,
+			"added %s, frames since reset %d" % [r[1], r[0]["frames_since_reset"]])
+
+	_reset_camera()
+	await _frames(4)
+	r = await _after_change(func() -> void: _lu.reset_dlss_history())
+	_check("reset_dlss_history() resets on the next frame", r[1] == {"api": 1} and r[0]["frames_since_reset"] == 1,
+			"added %s, frames since reset %d" % [r[1], r[0]["frames_since_reset"]])
+	_results["history_resets"] = _resets()
+	_reset_camera()
 
 
 # --- native recording -------------------------------------------------------------------------------

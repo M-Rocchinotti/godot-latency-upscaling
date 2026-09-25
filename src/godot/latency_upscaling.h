@@ -67,6 +67,9 @@ public:
 	DlssQuality get_dlss_quality() const;
 	void set_dlss_preset(DlssPreset preset);
 	DlssPreset get_dlss_preset() const;
+	// Throws the upscaler's history away on the next frame: call it on camera cuts the automatic
+	// detection cannot see (a teleport shorter than dlss/cut_distance, a scene change behind a fade).
+	void reset_dlss_history();
 #ifdef DEBUG_ENABLED
 	// Test hooks (debug builds only, tests/upscaler_tests.gd): upscaler conventions relative to
 	// Godot's (+1 = Godot's), a history reset, N frames of UBO / velocity read-backs, and the native
@@ -75,6 +78,9 @@ public:
 	void _reset_upscaler_history(int phase); // phase >= 0: at that jitter phase
 	void _request_upscaler_readbacks(int frames);
 	void _set_upscaler_test_native_mode(int mode);
+	// 0 = fill far-plane motion vectors (default), 1 = derive every pixel from depth, 2 = off.
+	void _set_upscaler_test_velocity_fill(int mode);
+	void _set_upscaler_test_cut_thresholds(double angle_degrees, double distance); // 0 disables a test
 #endif
 
 	// --- Engine wiring (not exposed) ---

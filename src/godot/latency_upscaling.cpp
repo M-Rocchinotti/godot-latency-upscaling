@@ -115,12 +115,16 @@ void LatencyUpscaling::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_dlss_quality"), &LatencyUpscaling::get_dlss_quality);
 	ClassDB::bind_method(D_METHOD("set_dlss_preset", "preset"), &LatencyUpscaling::set_dlss_preset);
 	ClassDB::bind_method(D_METHOD("get_dlss_preset"), &LatencyUpscaling::get_dlss_preset);
+	ClassDB::bind_method(D_METHOD("reset_dlss_history"), &LatencyUpscaling::reset_dlss_history);
 #ifdef DEBUG_ENABLED
 	ClassDB::bind_method(D_METHOD("_set_upscaler_test_conventions", "jitter_x", "jitter_y", "motion"),
 			&LatencyUpscaling::_set_upscaler_test_conventions);
 	ClassDB::bind_method(D_METHOD("_reset_upscaler_history", "phase"), &LatencyUpscaling::_reset_upscaler_history, DEFVAL(-1));
 	ClassDB::bind_method(D_METHOD("_request_upscaler_readbacks", "frames"), &LatencyUpscaling::_request_upscaler_readbacks);
 	ClassDB::bind_method(D_METHOD("_set_upscaler_test_native_mode", "mode"), &LatencyUpscaling::_set_upscaler_test_native_mode);
+	ClassDB::bind_method(D_METHOD("_set_upscaler_test_velocity_fill", "mode"), &LatencyUpscaling::_set_upscaler_test_velocity_fill);
+	ClassDB::bind_method(D_METHOD("_set_upscaler_test_cut_thresholds", "angle_degrees", "distance"),
+			&LatencyUpscaling::_set_upscaler_test_cut_thresholds);
 #endif
 
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "reflex_mode", PROPERTY_HINT_ENUM, "Off,On,On + Boost"), "set_reflex_mode", "get_reflex_mode");
@@ -175,8 +179,10 @@ void LatencyUpscaling::_bind_methods() {
 
 void LatencyUpscaling::connect_frame_signals() {
 	// Engine singletons are only reachable by name once Godot has registered them, which happens
-	// after the SCENE initialisation level: hence this runs from the startup callback.
-	if (signals_connected_ || !boot_state().reflex_enabled || !Engine::get_singleton()->has_singleton("RenderingServer")) {
+	// after the SCENE initialisation level: hence this runs from the startup callback. Reflex and the
+	// upscaler (the current camera, before the frame renders) both need frame_pre_draw.
+	const bool wanted = boot_state().reflex_enabled || Upscaler::get().backend() != UpscaleBackend::None;
+	if (signals_connected_ || !wanted || !Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
 	RenderingServer::get_singleton()->connect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
@@ -231,6 +237,7 @@ void LatencyUpscaling::on_frame() {
 }
 
 void LatencyUpscaling::on_frame_pre_draw() {
+	Upscaler::get().pre_draw();
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;
@@ -306,6 +313,7 @@ void LatencyUpscaling::configure_upscaler() {
 	const bool native = false;
 #endif
 	Upscaler::get().configure(backend, reason, s.dlss_quality, s.dlss_preset, s.dlss_enabled, native);
+	Upscaler::get().set_cut_thresholds(upscale::CutThresholds{ s.dlss_cut_angle_degrees, s.dlss_cut_distance });
 }
 
 void LatencyUpscaling::run_upscaler_takeovers() {
@@ -376,6 +384,10 @@ LatencyUpscaling::DlssPreset LatencyUpscaling::get_dlss_preset() const {
 	return static_cast<DlssPreset>(Upscaler::get().preset());
 }
 
+void LatencyUpscaling::reset_dlss_history() {
+	Upscaler::get().reset_history();
+}
+
 #ifdef DEBUG_ENABLED
 void LatencyUpscaling::_set_upscaler_test_conventions(double jitter_x, double jitter_y, double motion) {
 	Upscaler::get().set_test_conventions(static_cast<float>(jitter_x), static_cast<float>(jitter_y), static_cast<float>(motion));
@@ -391,6 +403,14 @@ void LatencyUpscaling::_request_upscaler_readbacks(int frames) {
 
 void LatencyUpscaling::_set_upscaler_test_native_mode(int mode) {
 	Upscaler::get().set_test_native_mode(mode);
+}
+
+void LatencyUpscaling::_set_upscaler_test_velocity_fill(int mode) {
+	Upscaler::get().set_test_velocity_fill(mode);
+}
+
+void LatencyUpscaling::_set_upscaler_test_cut_thresholds(double angle_degrees, double distance) {
+	Upscaler::get().set_cut_thresholds(upscale::CutThresholds{ angle_degrees, distance });
 }
 #endif
 
@@ -668,6 +688,8 @@ void LatencyUpscaling::register_project_settings() {
 		{ keys::DLSS_QUALITY, static_cast<int>(defaults.dlss_quality), PROPERTY_HINT_ENUM,
 				"Auto,DLAA,Quality,Balanced,Performance,Ultra Performance", false },
 		{ keys::DLSS_PRESET, static_cast<int>(defaults.dlss_preset), PROPERTY_HINT_ENUM, "Default,J,K,L,M", false },
+		{ keys::DLSS_CUT_ANGLE, defaults.dlss_cut_angle_degrees, PROPERTY_HINT_RANGE, "0,180,0.1,degrees", false },
+		{ keys::DLSS_CUT_DISTANCE, defaults.dlss_cut_distance, PROPERTY_HINT_RANGE, "0,1000,0.01,or_greater,suffix:m", false },
 	};
 	for (const Definition &def : definitions) {
 		const String name = String(PROJECT_SETTING_PREFIX) + def.key;

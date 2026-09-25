@@ -70,6 +70,20 @@ bool effect_in(const Ref<Compositor> &compositor, const Ref<LatencyUpscalingEffe
 	return false;
 }
 
+upscale::CameraPose camera_pose(const Transform3D &transform) {
+	upscale::CameraPose pose;
+	for (int c = 0; c < 3; ++c) {
+		const Vector3 axis = transform.basis.get_column(c);
+		pose.basis[c][0] = axis.x;
+		pose.basis[c][1] = axis.y;
+		pose.basis[c][2] = axis.z;
+	}
+	pose.origin[0] = transform.origin.x;
+	pose.origin[1] = transform.origin.y;
+	pose.origin[2] = transform.origin.z;
+	return pose;
+}
+
 // A camera's own compositor replaces the scenario's (WorldEnvironment) one, so when the camera has
 // none, the world environment's effects must be carried over into the merged compositor.
 Ref<Compositor> world_environment_compositor(Window *root) {
@@ -112,6 +126,30 @@ const char *upscale_backend_name(UpscaleBackend backend) {
 	return "unknown";
 }
 
+const char *Upscaler::reset_reason_name(ResetReason reason) {
+	switch (reason) {
+		case ResetReason::Takeover:
+			return "takeover";
+		case ResetReason::Resize:
+			return "resize";
+		case ResetReason::Api:
+			return "api";
+		case ResetReason::Test:
+			return "test";
+		case ResetReason::CameraSwitch:
+			return "camera_switch";
+		case ResetReason::Rotation:
+			return "rotation";
+		case ResetReason::Translation:
+			return "translation";
+		case ResetReason::InvalidPose:
+			return "invalid_pose";
+		case ResetReason::Count:
+			break;
+	}
+	return "unknown";
+}
+
 Upscaler &Upscaler::get() {
 	static Upscaler *instance = new Upscaler(); // never destroyed: render-thread callbacks may outlive SCENE deinit
 	return *instance;
@@ -142,6 +180,16 @@ void Upscaler::set_quality(upscale::Quality quality) {
 
 void Upscaler::set_preset(upscale::Preset preset) {
 	preset_ = preset; // consumed by the DLSS backend (NGX render-preset hints)
+}
+
+void Upscaler::set_cut_thresholds(const upscale::CutThresholds &thresholds) {
+	std::lock_guard<std::mutex> lock(snapshot_mutex_);
+	snapshot_.cut_thresholds = thresholds;
+}
+
+void Upscaler::set_test_velocity_fill(int mode) {
+	std::lock_guard<std::mutex> lock(snapshot_mutex_);
+	snapshot_.velocity_fill = mode == 1 ? VelocityFillMode::AllPixels : mode == 2 ? VelocityFillMode::Off : VelocityFillMode::FarPlane;
 }
 
 bool Upscaler::is_active() const {
@@ -222,17 +270,42 @@ void Upscaler::update() {
 		snapshot_.preset = preset_;
 	}
 
-	// 2. The current camera carries our effect, merged with the effects it already had.
+	// 2. The current camera carries our effect (normally done by pre_draw() already).
+	track_camera(root);
+}
+
+void Upscaler::pre_draw() {
+	if (!applied_ || backend_ == UpscaleBackend::None || !enabled_ || !inactive_reason_.empty()) {
+		return;
+	}
+	SceneTree *tree = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop());
+	if (Window *root = tree != nullptr ? tree->get_root() : nullptr) {
+		track_camera(root);
+	}
+}
+
+// The current camera carries our effect, merged with the effects it already had. Called before the
+// frame renders (frame_pre_draw), so a camera made current during this frame's processing is upscaled
+// from its first frame on, and the switch reaches the render thread in the same frame: a switch is
+// a camera cut (the history of another view must not be blended into it).
+void Upscaler::track_camera(Window *root) {
 	Camera3D *camera = root->get_camera_3d();
-	if (camera != nullptr && !effect_in(camera->get_compositor(), effect_)) {
-		if (camera->get_instance_id() != camera_id_) {
-			Object *previous = ObjectDB::get_instance(camera_id_);
-			if (Camera3D *old = Object::cast_to<Camera3D>(previous)) {
-				old->set_compositor(camera_original_compositor_);
-			}
-			camera_id_ = camera->get_instance_id();
-			camera_original_compositor_ = camera->get_compositor();
+	if (camera == nullptr) {
+		return;
+	}
+	if (camera->get_instance_id() != camera_id_) {
+		if (camera_id_ != 0) {
+			std::lock_guard<std::mutex> lock(snapshot_mutex_);
+			snapshot_.camera_serial++;
 		}
+		Object *previous = ObjectDB::get_instance(camera_id_);
+		if (Camera3D *old = Object::cast_to<Camera3D>(previous)) {
+			old->set_compositor(camera_original_compositor_);
+		}
+		camera_id_ = camera->get_instance_id();
+		camera_original_compositor_ = camera->get_compositor();
+	}
+	if (!effect_in(camera->get_compositor(), effect_)) {
 		Ref<Compositor> base = camera->get_compositor();
 		if (base.is_null()) {
 			base = world_environment_compositor(root);
@@ -300,6 +373,13 @@ Dictionary Upscaler::status() const {
 	jitter["ubo_mismatches"] = static_cast<int64_t>(stats_.ubo_mismatches);
 	d["jitter"] = jitter;
 	d["velocity_samples"] = stats_.velocity_samples.duplicate();
+	d["filled_velocity_samples"] = stats_.filled_velocity_samples.duplicate();
+	Dictionary resets;
+	for (int i = 0; i < static_cast<int>(ResetReason::Count); ++i) {
+		resets[reset_reason_name(static_cast<ResetReason>(i))] = static_cast<int64_t>(stats_.resets[i]);
+	}
+	d["history_resets"] = resets;
+	d["last_reset_reason"] = String::utf8(stats_.last_reset_reason.c_str());
 	d["error"] = String::utf8(stats_.error.c_str());
 	Dictionary native;
 	native["requested"] = native_requested_;
@@ -411,6 +491,7 @@ void Upscaler::run_takeovers() {
 		rb->create_texture(buffers_context(), upscaled_name(), color_format->get_format(), usage,
 				RenderingDevice::TEXTURE_SAMPLES_1, rb->get_target_size(), 1, 1, true, false);
 		views_[rt].reset = true;
+		views_[rt].reset_reason = ResetReason::Takeover;
 		std::lock_guard<std::mutex> lock(stats_mutex_);
 		stats_.takeovers++;
 	}
@@ -517,8 +598,26 @@ Projection without_jitter(const Projection &jittered, float ndc_x, float ndc_y) 
 
 } // namespace
 
-void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, RenderSceneData *scene, ViewState &view,
-		const Snapshot &snap, float jitter_x, float jitter_y) {
+// This frame's camera without the jitter, and clip -> previous clip. After a history reset the
+// previous camera is not used (DLSS ignores the history, the fill writes no motion).
+Upscaler::CameraFrame Upscaler::camera_frame(RenderSceneBuffersRD *rb, RenderSceneData *scene, const ViewState &view,
+		float jitter_x, float jitter_y) {
+	CameraFrame frame;
+	const Vector2i internal = rb->get_internal_size();
+	const float ndc_x = internal.x > 0 ? 2.0f * jitter_x / static_cast<float>(internal.x) : 0.0f;
+	const float ndc_y = internal.y > 0 ? 2.0f * jitter_y / static_cast<float>(internal.y) : 0.0f;
+	frame.projection = without_jitter(scene->get_cam_projection(), ndc_x, ndc_y);
+	frame.transform = scene->get_cam_transform();
+	const bool use_previous = view.have_previous_camera && !view.reset;
+	const Projection previous = use_previous ? view.previous_projection : frame.projection;
+	const Transform3D previous_transform = use_previous ? view.previous_transform : frame.transform;
+	// clip -> previous clip = previous view-to-clip * previous world-to-view * view-to-world * clip-to-view.
+	frame.clip_to_prev = previous * Projection(previous_transform.affine_inverse() * frame.transform) * frame.projection.inverse();
+	return frame;
+}
+
+void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, const RID &velocity, const CameraFrame &camera,
+		ViewState &view, const Snapshot &snap, float jitter_x, float jitter_y) {
 	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
 	if (view.viewport_id == 0) {
 		view.viewport_id = next_viewport_id_++;
@@ -528,7 +627,7 @@ void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, RenderSceneD
 	// The layouts Godot's render graph gives the marker's uniform set (sampled / storage).
 	in.color = evaluate_image(rd, rb->get_color_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	in.depth = evaluate_image(rd, rb->get_depth_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	in.velocity = evaluate_image(rd, rb->get_velocity_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	in.velocity = evaluate_image(rd, velocity, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); // the filled copy
 	in.output = evaluate_image(rd, rb->get_texture(buffers_context(), upscaled_name()), VK_IMAGE_LAYOUT_GENERAL);
 	in.mode = snap.quality;
 	in.preset = snap.preset;
@@ -540,21 +639,12 @@ void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, RenderSceneD
 	in.reset = view.reset;
 	in.depth_inverted = true;
 
-	const Vector2i internal = rb->get_internal_size();
-	const Projection jittered = scene->get_cam_projection();
-	const float ndc_x = internal.x > 0 ? 2.0f * jitter_x / static_cast<float>(internal.x) : 0.0f;
-	const float ndc_y = internal.y > 0 ? 2.0f * jitter_y / static_cast<float>(internal.y) : 0.0f;
-	const Projection projection = without_jitter(jittered, ndc_x, ndc_y);
-	const Transform3D transform = scene->get_cam_transform();
-	const Projection clip_to_view = projection.inverse();
+	const Projection &projection = camera.projection;
+	const Transform3D &transform = camera.transform;
 	row_major(projection, in.view_to_clip);
-	row_major(clip_to_view, in.clip_to_view);
-	// clip -> previous clip = previous view-to-clip * previous world-to-view * view-to-world * clip-to-view.
-	const Projection previous = view.have_previous_camera ? view.previous_projection : projection;
-	const Transform3D previous_transform = view.have_previous_camera ? view.previous_transform : transform;
-	const Projection clip_to_prev = previous * Projection(previous_transform.affine_inverse() * transform) * clip_to_view;
-	row_major(clip_to_prev, in.clip_to_prev_clip);
-	row_major(clip_to_prev.inverse(), in.prev_clip_to_clip);
+	row_major(projection.inverse(), in.clip_to_view);
+	row_major(camera.clip_to_prev, in.clip_to_prev_clip);
+	row_major(camera.clip_to_prev.inverse(), in.prev_clip_to_clip);
 	const Basis &basis = transform.basis;
 	const Vector3 axes[4] = { transform.origin, basis.get_column(1), basis.get_column(0), -basis.get_column(2) };
 	float *targets[4] = { in.camera_pos, in.camera_up, in.camera_right, in.camera_forward };
@@ -568,9 +658,6 @@ void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, RenderSceneD
 	in.camera_aspect = static_cast<float>(projection.get_aspect());
 	in.camera_fov_y = static_cast<float>(Math::deg_to_rad(Projection::get_fovy(projection.get_fov(), static_cast<real_t>(1.0 / projection.get_aspect()))));
 	in.orthographic = projection.is_orthogonal();
-	view.previous_projection = projection;
-	view.previous_transform = transform;
-	view.have_previous_camera = true;
 	dlss_recorder_.set_job(job, in);
 }
 
@@ -653,11 +740,10 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
 	const RID color = rb->get_color_texture();
 	const RID depth = rb->get_depth_texture();
-	const RID velocity = rb->get_velocity_texture();
 	const RID output = rb->get_texture(buffers_context(), upscaled_name());
 	const Vector2i internal = rb->get_internal_size();
 	const Vector2i target = rb->get_target_size();
-	if (!color.is_valid() || !depth.is_valid() || !velocity.is_valid() || !output.is_valid()) {
+	if (!color.is_valid() || !depth.is_valid() || !rb->get_velocity_texture().is_valid() || !output.is_valid()) {
 		set_error("render buffers lack colour, depth, velocity or color_upscaled");
 		return;
 	}
@@ -677,8 +763,68 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 			h = rd->texture_create(format, Ref<RDTextureView>(memnew(RDTextureView)));
 		}
 		view.history_size = target;
-		view.reset = true;
+		if (!view.reset) {
+			view.reset = true;
+			view.reset_reason = ResetReason::Resize;
+		}
 		view.inputs_key[0] = 0; // rebuild the uniform sets
+	}
+
+	float jitter_x = 0.0f, jitter_y = 0.0f;
+	track_jitter(scene, view, internal.x, target.x, internal.y, jitter_x, jitter_y);
+	Snapshot snap;
+	{
+		std::lock_guard<std::mutex> lock(snapshot_mutex_);
+		snap = snapshot_;
+	}
+	// Godot's jitter phase of this frame (UINT32_MAX until calibrated).
+	const uint32_t phase_count = dlss::jitter_phase_count(static_cast<uint32_t>(target.x), static_cast<uint32_t>(internal.x), true, false);
+	const uint32_t phase = view.calibrated && phase_count > 0 ?
+			static_cast<uint32_t>((static_cast<int64_t>(view.frames % phase_count) + view.phase_offset + phase_count) % phase_count) :
+			UINT32_MAX;
+	// History resets: a takeover or a resize (set above), a requested one (reset_dlss_history(); the
+	// debug tests can hold it back until a given jitter phase, to compare runs from the same phase),
+	// and camera cuts: another camera, or a turn or jump past the thresholds (upscale/camera_cut.h).
+	if (reset_requested_.load()) {
+		const int wanted_phase = reset_phase_.load();
+		if (wanted_phase < 0 || static_cast<uint32_t>(wanted_phase) == phase) {
+			reset_requested_ = false;
+			reset_phase_ = -1;
+			if (!view.reset) {
+				view.reset = true;
+				view.reset_reason = static_cast<ResetReason>(requested_reason_.load());
+			}
+		}
+	}
+	const Transform3D transform = scene->get_cam_transform();
+	if (!view.reset && view.have_previous_camera) {
+		const upscale::CutReason cut = upscale::detect_cut(camera_pose(view.previous_transform), camera_pose(transform),
+				snap.camera_serial != view.camera_serial, snap.cut_thresholds);
+		if (cut != upscale::CutReason::None) {
+			view.reset = true;
+			switch (cut) {
+				case upscale::CutReason::CameraSwitch:
+					view.reset_reason = ResetReason::CameraSwitch;
+					break;
+				case upscale::CutReason::Rotation:
+					view.reset_reason = ResetReason::Rotation;
+					break;
+				case upscale::CutReason::Translation:
+					view.reset_reason = ResetReason::Translation;
+					break;
+				default:
+					view.reset_reason = ResetReason::InvalidPose;
+					break;
+			}
+		}
+	}
+	view.camera_serial = snap.camera_serial;
+	const CameraFrame camera = camera_frame(rb, scene, view, jitter_x, jitter_y);
+	// Motion vectors for the sky and background (godot/velocity_fill.h); what both backends read.
+	std::string fill_error;
+	const RID velocity = velocity_fill_.run(rb, camera.clip_to_prev, snap.velocity_fill, fill_error);
+	if (!fill_error.empty()) {
+		set_error(fill_error + "; the upscaler reads Godot's velocity unchanged (the sky has no motion)");
 	}
 	const uint64_t key[4] = { static_cast<uint64_t>(color.get_id()), static_cast<uint64_t>(depth.get_id()),
 		static_cast<uint64_t>(velocity.get_id()), static_cast<uint64_t>(output.get_id()) };
@@ -716,34 +862,12 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 		std::memcpy(view.inputs_key, key, sizeof(key));
 	}
 
-	float jitter_x = 0.0f, jitter_y = 0.0f;
-	track_jitter(scene, view, internal.x, target.x, internal.y, jitter_x, jitter_y);
-	Snapshot snap;
-	{
-		std::lock_guard<std::mutex> lock(snapshot_mutex_);
-		snap = snapshot_;
-	}
 	// Godot's conventions (JITTER_SIGN_*, velocity as-is); the tests can deliberately change them
 	// (set_test_conventions, debug builds) to show that wrong conventions measurably look worse.
 	const float jitter_sign_x = JITTER_SIGN_X * snap.jitter_sign_x;
 	const float jitter_sign_y = JITTER_SIGN_Y * snap.jitter_sign_y;
 	const float motion_sign = snap.motion_sign;
 	const float max_history = snap.max_history;
-	// Godot's jitter phase of this frame (UINT32_MAX until calibrated).
-	const uint32_t phase_count = dlss::jitter_phase_count(static_cast<uint32_t>(target.x), static_cast<uint32_t>(internal.x), true, false);
-	const uint32_t phase = view.calibrated && phase_count > 0 ?
-			static_cast<uint32_t>((static_cast<int64_t>(view.frames % phase_count) + view.phase_offset + phase_count) % phase_count) :
-			UINT32_MAX;
-	// A requested reset, optionally held back until a given jitter phase (debug tests compare runs
-	// that must start from the same phase).
-	if (reset_requested_.load()) {
-		const int wanted_phase = reset_phase_.load();
-		if (wanted_phase < 0 || static_cast<uint32_t>(wanted_phase) == phase) {
-			reset_requested_ = false;
-			reset_phase_ = -1;
-			view.reset = true;
-		}
-	}
 	upscale::ReferenceParams params;
 	params.render_size[0] = static_cast<float>(internal.x);
 	params.render_size[1] = static_cast<float>(internal.y);
@@ -763,7 +887,7 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 		}
 		params.job = job_counter_;
 		if (backend_ == UpscaleBackend::Dlss) {
-			set_dlss_job(params.job, rb, scene, view, snap, jitter_x, jitter_y);
+			set_dlss_job(params.job, rb, velocity, camera, view, snap, jitter_x, jitter_y);
 		}
 	}
 	if (marker_.load() != 0 && backend_ != UpscaleBackend::Dlss) {
@@ -792,14 +916,23 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 	rd->compute_list_end();
 
 #ifdef DEBUG_ENABLED
-	debug_readbacks(scene, rb, jitter_x, jitter_y, phase, phase_count);
+	debug_readbacks(scene, rb, velocity, jitter_x, jitter_y, phase, phase_count);
 #endif
 
+	view.previous_projection = camera.projection;
+	view.previous_transform = camera.transform;
+	view.have_previous_camera = true;
+	const bool was_reset = view.reset;
+	const ResetReason reset_reason = view.reset_reason;
 	view.frames_since_reset = view.reset ? 1 : view.frames_since_reset + 1;
 	view.read = 1 - view.read;
 	view.reset = false;
 	view.frames++;
 	std::lock_guard<std::mutex> lock(stats_mutex_);
+	if (was_reset) {
+		stats_.resets[static_cast<int>(reset_reason)]++;
+		stats_.last_reset_reason = reset_reason_name(reset_reason);
+	}
 	stats_.frames_upscaled++;
 	stats_.frames_since_reset = view.frames_since_reset;
 	stats_.phase = phase == UINT32_MAX ? -1 : static_cast<int>(phase);
@@ -812,8 +945,8 @@ void Upscaler::dispatch_reference(RenderSceneBuffersRD *rb, RenderSceneData *sce
 // Debug builds: for N frames (GODOT_LATENCY_UPSCALING_TEST_READBACK_FRAMES=N or
 // request_readbacks()), read back the scene UBO (Godot's own taa_jitter and taa_frame_count) and
 // the velocity at the centre of the screen.
-void Upscaler::debug_readbacks(RenderSceneData *scene, RenderSceneBuffersRD *rb, float jitter_x, float jitter_y,
-		uint32_t phase, uint32_t phase_count) {
+void Upscaler::debug_readbacks(RenderSceneData *scene, RenderSceneBuffersRD *rb, const RID &filled_velocity,
+		float jitter_x, float jitter_y, uint32_t phase, uint32_t phase_count) {
 	int frames = readback_frames_.load();
 	if (frames < 0) {
 		frames = boot_state().test_readback_frames;
@@ -832,29 +965,32 @@ void Upscaler::debug_readbacks(RenderSceneData *scene, RenderSceneBuffersRD *rb,
 				UBO_TAA_FRAME_COUNT_OFFSET, 12);
 	}
 	const RID velocity = rb->get_velocity_texture();
-	if (!ensure_velocity_probe() || !velocity.is_valid()) {
+	if (!ensure_velocity_probe() || !velocity.is_valid() || !filled_velocity.is_valid()) {
 		return;
 	}
-	if (probe_velocity_ != static_cast<uint64_t>(velocity.get_id()) || !rd->uniform_set_is_valid(probe_set_)) {
+	const uint64_t key[2] = { static_cast<uint64_t>(velocity.get_id()), static_cast<uint64_t>(filled_velocity.get_id()) };
+	if (std::memcmp(key, probe_key_, sizeof(key)) != 0 || !rd->uniform_set_is_valid(probe_set_)) {
 		if (probe_set_.is_valid() && rd->uniform_set_is_valid(probe_set_)) {
 			rd->free_rid(probe_set_);
 		}
 		TypedArray<RDUniform> uniforms;
-		Ref<RDUniform> tex;
-		tex.instantiate();
-		tex->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
-		tex->set_binding(0);
-		tex->add_id(sampler_);
-		tex->add_id(velocity);
-		uniforms.push_back(tex);
+		for (int binding = 0; binding < 2; ++binding) {
+			Ref<RDUniform> tex;
+			tex.instantiate();
+			tex->set_uniform_type(RenderingDevice::UNIFORM_TYPE_SAMPLER_WITH_TEXTURE);
+			tex->set_binding(binding);
+			tex->add_id(sampler_);
+			tex->add_id(binding == 0 ? velocity : filled_velocity);
+			uniforms.push_back(tex);
+		}
 		Ref<RDUniform> buf;
 		buf.instantiate();
 		buf->set_uniform_type(RenderingDevice::UNIFORM_TYPE_STORAGE_BUFFER);
-		buf->set_binding(1);
+		buf->set_binding(2);
 		buf->add_id(probe_buffer_);
 		uniforms.push_back(buf);
 		probe_set_ = rd->uniform_set_create(uniforms, probe_shader_, 0);
-		probe_velocity_ = velocity.get_id();
+		std::memcpy(probe_key_, key, sizeof(key));
 	}
 	const Vector2i internal = rb->get_internal_size();
 	const float params[4] = { static_cast<float>(internal.x), static_cast<float>(internal.y), 0.0f, 0.0f };
@@ -914,12 +1050,17 @@ void Upscaler::on_velocity_readback(const PackedByteArray &data) {
 	if (data.size() < 8) {
 		return;
 	}
-	float v[2];
-	std::memcpy(v, data.ptr(), sizeof(v));
+	if (data.size() < 16) {
+		return;
+	}
+	float v[4];
+	std::memcpy(v, data.ptr(), sizeof(v)); // Godot's velocity, then the filled copy
 	std::lock_guard<std::mutex> lock(stats_mutex_);
 	stats_.velocity_samples.push_back(Vector2(v[0], v[1]));
+	stats_.filled_velocity_samples.push_back(Vector2(v[2], v[3]));
 	if (stats_.velocity_samples.size() > 256) {
 		stats_.velocity_samples.pop_front();
+		stats_.filled_velocity_samples.pop_front();
 	}
 }
 
@@ -967,6 +1108,7 @@ void Upscaler::release_gpu_resources() {
 	}
 	views_.clear();
 	pending_.clear();
+	velocity_fill_.release();
 	if (probe_set_.is_valid() && rd->uniform_set_is_valid(probe_set_)) {
 		rd->free_rid(probe_set_);
 	}

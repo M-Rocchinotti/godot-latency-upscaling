@@ -24,12 +24,15 @@
 #pragma once
 
 #include "dlss/dlss_recorder.h"
+#include "godot/velocity_fill.h"
+#include "upscale/camera_cut.h"
 #include "upscale/quality.h"
 
 #include <godot_cpp/classes/compositor.hpp>
 #include <godot_cpp/classes/compositor_effect.hpp>
 #include <godot_cpp/classes/render_data.hpp>
 #include <godot_cpp/classes/render_scene_buffers_rd.hpp>
+#include <godot_cpp/classes/window.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/rid.hpp>
 
@@ -75,6 +78,7 @@ public:
 			bool enabled, bool native);
 
 	// Main thread.
+	void pre_draw(); // frame_pre_draw: the current camera, before this frame renders
 	void update(); // end of every main-loop iteration
 	void shutdown(); // restores the viewport and camera, frees GPU resources
 	void set_enabled(bool enabled);
@@ -83,6 +87,9 @@ public:
 	upscale::Quality quality() const { return quality_; }
 	void set_preset(upscale::Preset preset);
 	upscale::Preset preset() const { return preset_; }
+	void set_cut_thresholds(const upscale::CutThresholds &thresholds);
+	// Throws the history away on the next upscaled frame (the public reset_dlss_history()).
+	void reset_history() { request_reset(ResetReason::Api, -1); }
 	UpscaleBackend backend() const { return backend_; }
 	bool is_active() const; // upscaling the main viewport right now
 	std::string reason() const; // why it is not active ("" when active)
@@ -101,16 +108,25 @@ public:
 	// a history reset, and read-backs of the scene UBO and the velocity texture for `frames`.
 	void set_test_conventions(float jitter_x, float jitter_y, float motion);
 	// phase >= 0: hold the reset back until the frame with that jitter phase.
-	void request_history_reset(int phase = -1) {
-		reset_phase_ = phase;
-		reset_requested_ = true;
-	}
+	void request_history_reset(int phase = -1) { request_reset(ResetReason::Test, phase); }
 	void request_readbacks(int frames) { readback_frames_ = frames; }
+	// Debug builds: 0 = fill far-plane motion vectors (the default), 1 = derive every pixel's vector
+	// from depth (tests compare that with Godot's), 2 = off (the raw velocity, as before the fill).
+	void set_test_velocity_fill(int mode);
 	// Debug builds: 0 = record natively, 1 = let the marker dispatch run (the RenderingDevice path),
 	// 2 = record natively with the jitter's x negated (proves the image is the native recording).
 	void set_test_native_mode(int mode);
 
 private:
+	// Why the history was thrown away (counted in status()["history_resets"]).
+	enum class ResetReason { Takeover, Resize, Api, Test, CameraSwitch, Rotation, Translation, InvalidPose, Count };
+	static const char *reset_reason_name(ResetReason reason);
+	void request_reset(ResetReason reason, int phase) {
+		requested_reason_ = static_cast<int>(reason);
+		reset_phase_ = phase;
+		reset_requested_ = true;
+	}
+
 	struct Snapshot { // written by the main thread, read by the render thread
 		uint64_t render_target = 0; // RID id of the managed viewport's render target
 		float mipmap_bias = 0.0f;
@@ -121,6 +137,9 @@ private:
 		float motion_sign = 1.0f;
 		upscale::Quality quality = upscale::Quality::Quality; // resolved (never Auto)
 		upscale::Preset preset = upscale::Preset::Default;
+		upscale::CutThresholds cut_thresholds;
+		uint64_t camera_serial = 0; // +1 whenever another camera becomes current
+		VelocityFillMode velocity_fill = VelocityFillMode::FarPlane;
 	};
 	struct ViewState { // render thread only
 		godot::RID history[2];
@@ -129,14 +148,22 @@ private:
 		godot::RID uniform_set[2];
 		uint64_t inputs_key[4] = {}; // color, depth, velocity, output RIDs the sets were built for
 		bool reset = true;
+		ResetReason reset_reason = ResetReason::Takeover;
 		uint64_t frames = 0;
 		uint64_t frames_since_reset = 0; // including the reset frame
 		bool calibrated = false;
 		int64_t phase_offset = 0; // Godot phase = (frames + phase_offset) % phase_count
 		uint32_t viewport_id = 0; // DLSS viewport handle
-		bool have_previous_camera = false; // DLSS: last frame's camera, for the reprojection matrices
+		bool have_previous_camera = false; // last frame's camera: reprojection matrices, cut detection
 		godot::Projection previous_projection; // without jitter
 		godot::Transform3D previous_transform;
+		uint64_t camera_serial = 0; // Snapshot::camera_serial of the last frame
+	};
+	// This frame's camera, as the DLSS evaluation and the velocity fill need it.
+	struct CameraFrame {
+		godot::Projection projection; // view -> clip, without the jitter
+		godot::Transform3D transform; // camera -> world
+		godot::Projection clip_to_prev; // clip -> previous frame's clip (without jitter)
 	};
 	struct Stats { // render thread writes, status() reads (under stats_mutex_)
 		uint64_t frames_upscaled = 0;
@@ -152,21 +179,27 @@ private:
 		float last_jitter_x = 0.0f, last_jitter_y = 0.0f;
 		uint64_t ubo_checks = 0; // debug: scene UBO read-backs compared
 		uint64_t ubo_mismatches = 0;
-		godot::Array velocity_samples; // debug: centre-pixel velocity read-backs
+		godot::Array velocity_samples; // debug: centre-pixel velocity read-backs (Godot's)
+		godot::Array filled_velocity_samples; // debug: the same pixels after the velocity fill
+		uint64_t resets[static_cast<int>(ResetReason::Count)] = {};
+		std::string last_reset_reason;
 		std::string error;
 	};
 
 	bool ensure_pipeline(); // render thread
 	void ensure_native(const godot::PackedByteArray &spirv); // render thread, after the pipeline exists
 	void ensure_dlss_marker(); // render thread, after the pipeline exists
-	void set_dlss_job(uint32_t job, godot::RenderSceneBuffersRD *rb, godot::RenderSceneData *scene, ViewState &view,
-			const Snapshot &snap, float jitter_x, float jitter_y);
+	void set_dlss_job(uint32_t job, godot::RenderSceneBuffersRD *rb, const godot::RID &velocity, const CameraFrame &camera,
+			ViewState &view, const Snapshot &snap, float jitter_x, float jitter_y);
+	CameraFrame camera_frame(godot::RenderSceneBuffersRD *rb, godot::RenderSceneData *scene, const ViewState &view,
+			float jitter_x, float jitter_y);
+	void track_camera(godot::Window *root); // main thread: our effect on the current camera
 	bool ensure_velocity_probe(); // render thread, debug
 	void dispatch_reference(godot::RenderSceneBuffersRD *rb, godot::RenderSceneData *scene, ViewState &view);
 	void track_jitter(godot::RenderSceneData *scene, ViewState &view, int render_width, int target_width,
 			int render_height, float &jitter_x, float &jitter_y);
-	void debug_readbacks(godot::RenderSceneData *scene, godot::RenderSceneBuffersRD *rb, float jitter_x, float jitter_y,
-			uint32_t phase, uint32_t phase_count);
+	void debug_readbacks(godot::RenderSceneData *scene, godot::RenderSceneBuffersRD *rb, const godot::RID &filled_velocity,
+			float jitter_x, float jitter_y, uint32_t phase, uint32_t phase_count);
 	void restore_viewport_and_camera();
 	void set_error(const std::string &error);
 
@@ -203,9 +236,11 @@ private:
 	std::atomic<bool> takeover_pending_{ false };
 	std::atomic<bool> reset_requested_{ false };
 	std::atomic<int> reset_phase_{ -1 };
+	std::atomic<int> requested_reason_{ 0 };
+	VelocityFill velocity_fill_;
 	std::atomic<int> readback_frames_{ -1 }; // -1: not yet read from the environment
 	godot::RID probe_shader_, probe_pipeline_, probe_buffer_, probe_set_;
-	uint64_t probe_velocity_ = 0; // velocity RID the probe set was built for
+	uint64_t probe_key_[2] = {}; // velocity and filled-velocity RIDs the probe set was built for
 
 	mutable std::mutex stats_mutex_;
 	Stats stats_;

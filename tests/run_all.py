@@ -461,7 +461,7 @@ def suite_upscaler() -> bool:
         fails = [l for l in out.splitlines() if l.startswith("FAIL")]
         problems = problems_in(out)
         ok = code == 0 and summary is not None and summary.group(2) == "0" and not problems
-        measured = [l for l in out.splitlines() if l.startswith(("STILL ", "VELOCITY ", "MOTION "))]
+        measured = [l for l in out.splitlines() if l.startswith(("STILL ", "VELOCITY ", "FILL ", "MOTION "))]
         all_ok &= result(f"upscaler ({backend})", ok, summary.group(0) if summary else f"exit {code}, no summary",
                          fails + problems + measured)
     return all_ok

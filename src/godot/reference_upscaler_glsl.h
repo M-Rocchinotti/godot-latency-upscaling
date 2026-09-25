@@ -83,14 +83,16 @@ void main() {
 }
 )GLSL";
 
-// Debug builds only: averages the velocity texture over a 5x5 block at the centre into a buffer, so
-// the motion-vector tests can read Godot's velocity (the texture itself is not copyable).
+// Debug builds only: averages Godot's velocity texture and the filled copy (godot/velocity_fill.h) over
+// a 5x5 block at the centre into a buffer, so the motion-vector tests can read them (the textures
+// themselves are not copyable). result = (Godot's velocity, filled velocity).
 inline constexpr const char *VELOCITY_PROBE_GLSL = R"GLSL(#version 450
 
 layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 0) uniform sampler2D velocity_tex;
-layout(set = 0, binding = 1, std430) restrict writeonly buffer Result {
+layout(set = 0, binding = 1) uniform sampler2D filled_tex;
+layout(set = 0, binding = 2, std430) restrict writeonly buffer Result {
 	vec4 value;
 } result;
 
@@ -101,13 +103,15 @@ layout(push_constant, std430) uniform Params {
 
 void main() {
 	vec2 sum = vec2(0.0);
+	vec2 filled = vec2(0.0);
 	ivec2 centre = ivec2(params.size) / 2;
 	for (int y = -2; y <= 2; y++) {
 		for (int x = -2; x <= 2; x++) {
 			sum += texelFetch(velocity_tex, centre + ivec2(x, y), 0).xy;
+			filled += texelFetch(filled_tex, centre + ivec2(x, y), 0).xy;
 		}
 	}
-	result.value = vec4(sum / 25.0, 0.0, 0.0);
+	result.value = vec4(sum / 25.0, filled / 25.0);
 }
 )GLSL";
 
