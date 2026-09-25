@@ -16,6 +16,15 @@ extends SceneTree
 ##               beats ignored and flipped jitter (so the convention handed to DLSS is right);
 ##               FSR2 at the same render size and native rendering are measured for comparison
 ##   motion      with the camera moving, the motion vectors as handed over beat flipped ones
+##   cut         a 150 degree camera cut: the history is reset on exactly the first frame of the new
+##               view, and that frame and the next show no ghost of the old view (bars) in the plain
+##               background, for DLSS Quality and DLAA; with neither the cut detection nor the sky
+##               motion (the control: the state the review found) the ghost is there, so the metric
+##               sees it
+##   sky turn    a camera turn with the thin bars over the plain background: the trail metric (pixels
+##               of the plain background that differ from a supersampled still of the final pose) of
+##               DLSS Quality is at most FSR2's at the same render size; without the far-plane motion
+##               vectors (the control) it is worse
 ## Ends "dlss tests: <passed> passed, <failed> failed". Captures go to LU_RUN_DIR or build/dlss/.
 
 const TestScene := preload("res://tests/test_scene.gd")
@@ -118,6 +127,8 @@ func _run() -> void:
 		await _test_presets()
 		await _test_still()
 		await _test_motion()
+		await _test_cut()
+		await _test_sky_turn()
 	_finish()
 
 
@@ -233,6 +244,178 @@ func _moving(motion: float, name: String) -> Image:
 		_camera.position.x = -1.2 + 0.03 * i
 		await process_frame
 	return _capture(name)
+
+
+# --- ghosts and trails in the plain background -------------------------------------------------------
+
+# Indices (y * width + x) of the plain-background pixels of `truth` in rows [top, bottom): the
+# background colour (the truth's pixel at (2, 2)) within 5 levels, and so for `radius` pixels around,
+# so edges and their anti-aliasing never count.
+func _background_pixels(truth: Image, top: int, bottom: int, radius: int = 2) -> PackedInt32Array:
+	var t := truth.duplicate() as Image
+	t.convert(Image.FORMAT_RGB8)
+	var w := t.get_width()
+	var data := t.get_data()
+	var o0 := (2 * w + 2) * 3
+	var bg := [data[o0], data[o0 + 1], data[o0 + 2]]
+	var rows := bottom - top
+	var plain := PackedByteArray()
+	plain.resize(w * rows)
+	for y in rows:
+		var row := (top + y) * w * 3
+		for x in w:
+			var o := row + x * 3
+			plain[y * w + x] = 1 if absi(data[o] - bg[0]) <= 5 and absi(data[o + 1] - bg[1]) <= 5 and absi(data[o + 2] - bg[2]) <= 5 else 0
+	# Erosion by a (2 radius + 1) square: a horizontal, then a vertical minimum.
+	var h := PackedByteArray()
+	h.resize(w * rows)
+	for y in rows:
+		for x in w:
+			var keep := 1
+			for d in range(-radius, radius + 1):
+				var xx := x + d
+				if xx < 0 or xx >= w or plain[y * w + xx] == 0:
+					keep = 0
+					break
+			h[y * w + x] = keep
+	var out := PackedInt32Array()
+	for y in range(radius, rows - radius):
+		for x in w:
+			var keep := true
+			for d in range(-radius, radius + 1):
+				if h[(y + d) * w + x] == 0:
+					keep = false
+					break
+			if keep:
+				out.append((top + y) * w + x)
+	return out
+
+
+# Of the given pixels: how many differ from the truth by more than `threshold` levels (the largest
+# channel difference), their fraction, and the mean difference (0..1).
+func _trail(image: Image, truth: Image, pixels: PackedInt32Array, threshold: int = 20) -> Dictionary:
+	var a := image.duplicate() as Image
+	a.convert(Image.FORMAT_RGB8)
+	var b := truth.duplicate() as Image
+	b.convert(Image.FORMAT_RGB8)
+	var da := a.get_data()
+	var db := b.get_data()
+	var bad := 0
+	var sum := 0.0
+	for p in pixels:
+		var o := p * 3
+		var e := maxi(absi(da[o] - db[o]), maxi(absi(da[o + 1] - db[o + 1]), absi(da[o + 2] - db[o + 2])))
+		sum += e
+		if e > threshold:
+			bad += 1
+	var n := maxi(pixels.size(), 1)
+	return {"pixels": pixels.size(), "bad": bad, "fraction": float(bad) / n, "mean": sum / n / 255.0}
+
+
+func _resets() -> Dictionary:
+	return _status()["history_resets"].duplicate()
+
+
+# A 150 degree cut: settled on the bars (the reset pose), then turned away in one frame. Returns the
+# first two frames of the new view and the status of the first.
+func _cut(mode: int, detection: bool, sky_motion: bool, name: String) -> Array:
+	await _dlss(mode)
+	_lu._set_upscaler_test_cut_thresholds(60.0 if detection else 0.0, 10.0 if detection else 0.0)
+	_lu._set_upscaler_test_velocity_fill(0 if sky_motion else 2)
+	TestScene.reset_camera(_camera)
+	await _frames(CONVERGE_FRAMES)
+	var before := _resets()
+	_camera.rotation.y = deg_to_rad(150.0)
+	await process_frame
+	var s := _status()
+	var first := _capture(name + "_cut1")
+	await process_frame
+	var second := _capture(name + "_cut2")
+	_lu._set_upscaler_test_cut_thresholds(60.0, 10.0)
+	_lu._set_upscaler_test_velocity_fill(0)
+	var added := {}
+	for key: String in s["history_resets"]:
+		var n: int = int(s["history_resets"][key]) - int(before.get(key, 0))
+		if n != 0:
+			added[key] = n
+	TestScene.reset_camera(_camera)
+	return [first, second, s, added]
+
+
+func _test_cut() -> void:
+	TestScene.reset_camera(_camera)
+	_camera.rotation.y = deg_to_rad(150.0)
+	var truth := await _godot_mode(Viewport.SCALING_3D_MODE_BILINEAR, 2.0, 12, "cut_truth_ssaa2x")
+	TestScene.reset_camera(_camera)
+	var pixels := _background_pixels(truth, 0, SIZE.y / 2)
+	var results := {"background_pixels": pixels.size()}
+	var runs := [[2, true, true, "dlss_quality"], [1, true, true, "dlaa"], [2, false, true, "dlss_quality_no_cut_detection"],
+		[2, false, false, "dlss_quality_before_the_fixes"]]
+	for run: Array in runs:
+		var r: Array = await _cut(run[0], run[1], run[2], run[3])
+		results[run[3]] = {"first": _trail(r[0], truth, pixels), "second": _trail(r[1], truth, pixels),
+				"added_resets": r[3], "frames_since_reset": r[2]["frames_since_reset"]}
+	_results["cut"] = results
+	print("CUT " + JSON.stringify(results))
+	var enough := pixels.size() > SIZE.x * SIZE.y / 8
+	for name: String in ["dlss_quality", "dlaa"]:
+		var r: Dictionary = results[name]
+		_check("%s: a 150 degree cut resets the history on the first frame of the new view" % name,
+				r["added_resets"] == {"rotation": 1} and r["frames_since_reset"] == 1,
+				"added %s, frames since reset %d" % [r["added_resets"], r["frames_since_reset"]])
+		_check("%s: no ghost of the old view after the cut (first and second frame, < 0.05%% of %d background pixels)" % [name, pixels.size()],
+				enough and r["first"]["fraction"] < 0.0005 and r["second"]["fraction"] < 0.0005,
+				"first %s, second %s" % [r["first"], r["second"]])
+	var control: Dictionary = results["dlss_quality_before_the_fixes"]
+	_check("control: without the reset and the sky motion the old view shows (so the metric sees a ghost)",
+			control["first"]["bad"] > 10 * maxi(results["dlss_quality"]["first"]["bad"], 1),
+			"before the fixes %s, with them %s; cut detection off, sky motion on: %s" % [control["first"],
+				results["dlss_quality"]["first"], results["dlss_quality_no_cut_detection"]["first"]])
+
+
+# The camera turns 1.2 degrees per frame for 40 frames and stops on the bars (the reset pose) with the
+# plain background between and above them. `setup` selects the upscaler; returns the last frame.
+func _turn(setup: Callable, name: String) -> Image:
+	await setup.call()
+	TestScene.reset_camera(_camera)
+	var end_yaw := _camera.rotation.y
+	_camera.rotation.y = end_yaw + deg_to_rad(1.2 * 40)
+	await _frames(CONVERGE_FRAMES)
+	for i in range(39, -1, -1):
+		_camera.rotation.y = end_yaw + deg_to_rad(1.2 * i)
+		await process_frame
+	var image := _capture(name)
+	TestScene.reset_camera(_camera)
+	return image
+
+
+func _test_sky_turn() -> void:
+	TestScene.reset_camera(_camera)
+	var truth := await _godot_mode(Viewport.SCALING_3D_MODE_BILINEAR, 2.0, 12, "turn_truth_ssaa2x")
+	# Above the floor's far edge (row ~279 at 720 p) there are only the bars and the background.
+	var pixels := _background_pixels(truth, 0, 260)
+	await _dlss(2)
+	var quality_scale := float(_status()["render_size"].x + 0.5) / float(SIZE.x)
+	var fsr2 := await _turn(func() -> void: await _godot_mode(Viewport.SCALING_3D_MODE_FSR2, quality_scale, 2, "turn_fsr2_setup"),
+			"turn_fsr2_quality_size")
+	var dlss := await _turn(func() -> void: await _dlss(2), "turn_dlss_quality")
+	var dlaa := await _turn(func() -> void: await _dlss(1), "turn_dlaa")
+	_lu._set_upscaler_test_velocity_fill(2)
+	var no_fill := await _turn(func() -> void: await _dlss(2), "turn_dlss_quality_no_sky_motion")
+	_lu._set_upscaler_test_velocity_fill(0)
+	var t := {"background_pixels": pixels.size(), "fsr2_quality_size": _trail(fsr2, truth, pixels),
+		"dlss_quality": _trail(dlss, truth, pixels), "dlaa": _trail(dlaa, truth, pixels),
+		"dlss_quality_no_sky_motion": _trail(no_fill, truth, pixels)}
+	_results["sky_turn"] = t
+	print("SKY_TURN " + JSON.stringify(t))
+	var enough := pixels.size() > SIZE.x * 100
+	_check("sky turn: DLSS Quality trails no more than FSR2 at the same render size",
+			enough and t["dlss_quality"]["bad"] <= t["fsr2_quality_size"]["bad"],
+			"trail pixels of %d: DLSS Quality %d, FSR2 %d, DLAA %d, DLSS without sky motion %d" % [pixels.size(),
+				t["dlss_quality"]["bad"], t["fsr2_quality_size"]["bad"], t["dlaa"]["bad"], t["dlss_quality_no_sky_motion"]["bad"]])
+	_check("control: without the far-plane motion vectors DLSS trails more (so the metric sees trails)",
+			t["dlss_quality_no_sky_motion"]["bad"] > t["dlss_quality"]["bad"],
+			"DLSS Quality %d, without sky motion %d" % [t["dlss_quality"]["bad"], t["dlss_quality_no_sky_motion"]["bad"]])
 
 
 func _test_motion() -> void:
