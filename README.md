@@ -6,7 +6,7 @@ latency markers and measurements) and **DLSS Super Resolution / DLAA**. Frame Ge
 for the next phase on the same foundation: an in-process Vulkan dispatch layer the addon installs in
 front of Godot at start-up.
 
-> Status: **Phase 2 of 3 (unreleased; the last release is 0.1.0, Reflex only).** Reflex is tested
+> Status: **Phase 2 of 3, version 0.2.0 (Reflex, DLSS Super Resolution / DLAA).** Reflex is tested
 > on a GTX 1080 and an RTX 5080, DLSS Super Resolution / DLAA on an RTX 5080. DLSS needs NVIDIA's
 > runtime, which the developer fetches after accepting NVIDIA's licences (see
 > [DLSS](#dlss-the-nvidia-runtime)); it is never part of this addon. The addon relies on Godot 4.7.x
@@ -526,8 +526,8 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 
 ## Version
 
-0.1.0 released (Phase 1: hook layer and Reflex); Phase 2 (DLSS Super Resolution / DLAA) is on the
-main branch, unreleased. See `CHANGELOG.md`. Semantic versioning.
+0.2.0 (Phase 2: DLSS Super Resolution / DLAA), after 0.1.0 (Phase 1: hook layer and Reflex). See
+`CHANGELOG.md`. Semantic versioning.
 
 ## NVIDIA technologies, trademarks and attribution
 

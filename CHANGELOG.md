@@ -2,7 +2,9 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] - Phase 2: DLSS Super Resolution / DLAA
+## [0.2.0] - 2026-09-25
+
+Phase 2: DLSS Super Resolution / DLAA.
 
 ### Added
 
@@ -52,6 +54,8 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
   the runtime, no longer the system drive) and shows the size first.
 - Tools: `medium_launcher` (validation-layer runs where UAC is off), `rtx_remote.py deploy
   --validation-layer` / `session --validation`.
+- Tests: cut thresholds from the settings end to end, cuts with Reflex off, the sky fill after a
+  resize, the RTX harness's privacy rule (`tests/test_rtx_remote.py`).
 
 ### Changed
 
@@ -64,6 +68,14 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 - The current camera is tracked before the frame renders, so a camera made current during
   processing is upscaled from its first frame (it showed one stale frame).
 - `sl_probe` ends right after printing its result (Streamline's teardown blocked over SSH).
+- The RTX harness's preflight reduces what it sees on the test PC to two yes/no answers (a
+  fullscreen app in front, a known game running) plus the GPU load; no process, app or window name
+  is returned, printed or logged.
+- The acceptance record says which licence was accepted: the NVIDIA RTX SDKs licence
+  (`nvngx_dlss.license.txt`); Streamline's `license.txt` is MIT and is only received.
+- The upscaler's camera tracking has its own `frame_pre_draw` handler, independent of Reflex.
+- Checks that need NVIDIA's runtime report SKIP without it (run_all, run_export), and
+  run_mutations labels their mutations NEEDS RUNTIME.
 
 ### Fixed
 

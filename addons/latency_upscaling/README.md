@@ -1,8 +1,7 @@
 # Latency & Upscaling for Godot 4.7 (NVIDIA Reflex, DLSS Super Resolution / DLAA)
 
 Adds NVIDIA Reflex and DLSS Super Resolution / DLAA to Godot 4.7 Vulkan projects on Windows, with no
-project setup. Frame Generation is planned. Version 0.1.0 released (Reflex); DLSS is Phase 2,
-unreleased.
+project setup. Frame Generation is planned. Version 0.2.0.
 
 ## Install
 
