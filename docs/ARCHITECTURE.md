@@ -503,12 +503,17 @@ accepting NVIDIA's licences:
   --accept-nvidia-licences --accepted-by "NAME"` (`--accepted-on DATE`, `--how TEXT` to record an
   acceptance given earlier or elsewhere).
 
-Either way `licence_acceptance.json` next to the DLLs records **who accepted, when and how**, as the
-person gave it (the dialog: the developer using the editor, who ticked the box), the accepted
-licence files with their SHA-256, the release (tag, commit, archive SHA-256) and when and with what
-the record was written. The tools never name themselves as the party accepting. The runtime used for
-this project's own tests was accepted by the project owner in the conversation with the CEO agent on
-2026-09-24 ("ja ich akzeptiere", relayed by the CEO agent), and its record says exactly that.
+Only the NVIDIA RTX SDKs licence (`nvngx_dlss.license.txt`) needs acceptance; Streamline's
+`license.txt` is the MIT licence for `sl.*.dll` (the NSight Perf SDK licence it also names covers only
+`sl_nvperf.*`, which this runtime does not include), shown and shipped but not accepted
+(`nvidia_runtime.json` "acceptance"). Either way `licence_acceptance.json` next to the DLLs records
+**who accepted, when and how**, as the person gave it (the dialog: the developer using the editor,
+who ticked the box), both licence files with their SHA-256 and which of them was accepted, the
+release (tag, commit, archive SHA-256) and when and with what the record was written. The tools
+never name themselves as the party accepting. For the runtime used by this project's own tests the
+record says: in the conversation with the CEO agent on 2026-09-24 the project owner accepted
+"NVIDIAs RTX-SDK-Lizenz" ("ja ich akzeptiere"), the NVIDIA RTX SDK licence as presented, relayed by
+the CEO agent; it covers `nvngx_dlss.license.txt`; `license.txt` (MIT) is not recorded as accepted.
 
 `addons/latency_upscaling/nvidia_runtime.json` names the release and the files;
 `nvidia_runtime.lock.json` pins the SHA-256 of the archive and of every file taken from it.

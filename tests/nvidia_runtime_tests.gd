@@ -124,6 +124,9 @@ func _test_install() -> void:
 	var licences_ok := (record.get("licences", []) as Array).size() == 2
 	for lic: Dictionary in record.get("licences", []):
 		licences_ok = licences_ok and lic.get("sha256") == Runtime.sha256_file(target.path_join(str(lic.get("file"))))
+		# Accepted: only the NVIDIA RTX SDKs licence; Streamline's MIT licence is received, with a note.
+		licences_ok = licences_ok and lic.get("accepted") == (lic.get("file") == "nvngx_dlss.license.txt")
+		licences_ok = licences_ok and (lic.get("accepted") or str(lic.get("note", "")).contains("MIT"))
 	_check("the acceptance is recorded (who, when, how, which licence files, which archive)",
 			record.get("accepted_by") == "test" and record.get("accepted_on") == "2026-09-24" and record.get("how") == "a test"
 			and licences_ok and record.get("sha256") == Runtime.sha256_file(zip) and record.get("tag") == Runtime.manifest()["tag"]
@@ -236,6 +239,12 @@ func _test_dialog() -> void:
 			str(record.get("accepted_by", "")).begins_with("the developer using the Godot editor")
 			and str(record.get("how", "")).contains("ticked") and str(record.get("accepted_on", "")).length() == 10
 			and str(record.get("recorded_with", "")).contains("dialog"), "%s" % record)
+	var box_text := ""
+	for box in dialog.find_children("*", "CheckBox", true, false):
+		box_text = (box as CheckBox).text
+	_check("what the developer accepts is the NVIDIA RTX SDKs licence; Streamline's MIT licence needs no acceptance",
+			box_text.contains("accept the NVIDIA RTX SDKs licence (nvngx_dlss.license.txt)") and not box_text.contains("(license.txt)")
+			and str(record.get("how", "")).contains(box_text), box_text)
 	dialog.queue_free()
 
 	# The download folder: by default next to the runtime's folder (like the command-line tool);

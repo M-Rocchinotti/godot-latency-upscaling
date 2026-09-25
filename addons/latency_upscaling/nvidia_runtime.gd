@@ -99,6 +99,12 @@ static func sha256_file(path: String) -> String:
 	return context.finish().hex_encode()
 
 
+## Whether the developer has to accept licence `lic` (the NVIDIA RTX SDKs licence) or only receives
+## it (Streamline's MIT licence): nvidia_runtime.json "acceptance".
+static func requires_acceptance(lic: Dictionary) -> bool:
+	return str(lic.get("acceptance", "")) == "required"
+
+
 ## Whether `text` is the licence file `lic` of the pinned release: "" when its SHA-256 is the one
 ## `pinned` (normally lock()) records for that file of NVIDIA's archive, otherwise why not.
 static func licence_text_problem(text: PackedByteArray, lic: Dictionary, pinned: Dictionary) -> String:
@@ -190,8 +196,11 @@ static func install_from_zip(zip_path: String, target: String, accepted: bool, a
 	# tools/fetch_nvidia_sdk.py writes).
 	var licences := []
 	for lic: Dictionary in m["licences"]:
-		licences.append({"name": lic["name"], "file": lic["file"], "sha256": installed_sha.get(lic["file"], ""),
-				"text": lic["text"]})
+		var entry := {"name": lic["name"], "file": lic["file"], "sha256": installed_sha.get(lic["file"], ""),
+				"text": lic["text"], "accepted": requires_acceptance(lic)}
+		if not requires_acceptance(lic):
+			entry["note"] = str(lic.get("acceptance", ""))
+		licences.append(entry)
 	var record := {
 		"accepted_by": str(acceptance["accepted_by"]).strip_edges(),
 		"accepted_on": accepted_on,

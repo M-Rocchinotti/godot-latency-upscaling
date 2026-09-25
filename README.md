@@ -71,11 +71,12 @@ stand-alone), so they are **not** in this addon or its release zip. Fetch them o
 - **In the editor:** enable the plugin (step 3). With DLSS on and the runtime missing, a dialog
   shows NVIDIA's licences: the licence files of exactly the pinned release (`nvngx_dlss.license.txt`,
   the NVIDIA RTX SDKs licence, and Streamline's `license.txt`), each checked against the SHA-256 the
-  lock records for that file in NVIDIA's archive, so what you accept is what ships with the DLLs.
+  lock records for that file in NVIDIA's archive, so what you read is what ships with the DLLs. You
+  accept the NVIDIA RTX SDKs licence; Streamline's licence is MIT and needs no acceptance.
   It shows the download size (276 MB; 70 MB installed) and the folder the archive goes to
   (by default next to the runtime's folder, changeable with Browse; it is deleted after the
   install). **Download** stays disabled until the texts are verified and you tick that you have
-  read and accept them. It downloads `streamline-sdk-v2.14.1.zip` from NVIDIA's GitHub release,
+  read them and accept the NVIDIA RTX SDKs licence. It downloads `streamline-sdk-v2.14.1.zip` from NVIDIA's GitHub release,
   checks it against the release's SHA-256 and the hashes pinned in
   `addons/latency_upscaling/nvidia_runtime.lock.json`, installs the needed files into
   `addons/latency_upscaling/bin/nvidia/` (keep that folder out of version control; this

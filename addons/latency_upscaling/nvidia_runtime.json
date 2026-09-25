@@ -35,19 +35,21 @@
 	"export_folder": "nvidia",
 	"target": "res://addons/latency_upscaling/bin/nvidia",
 	"acceptance_record": "licence_acceptance.json",
-	"licences_comment": "The licences to accept are the licence files of the pinned release: 'file' is the file in the archive (its SHA-256 is in nvidia_runtime.lock.json), 'text' the same file at the release's commit on GitHub. The editor dialog and tools/fetch_nvidia_sdk.py --show-licences show 'text' only after checking that its SHA-256 is the locked one, so the text accepted is the text that ships with the DLLs.",
+	"licences_comment": "The licences to accept are the licence files of the pinned release: 'file' is the file in the archive (its SHA-256 is in nvidia_runtime.lock.json), 'text' the same file at the release's commit on GitHub. The editor dialog and tools/fetch_nvidia_sdk.py --show-licences show 'text' only after checking that its SHA-256 is the locked one, so the text accepted is the text that ships with the DLLs. 'acceptance' says whether the developer has to accept a licence (the NVIDIA RTX SDKs licence) or only receives it (Streamline's MIT licence); the acceptance record lists both, marking which were accepted.",
 	"licences": [
 		{
 			"name": "NVIDIA RTX SDKs licence (the DLSS runtime, nvngx_dlss.dll)",
 			"file": "nvngx_dlss.license.txt",
 			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt",
-			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt"
+			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt",
+			"acceptance": "required"
 		},
 		{
 			"name": "Streamline licence (MIT, sl.*.dll)",
 			"file": "license.txt",
 			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt",
-			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt"
+			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt",
+			"acceptance": "not required: the MIT licence, for sl.*.dll. The NSight Perf SDK licence it also names covers only sl_nvperf.*, which this runtime does not include."
 		}
 	]
 }

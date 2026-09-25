@@ -61,8 +61,8 @@ func _init() -> void:
 	intro.text = ("DLSS needs NVIDIA's runtime (Streamline %s and the DLSS library). It is licensed by NVIDIA, is not "
 			+ "part of this addon, and comes from NVIDIA's GitHub release: %s, %s. It is installed into %s (%s, kept out "
 			+ "of version control). Below are the licence files of exactly that release: downloading the runtime means "
-			+ "you accept them.") % [_manifest.get("tag", "?"), _manifest.get("asset", "?"), _megabytes(Runtime.archive_size()),
-				_manifest.get("target", "?"), _megabytes(Runtime.installed_size())]
+			+ "you accept the %s.") % [_manifest.get("tag", "?"), _manifest.get("asset", "?"), _megabytes(Runtime.archive_size()),
+				_manifest.get("target", "?"), _megabytes(Runtime.installed_size()), _required_names()]
 	box.add_child(intro)
 
 	for lic: Dictionary in _manifest.get("licences", []):
@@ -90,6 +90,12 @@ func _init() -> void:
 		box.add_child(note)
 		_licence_notes.append(note)
 		_verified.append(false)
+		if not Runtime.requires_acceptance(lic):
+			var info := Label.new()
+			info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+			info.custom_minimum_size.x = 740
+			info.text = "No acceptance needed: " + str(lic.get("acceptance", "")).trim_prefix("not required: ")
+			box.add_child(info)
 
 	var folder_row := HBoxContainer.new()
 	var folder_label := Label.new()
@@ -106,7 +112,7 @@ func _init() -> void:
 	box.add_child(folder_row)
 
 	_accept = CheckBox.new()
-	_accept.text = "I have read and accept the licences above"
+	_accept.text = "I have read the licences above and accept the " + _required_names()
 	_accept.toggled.connect(func(_on: bool) -> void: _update_buttons())
 	box.add_child(_accept)
 	_progress = ProgressBar.new()
@@ -136,6 +142,15 @@ func _ready() -> void:
 		_folder.text = ProjectSettings.globalize_path(_target()).get_base_dir()
 	_update_buttons()
 	_load_licence_texts.call_deferred()
+
+
+## The licences the developer accepts (those nvidia_runtime.json marks "required").
+func _required_names() -> String:
+	var names := PackedStringArray()
+	for lic: Dictionary in _manifest.get("licences", []):
+		if Runtime.requires_acceptance(lic):
+			names.append("%s (%s)" % [str(lic["name"]).get_slice(" (", 0), lic.get("file", "")])
+	return " and ".join(names)
 
 
 func is_download_enabled() -> bool:
@@ -233,8 +248,8 @@ func _acceptance() -> Dictionary:
 	return {
 		"accepted_by": "the developer using the Godot editor" + (" (user %s)" % user if user != "" else ""),
 		"accepted_on": Time.get_date_string_from_system(true),
-		"how": ("ticked \"I have read and accept the licences above\" in the Latency & Upscaling plugin's dialog, "
-				+ "which showed the licence files of the pinned release (SHA-256 verified), and pressed Download"),
+		"how": ("ticked \"%s\" in the Latency & Upscaling plugin's dialog, which showed the licence files of the "
+				+ "pinned release (SHA-256 verified), and pressed Download") % _accept.text,
 		"recorded_with": "the editor dialog of the Latency & Upscaling plugin",
 	}
 

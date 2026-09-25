@@ -89,6 +89,12 @@ class FetchTests(unittest.TestCase):
         self.assertEqual([lic["file"] for lic in record["licences"]], [lic["file"] for lic in self.m["licences"]])
         for lic in record["licences"]:
             self.assertEqual(lic["sha256"], hashlib.sha256((self.target / lic["file"]).read_bytes()).hexdigest())
+        # Only the NVIDIA RTX SDKs licence is recorded as accepted; Streamline's MIT licence is only
+        # received, and the record says so instead of overstating the acceptance.
+        accepted = {lic["file"]: lic["accepted"] for lic in record["licences"]}
+        self.assertEqual(accepted, {"nvngx_dlss.license.txt": True, "license.txt": False})
+        mit = next(lic for lic in record["licences"] if lic["file"] == "license.txt")
+        self.assertIn("MIT", mit["note"])
         self.assertFalse(any(p.name.startswith(".staging_") for p in self.target.iterdir()))
 
     def test_the_acceptance_names_who_when_and_how(self) -> None:
@@ -115,6 +121,9 @@ class FetchTests(unittest.TestCase):
             self.assertIn(self.m["commit"], lic["text"])  # never a moving branch
             self.assertIn(self.m["commit"], lic["page"])
             self.assertNotIn("/main/", lic["text"])
+        # The acceptance the developer gives is the NVIDIA RTX SDKs licence's; Streamline's is MIT.
+        self.assertEqual({lic["file"]: fetch.requires_acceptance(lic) for lic in self.m["licences"]},
+                         {"nvngx_dlss.license.txt": True, "license.txt": False})
 
     def test_licence_texts_are_shown_only_when_they_match_the_lock(self) -> None:
         lic = self.m["licences"][0]

@@ -168,10 +168,21 @@ def write_lock(m: dict, asset_url: str, asset_sha: str, asset_size: int, files: 
     return LOCK_PATH
 
 
+def requires_acceptance(lic: dict) -> bool:
+    return lic.get("acceptance") == "required"
+
+
 def accepted_licences(m: dict, files: dict[str, dict]) -> list[dict]:
-    """The licences accepted, as the files of the installed release that hold them."""
-    return [{"name": lic["name"], "file": lic["file"], "sha256": files.get(lic["file"], {}).get("sha256", ""),
-             "text": lic["text"]} for lic in m["licences"]]
+    """The licence files of the installed release: those that need acceptance marked accepted,
+    the others (Streamline's MIT licence) with the manifest's note instead."""
+    out = []
+    for lic in m["licences"]:
+        entry = {"name": lic["name"], "file": lic["file"], "sha256": files.get(lic["file"], {}).get("sha256", ""),
+                 "text": lic["text"], "accepted": requires_acceptance(lic)}
+        if not requires_acceptance(lic):
+            entry["note"] = lic.get("acceptance", "")
+        out.append(entry)
+    return out
 
 
 def record_acceptance(target: Path, m: dict, sha: str, files: dict[str, dict], acceptance: dict) -> Path:
@@ -206,7 +217,7 @@ def acceptance_from(argv: list[str]) -> dict:
     datetime.date.fromisoformat(on)  # ValueError when it is not YYYY-MM-DD
     how = (value_of(argv, "--how") or "").strip() or (
         "ran tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences after reading the licence files of the "
-        "pinned release (--show-licences)")
+        "pinned release (--show-licences), accepting the NVIDIA RTX SDKs licence")
     return {"accepted_by": who, "accepted_on": on, "how": how}
 
 
@@ -232,9 +243,10 @@ def print_plan(m: dict, offline: bool) -> int:
 
 
 def print_licence_list(m: dict) -> None:
-    print("Licences you must read and accept first (python tools/fetch_nvidia_sdk.py --show-licences):")
+    print("Licences you must read first (python tools/fetch_nvidia_sdk.py --show-licences):")
     for lic in m["licences"]:
-        print(f"  {lic['name']}: {lic['file']} of {m['asset']} ({lic['page']})")
+        need = "to accept" if requires_acceptance(lic) else "no acceptance needed (MIT)"
+        print(f"  {lic['name']}: {lic['file']} of {m['asset']}, {need} ({lic['page']})")
 
 
 def pinned_licence_text(m: dict, lic: dict, lock: dict | None) -> str:

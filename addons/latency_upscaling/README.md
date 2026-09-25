@@ -40,9 +40,10 @@ func _ready() -> void:
 ## DLSS
 
 DLSS needs a GeForce RTX GPU (20 series or newer) and NVIDIA's runtime (Streamline 2.14.1 and the
-DLSS library), which is not part of this addon. Enable the plugin: with DLSS on and the runtime missing it shows the licence files of the
-pinned NVIDIA release (checked against `nvidia_runtime.lock.json`), the download size and folder,
-and downloads only after you accept them; it records who accepted, when and how in
+DLSS library), which is not part of this addon. Enable the plugin: with DLSS on and the runtime
+missing it shows the licence files of the pinned NVIDIA release (checked against
+`nvidia_runtime.lock.json`), the download size and folder, and downloads only after you accept the
+NVIDIA RTX SDKs licence (Streamline's own is MIT); it records who accepted, when and how in
 `bin/nvidia/licence_acceptance.json`. From the command line:
 `python tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences --accepted-by "Your Name"`.
 Windows exports carry the runtime in `nvidia/` beside the game while the plugin is enabled (an
