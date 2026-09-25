@@ -1,7 +1,8 @@
-# Latency & Upscaling for Godot 4.7 (Phase 1: NVIDIA Reflex)
+# Latency & Upscaling for Godot 4.7 (NVIDIA Reflex, DLSS Super Resolution / DLAA)
 
-Adds NVIDIA Reflex to Godot 4.7 Vulkan projects on Windows, with no project setup. DLSS Super
-Resolution / DLAA and Frame Generation are planned. Version 0.1.0.
+Adds NVIDIA Reflex and DLSS Super Resolution / DLAA to Godot 4.7 Vulkan projects on Windows, with no
+project setup. Frame Generation is planned. Version 0.1.0 released (Reflex); DLSS is Phase 2,
+unreleased.
 
 ## Install
 
@@ -35,6 +36,19 @@ func _ready() -> void:
 	print(lu.get_reflex_status()) # "active" or "unavailable: ..."
 	print(lu.get_latency_stats()) # measured latency, last 64 frames
 ```
+
+## DLSS
+
+DLSS needs a GeForce RTX GPU (20 series or newer) and NVIDIA's runtime (Streamline 2.14.1 and the
+DLSS library), which is not part of this addon. Enable the plugin: with DLSS on and the runtime missing it shows the licence files of the
+pinned NVIDIA release (checked against `nvidia_runtime.lock.json`), the download size and folder,
+and downloads only after you accept them; it records who accepted, when and how in
+`bin/nvidia/licence_acceptance.json`. From the command line:
+`python tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences --accepted-by "Your Name"`.
+Windows exports carry the runtime in `nvidia/` beside the game while the plugin is enabled (an
+export without it warns). The addon resets DLSS's history on camera cuts by itself; call
+`reset_dlss_history()` on cuts it cannot see (a short teleport). NVIDIA's licence has conditions for
+games that ship DLSS (notification, attribution): see `THIRD_PARTY_NOTICES.md`.
 
 ## Platforms
 

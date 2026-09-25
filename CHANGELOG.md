@@ -39,10 +39,39 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
   runs of the native recording and of the Streamline path, the runtime fetch (synthetic archives,
   the real archive against the lock), exports, mutations for the new code.
 
+- History resets on camera cuts: a switch to another camera, or a turn / move past
+  `dlss/cut_angle_degrees` (60) / `dlss/cut_distance` (10 m) in one frame, resets DLSS (and the
+  reference upscaler) on exactly that frame; `reset_dlss_history()` for cuts the detection cannot
+  see; `upscaling.history_resets` counts resets by reason.
+- Motion vectors for the sky and background: far-plane pixels get the camera's motion with Godot's
+  own formula (what its FSR2 reconstructs), so DLSS no longer smears geometry edges into them.
+- `latency_upscaling/dlss/project_id`: the project ID NVIDIA's runtime gets, by default derived
+  from the project's name (it was one fixed ID for every project).
+- The export warns when the editor plugin is disabled and the NVIDIA runtime therefore does not
+  ship; the NVIDIA runtime dialog lets the developer pick the download folder (default next to
+  the runtime, no longer the system drive) and shows the size first.
+- Tools: `medium_launcher` (validation-layer runs where UAC is off), `rtx_remote.py deploy
+  --validation-layer` / `session --validation`.
+
 ### Changed
 
 - The DLSS feature is registered in every game run with the hook (not in the editor); without the
   runtime or a suitable GPU it changes nothing and reports why.
+- The licences shown for acceptance are the licence files of the pinned release (pinned to its
+  commit and checked against the lock), not texts from GitHub's main branches;
+  `licence_acceptance.json` records who accepted, when and how, and the licence files with their
+  SHA-256. `fetch_nvidia_sdk.py --download` requires `--accepted-by`.
+- The current camera is tracked before the frame renders, so a camera made current during
+  processing is upscaled from its first frame (it showed one stale frame).
+- `sl_probe` ends right after printing its result (Streamline's teardown blocked over SSH).
+
+### Fixed
+
+- After a declined marker recording, Godot's compute state is bound again before the marker
+  dispatch runs.
+- DLSS's output (`color_upscaled`) is created with copy-to usage: DLSS clears it with
+  `vkCmdClearColorImage` (validation error on the RTX 5080).
+- A clean clone passes `run_all.py`: NVIDIA's real archive is an allowed skip.
 
 ## [0.1.0] - 2026-09-24
 

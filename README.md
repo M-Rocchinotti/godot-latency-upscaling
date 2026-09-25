@@ -23,7 +23,7 @@ front of Godot at start-up.
 | Reflex Flash Indicator marker on left clicks | done | the driver decides whether to draw it |
 | Small latency overlay | done | optional, off by default |
 | Clean fallback with a readable reason | done | wrong Godot version, other GPUs, other renderers, missing driver support |
-| DLSS Super Resolution / DLAA | done (Phase 2) | modes DLAA, Quality, Balanced, Performance, Ultra Performance, Auto; presets J/K/L/M; NVIDIA runtime fetched by the developer |
+| DLSS Super Resolution / DLAA | done (Phase 2) | modes DLAA, Quality, Balanced, Performance, Ultra Performance, Auto; presets J/K/L/M; history reset on camera cuts (automatic, and `reset_dlss_history()`); motion vectors for the sky; NVIDIA runtime fetched by the developer |
 | DLSS Frame Generation / Multi Frame Generation | planned (Phase 3) | |
 | DLSS Ray Reconstruction | not planned | Godot 4.7 has no ray-traced signals to denoise |
 | D3D12 renderer, Compatibility renderer | not supported | the addon stays idle and says why |
@@ -69,19 +69,29 @@ NVIDIA (the DLSS library under the NVIDIA RTX SDKs licence, which does not allow
 stand-alone), so they are **not** in this addon or its release zip. Fetch them once per project:
 
 - **In the editor:** enable the plugin (step 3). With DLSS on and the runtime missing, a dialog
-  shows NVIDIA's licences; **Download** stays disabled until you tick that you have read and accept
-  them. It downloads `streamline-sdk-v2.14.1.zip` from NVIDIA's GitHub release, checks it against
-  the release's SHA-256 and the hashes pinned in `addons/latency_upscaling/nvidia_runtime.lock.json`,
-  installs the needed files into `addons/latency_upscaling/bin/nvidia/` (keep that folder out of
-  version control; this repository's `.gitignore` does) and records your acceptance there. The
-  dialog is also under Project > Tools > "Latency & Upscaling: Get the NVIDIA DLSS Runtime".
-- **From the command line:** `python tools/fetch_nvidia_sdk.py --show-licences`, then
-  `python tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences`.
+  shows NVIDIA's licences: the licence files of exactly the pinned release (`nvngx_dlss.license.txt`,
+  the NVIDIA RTX SDKs licence, and Streamline's `license.txt`), each checked against the SHA-256 the
+  lock records for that file in NVIDIA's archive, so what you accept is what ships with the DLLs.
+  It shows the download size (276 MB; 70 MB installed) and the folder the archive goes to
+  (by default next to the runtime's folder, changeable with Browse; it is deleted after the
+  install). **Download** stays disabled until the texts are verified and you tick that you have
+  read and accept them. It downloads `streamline-sdk-v2.14.1.zip` from NVIDIA's GitHub release,
+  checks it against the release's SHA-256 and the hashes pinned in
+  `addons/latency_upscaling/nvidia_runtime.lock.json`, installs the needed files into
+  `addons/latency_upscaling/bin/nvidia/` (keep that folder out of version control; this
+  repository's `.gitignore` does) and records there who accepted, when and how
+  (`licence_acceptance.json`). The dialog is also under Project > Tools > "Latency & Upscaling: Get
+  the NVIDIA DLSS Runtime".
+- **From the command line:** `python tools/fetch_nvidia_sdk.py --show-licences` (the same verified
+  texts), then `python tools/fetch_nvidia_sdk.py --download --accept-nvidia-licences --accepted-by
+  "Your Name"`. `--accepted-on YYYY-MM-DD` and `--how "..."` record an acceptance given earlier or
+  elsewhere; the tool never records itself as the one accepting.
 
 Restart the editor and your game afterwards. Windows exports then carry the four DLLs DLSS Super
-Resolution needs and NVIDIA's licence files in `nvidia/` beside the game executable (the export
-plugin needs the editor plugin enabled). Before you ship, read the NVIDIA section at the end of this
-file: NVIDIA's licence has conditions for games (notification, attribution).
+Resolution needs and NVIDIA's licence files in `nvidia/` beside the game executable. That needs the
+editor plugin enabled; an export made with it disabled warns that it goes without the runtime.
+Before you ship, read the NVIDIA section at the end of this file: NVIDIA's licence has conditions
+for games (notification, attribution).
 
 ### Building
 
@@ -151,6 +161,9 @@ Settings are resolved in this order (later wins):
 | `dlss/enabled` | `true` | DLSS where available; the runtime is only loaded when this is on at startup |
 | `dlss/quality` | `0` (Auto) | 0 Auto (by output size: below 1920x1080 off, up to 1440p Quality, up to 4K Performance, above Ultra Performance), 1 DLAA, 2 Quality, 3 Balanced, 4 Performance, 5 Ultra Performance |
 | `dlss/preset` | `0` (Default) | 0 Default (NVIDIA's choice per mode), 1 J, 2 K, 3 L, 4 M |
+| `dlss/cut_angle_degrees` | `60` | a camera turn larger than this in one frame is a cut: the upscaler's history is reset (0: never) |
+| `dlss/cut_distance` | `10` | a camera move larger than this (world units) in one frame is a cut (0: never) |
+| `dlss/project_id` | empty | the project ID NVIDIA's runtime gets, GUID-like (`a0f57b54-1daf-4934-90ae-c4035c19df04`); empty: derived from `application/config/name`, so give projects that share a name their own (restart needed) |
 
 Other environment variables: `GODOT_LATENCY_UPSCALING_VERBOSE=1` prints informational lines (also
 enabled by `--verbose`). Debug builds read three test knobs used by the fallback tests:
@@ -233,6 +246,13 @@ func dlss_status() -> String: # "active (Quality, 1280x720 -> 1920x1080)", "off:
 	if not Engine.has_singleton(SINGLETON):
 		return "not available on this platform"
 	return Engine.get_singleton(SINGLETON).get_dlss_status()
+
+
+# Call on camera cuts the automatic detection cannot see (a short teleport, a level change behind a
+# fade): the upscaler starts over instead of blending the old view into the new one.
+func on_camera_cut() -> void:
+	if Engine.has_singleton(SINGLETON):
+		Engine.get_singleton(SINGLETON).reset_dlss_history()
 ```
 
 **Windows-only projects** may use the global name and the typed constants directly. Such a script
@@ -267,6 +287,7 @@ func _ready() -> void:
 | `is_dlss_supported() -> bool` | DLSS runs on this GPU with the installed runtime |
 | `is_dlss_active() -> bool` | DLSS is upscaling the main viewport now |
 | `get_dlss_status() -> String` | "active (mode, render -> output)", "off: ..." or "unavailable: ..." with the reason |
+| `reset_dlss_history()` | throw the upscaler's history away on the next frame (a camera cut the detection cannot see) |
 | `get_status() -> Dictionary` | everything the addon knows: hook, Vulkan device, Reflex, upscaling and DLSS, settings and their sources |
 | `get_version() -> String` | addon version |
 
@@ -281,7 +302,9 @@ before input sampling after every presented frame, sends the latency markers, st
 cleanly everywhere else. With the NVIDIA runtime installed and an RTX GPU it also upscales the main
 viewport with DLSS: it puts the viewport in Godot's FSR2 mode at the size DLSS asks for, takes the
 upscaling step over and has DLSS evaluate inside Godot's own frame, and gives the viewport back
-when DLSS is switched off. **What it cannot do by itself:** switch Reflex or DLSS in a game's own
+when DLSS is switched off. It resets DLSS's history on camera cuts (a switch to another camera, a
+turn past `dlss/cut_angle_degrees` or a jump past `dlss/cut_distance` in one frame) and gives the
+sky and background the camera's motion, which Godot only computes for its own FSR2. **What it cannot do by itself:** switch Reflex or DLSS in a game's own
 settings menu (call `reflex_mode`, `dlss_quality`), fetch NVIDIA's runtime without your acceptance
 of NVIDIA's licences, upscale sub-viewports or XR (multiview), and activate inside an editor it was
 added to while running (restart).
@@ -310,6 +333,8 @@ DLSS itself needs an RTX GPU; its tests run on one (below, or locally on an RTX 
 ```
 python tools/rtx_remote.py session dlss_tests --window-ok -- --script res://tests/dlss_tests.gd
 python tools/rtx_remote.py session dlss_bench --window-ok -- --script res://tests/dlss_bench.gd -- --size=1920x1080
+python tools/rtx_remote.py deploy --validation-layer      # once: copies the Khronos layer there
+python tools/rtx_remote.py session validation_dlss --window-ok --validation --env GODOT_LATENCY_UPSCALING_SETTINGS=dlss/quality=2 -- --verbose --script res://tests/upscaler_run.gd -- --frames=240
 ```
 
 Tests that need an RTX GPU run on a remote Windows PC through `tools/rtx_remote.py` (SSH with a
@@ -323,11 +348,16 @@ the focus, and are logged in `docs/RTX_WINDOWED_RUNS.md`. `python tools/rtx_remo
 checks the whole chain without a window; `build/tools/vk_probe.exe` (`build.cmd vk_probe`) reports
 what a GPU's Vulkan driver offers for Reflex, DLSS and Frame Generation, and
 `build/tools/sl_probe.exe` (`build.cmd sl_probe`) what Streamline says about DLSS on it (support,
-requirements, optimal render sizes), both without a window.
+requirements, optimal render sizes), both without a window. `session --validation` runs Godot with
+the validation layer on that PC without touching its settings: UAC is off there, so every process
+is elevated and the Vulkan loader would ignore `VK_ADD_LAYER_PATH`; `build/tools/medium_launcher.exe`
+(`build.cmd medium_launcher`) starts Godot with a copy of its token lowered to medium integrity.
 
 `run_all.py` reports skipped checks as SKIP, never as PASS, and fails on any skip that is not
-explicitly allowed (only two are, each with its reason: Godot 4.7.2's own D3D12 crash here, and its
-crash with a second native window under the separate render thread).
+explicitly allowed (only three are, each with its reason: Godot 4.7.2's own D3D12 crash here, its
+crash with a second native window under the separate render thread, and NVIDIA's real archive,
+which the tests never download: with a copy in `build/cache/nvidia/` it is installed against the
+lock too).
 
 Engine path: `GODOT_BIN` or one line in `tools/.godot_path` (use the `_console.exe`). Vulkan SDK for
 the validation suite: `VULKAN_SDK` or `tools/.vulkan_sdk_path`. In an elevated shell the Vulkan
@@ -420,7 +450,20 @@ in dB against a 2x supersampled render of the same view, higher is closer; 64 fr
 The last two rows are the convention checks: with the jitter and motion vectors exactly as the
 addon hands them over DLSS scores best; any deliberate change scores lower. All five modes render at
 the size DLSS asks for, all presets evaluate, Auto is off below 1080p, and every upscaled frame is
-evaluated by DLSS (19 of 19 checks). PSNR is not a perceptual measure; the captures are written next to the log for a look.
+evaluated by DLSS. PSNR is not a perceptual measure; the captures are written next to the log for a look.
+
+**Camera cuts and the sky** (same scene; "bad" pixels: pixels of the plain background, away from
+any edge, that differ from a supersampled still of the same view by more than 20 of 255):
+
+| Check | DLSS Quality | DLAA | FSR2 at the DLSS Quality size | Control |
+|---|---|---|---|---|
+| 150 degree cut, first and second frame of the new view | 0 / 0 of 372 850 | 0 / 0 | | 1 507 (no reset, no sky motion: the state before the fix) |
+| History reset on the first frame of the new view | yes | yes | | |
+| Turn at 1.2 degrees per frame over thin bars against a plain background | 0 of 304 777 | 0 | 0 | 12 (DLSS without the sky's motion) |
+
+26 of 26 checks in `tests/dlss_tests.gd`, 2026-09-25; the same run under the validation layer adds
+no message from the addon (see `docs/ARCHITECTURE.md` 7.5 for the messages NVIDIA's runtime itself
+causes when a DLSS mode changes).
 
 **GPU time** (`tests/dlss_bench.gd`, the demo scene at 1920x1080, median over 200 frames of the main
 viewport's GPU time, which includes the upscaler; the load shader runs at the render resolution):
@@ -446,10 +489,10 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 | Path | Contents |
 |---|---|
 | `addons/latency_upscaling/` | the addon: `.gdextension`, `bin/` (the built debug and release DLLs; `bin/nvidia/` the fetched NVIDIA runtime, git-ignored), editor plugin, NVIDIA runtime dialog, export plugin, `nvidia_runtime.json` / `.lock.json`, latency overlay, licences |
-| `src/` | C++ sources: `hook/` (loader hook), `vk/` (dispatch layer, marker interception), `reflex/`, `upscale/` (quality modes, native recording), `dlss/` (DLSS feature, Streamline, recorder), `godot/` (singleton, bootstrap, FSR2-slot upscaler), `core/` |
+| `src/` | C++ sources: `hook/` (loader hook), `vk/` (dispatch layer, marker interception), `reflex/`, `upscale/` (quality modes, camera cuts, native recording), `dlss/` (DLSS feature, Streamline, recorder, project ID), `godot/` (singleton, bootstrap, FSR2-slot upscaler, sky motion), `core/` |
 | `demo/` | demo scene (the repository root is the Godot project hosting demo and tests) |
 | `tests/` | GDScript integration tests (Reflex, upscaler, DLSS, NVIDIA runtime), Python runners (`run_all.py`, `run_mutations.py`, `run_package.py`, `run_portable.py`, `run_export.py`, `run_benchmark.py`, `test_fetch_nvidia_sdk.py`), `unit/` C++ unit tests |
-| `tools/` | `build.py`, `godot.py` (engine runner), `package.py` (release zip), `fetch_nvidia_sdk.py` (the NVIDIA runtime), `rtx_remote.py` (tests on a remote RTX PC), `vk_probe/`, `sl_probe/` (window-less probes) |
+| `tools/` | `build.py`, `godot.py` (engine runner), `package.py` (release zip), `fetch_nvidia_sdk.py` (the NVIDIA runtime), `rtx_remote.py` (tests on a remote RTX PC), `vk_probe/`, `sl_probe/` (window-less probes), `medium_launcher/` (validation runs where UAC is off) |
 | `stub/` | experimental cross-platform no-op library, **not shipped** (see `stub/README.md`) |
 | `thirdparty/` | `godot-cpp` 10.0.0 and `Vulkan-Headers` v1.4.357 (git submodules), `streamline/` (Streamline 2.14.1 public headers, MIT) |
 | `docs/ARCHITECTURE.md` | how it works, marker placement, safety net, DLSS (section 7) |
@@ -469,10 +512,12 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 | `get_dlss_status()`: "unavailable: the NVIDIA DLSS runtime is not installed" | Fetch it (see [DLSS: the NVIDIA runtime](#dlss-the-nvidia-runtime)), then restart the game. In an export: `nvidia/` must sit beside the executable (export with the editor plugin enabled) |
 | "unavailable: ... does not expose VK_NVX_binary_import ..." / "does not support this GPU" | Not an RTX GPU (DLSS needs GeForce RTX 20 series or newer) or an old driver: update the NVIDIA driver |
 | "unavailable: ... older than 512.15" | Update the NVIDIA driver |
-| "unavailable: sl.interposer.dll ... does not carry NVIDIA's signature" | The runtime files were modified or are not NVIDIA's: fetch them again |
+| "unavailable: sl.interposer.dll ... does not carry NVIDIA's signature" (or in `get_status()["upscaling"]["dlss"]["runtime_reason"]`) | The runtime files were modified or are not NVIDIA's: fetch them again |
 | "unavailable: disabled ... at startup" | `dlss/enabled` was off when the game started; the runtime is only loaded when DLSS is on at startup |
 | "off: Auto: output below 1920x1080" | NVIDIA recommends DLSS off below 1080p; pick a mode explicitly (`dlss_quality`) to use it anyway |
-| Smearing at the sky or background while the camera turns | Godot writes no motion vectors for the sky and the clear colour, so DLSS treats them as not moving with the camera (a known limit, `docs/ARCHITECTURE.md` 7.5) |
+| Streaks of the previous view for a frame after a teleport or a scene change | The automatic detection only sees camera switches and turns / moves past `dlss/cut_angle_degrees` / `dlss/cut_distance` in one frame: call `reset_dlss_history()` on that frame, or lower the thresholds |
+| The log shows `Hook sl.common:Vulkan:CmdBindPipeline` (also `CmdBindDescriptorSets`, `BeginCommandBuffer`) `is NOT supported, plugin will not function properly` | Expected with Streamline 2.14.1 on Vulkan, harmless: `sl.common` asks for these command-state hooks, Streamline's Vulkan plugin manager does not provide them, and the addon does not use that tracking (it re-binds Godot's state itself). See `docs/ARCHITECTURE.md` 7.3 |
+| The export log says "the Latency & Upscaling editor plugin is disabled, so this Windows export does not carry the NVIDIA DLSS runtime" | Enable the plugin (Project Settings > Plugins) and export again; its export plugin puts the runtime into `nvidia/` |
 | Anything else | `print(JSON.stringify(Engine.get_singleton("LatencyUpscaling").get_status(), "  "))` (or the Tools menu entry) shows every decision the addon made. `GODOT_LATENCY_UPSCALING_DISABLE=1` turns it off without removing it |
 | Anti-cheat software complains | The addon patches `godot.exe`'s import table in memory (see `docs/ARCHITECTURE.md`). Test with your anti-cheat before shipping |
 

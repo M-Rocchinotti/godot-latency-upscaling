@@ -80,7 +80,7 @@ SOFTWARE.
 timeline semaphore with a timeout, a lock around the swapchain handle, the report conversion)
 follows Streamline's `source/platforms/sl.chi/vknvll2.cpp` (v2.14.1). No Streamline source is
 included. Streamline: Copyright (c) NVIDIA CORPORATION, MIT licence
-(https://github.com/NVIDIA-RTX/Streamline/blob/main/license.txt).
+(https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt, v2.14.1).
 
 ## Not included: NVIDIA binaries
 
@@ -98,9 +98,13 @@ are taken is listed in `addons/latency_upscaling/nvidia_runtime.json`; the SHA-2
 of every file is pinned in `addons/latency_upscaling/nvidia_runtime.lock.json`, and anything that
 does not match is not installed. NVIDIA's own licence files (`nvngx_dlss.license.txt`,
 `license.txt`, `3rd-party-licenses.md`) are installed next to the DLLs and must travel with them.
+The licence texts shown for acceptance are those files of the pinned release (checked against the
+lock's SHA-256), and `licence_acceptance.json` next to the DLLs records who accepted them, when and
+how.
 
-The DLSS runtime DLLs are licensed under the **NVIDIA RTX SDKs licence**
-(https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt). Summary of the clauses that matter for a
+The DLSS runtime DLLs are licensed under the **NVIDIA RTX SDKs licence** (`nvngx_dlss.license.txt`
+of the release; the same text at
+https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt). Summary of the clauses that matter for a
 game using this addon (a reading, not legal advice):
 
 - The DLLs may only be distributed as part of an application with material additional
@@ -111,7 +115,8 @@ game using this addon (a reading, not legal advice):
   about box, credits) and submit each proposed use of the marks to NVIDIA for approval.
 - Only release (not development / watermarked) DLLs may ship, with NVIDIA's signatures intact.
 
-Streamline itself (`sl.*.dll`) is MIT-licensed (https://github.com/NVIDIA-RTX/Streamline/blob/main/license.txt).
+Streamline itself (`sl.*.dll`) is MIT-licensed (`license.txt` of the release,
+https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt).
 
 ## Trademarks
 
