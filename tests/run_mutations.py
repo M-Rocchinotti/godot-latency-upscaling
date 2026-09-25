@@ -12,8 +12,10 @@ Builds run with one compile job to keep the machine responsive. Unit-level mutat
 seconds; engine-level ones rebuild the DLL and run a Godot suite (about a minute each).
 
 Outcomes: CAUGHT (suite failed), SURVIVED (suite passed: a test gap), INVALID (the mutant did not
-compile), STALE (the original text is no longer in the file: update the mutation).
-Exit code 0 only if every mutation was caught.
+compile), STALE (the original text is no longer in the file: update the mutation), NEEDS RUNTIME
+(only a check that needs NVIDIA's runtime can catch it, and the runtime is not fetched here, as in
+a clean clone: not run, and not counted as caught or as a survivor).
+Exit code 0 only if every mutation that ran was caught.
 """
 from __future__ import annotations
 
@@ -247,6 +249,15 @@ MUTATIONS = [
 ]
 
 
+# Mutations only a check with NVIDIA's runtime installed (addons/latency_upscaling/bin/nvidia/) can
+# catch: the Streamline pass-through validation run and the export test's runtime checks.
+NEEDS_RUNTIME = {
+    "export: no warning when the plugin is off",
+    "loader override: the host keeps the real loader",
+}
+RUNTIME = ROOT / "addons" / "latency_upscaling" / "bin" / "nvidia" / "sl.interposer.dll"
+
+
 # Mutations deliberately not run: no test can observe them; the reason is documented and they are
 # listed so the report stays honest (docs/ARCHITECTURE.md, "Test coverage of the layer").
 REVIEW_ONLY = [
@@ -312,6 +323,11 @@ def main(argv: list[str]) -> int:
     outcomes = []
     try:
         for name, rel, old, new, suite in selected:
+            if name in NEEDS_RUNTIME and not RUNTIME.exists():
+                outcome = "NEEDS RUNTIME"
+                print(f"{outcome:<9} {name}  [{suite}]  (not run: NVIDIA's runtime is not fetched here)", flush=True)
+                outcomes.append(outcome)
+                continue
             outcome = run(name, rel, old, new, suite)
             outcomes.append(outcome)
             print(f"{outcome:<9} {name}  [{suite}]", flush=True)
@@ -320,8 +336,11 @@ def main(argv: list[str]) -> int:
         restored = build("tests") and build("debug")
         print("binaries rebuilt from clean sources" if restored else "WARNING: rebuilding clean binaries failed")
     caught = outcomes.count("CAUGHT")
-    print(f"\nmutations: {caught} caught, {len(outcomes) - caught} not caught")
-    return 0 if caught == len(outcomes) and restored else 1
+    need_runtime = outcomes.count("NEEDS RUNTIME")
+    ran = len(outcomes) - need_runtime
+    print(f"\nmutations: {caught} caught, {ran - caught} not caught"
+          + (f", {need_runtime} need the NVIDIA runtime (not run)" if need_runtime else ""))
+    return 0 if caught == ran and restored else 1
 
 
 if __name__ == "__main__":

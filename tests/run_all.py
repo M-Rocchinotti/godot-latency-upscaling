@@ -94,6 +94,9 @@ def result(name: str, ok: bool, detail: str = "", problems: list[str] | None = N
 ALLOWED_SKIPS = {
     "fallback: D3D12 driver": "Godot 4.7.2's own D3D12 driver crashes on the reference GTX 1080, with or "
                               "without the addon; the refusal path is covered by code review and the status tests",
+    "validation: Streamline pass-through": "needs the NVIDIA runtime in addons/latency_upscaling/bin/nvidia/, which a "
+                                           "clean clone does not have (it is fetched only by a developer who accepted "
+                                           "NVIDIA's licences); every other validation run happens regardless",
     "nvidia runtime: real archive": "NVIDIA's release archive (276 MB) is never downloaded by the tests and is not "
                                     "in a clean clone; the synthetic-archive checks run regardless. With a copy in "
                                     "build/cache/nvidia/ (fetched by a developer who accepted NVIDIA's licences) the "
@@ -456,9 +459,12 @@ def suite_validation() -> bool:
     up_code, up_ids, up_out = runs["reference upscaler"]
     native_code, native_ids, native_out = runs["native upscaler"]
     sl_code, sl_ids, sl_out = runs.get("streamline pass-through", (0, Counter(), ""))
-    sl_ran = not STREAMLINE_RUNTIME.exists() or (
-        '"loader_override_active":true' in sl_out and re.search(r'"substituted":(\d+)', sl_out) is not None
-        and int(re.search(r'"substituted":(\d+)', sl_out).group(1)) > 100)
+    if STREAMLINE_RUNTIME.exists():
+        sl_ran = ('"loader_override_active":true' in sl_out and re.search(r'"substituted":(\d+)', sl_out) is not None
+                  and int(re.search(r'"substituted":(\d+)', sl_out).group(1)) > 100)
+    else:
+        sl_ran = True  # not run: reported as SKIP below, never as part of a PASS
+        skip("validation: Streamline pass-through", f"the NVIDIA runtime is not fetched ({STREAMLINE_RUNTIME.parent} lacks it)")
     tests_ok = re.search(r"reflex tests: \d+ passed, 0 failed", hook_out) is not None
     layer_seen = "VK_LAYER_KHRONOS_validation" in hook_out
     upscaled = re.search(r'"frames_upscaled":(\d+)', up_out)

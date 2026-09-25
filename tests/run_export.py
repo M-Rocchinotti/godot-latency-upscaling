@@ -121,6 +121,11 @@ def main() -> int:
     backup_preset = PRESET.read_text(encoding="utf-8") if PRESET.exists() else None
     PRESET.write_bytes(PRESET_TEXT.encode("utf-8"))
     passed = failed = 0
+    skipped: list[str] = []
+
+    def skip(name: str, reason: str) -> None:
+        skipped.append(name)
+        print(f"SKIP  {name}  ({reason})", flush=True)
 
     def check(name: str, ok: bool, detail: str) -> None:
         nonlocal passed, failed
@@ -166,7 +171,10 @@ def main() -> int:
                   code == 0 and WARNING_PLUGIN_OFF in out_d and not (EXPORT_DIR / manifest["export_folder"]).exists(),
                   f"exit {code}, warned {WARNING_PLUGIN_OFF in out_d}, nvidia/ exported {(EXPORT_DIR / manifest['export_folder']).exists()}")
         else:
-            print("SKIP  A defaults: NVIDIA runtime export (the runtime is not fetched here)")
+            reason = "the NVIDIA runtime is not fetched here (a clean clone never has it)"
+            skip("A defaults: the NVIDIA runtime ships in nvidia/ beside the game", reason)
+            skip("A defaults: no warning about a disabled editor plugin", reason)
+            skip("D plugin off: the export warns that it does not carry the NVIDIA runtime", reason)
 
         # B: enabled=false with the editor plugin removed from project.godot, re-export
         original = set_project("\n[latency_upscaling]\n\ngeneral/enabled=false\n", disable_plugin=True)
@@ -202,7 +210,8 @@ def main() -> int:
         subprocess.run([sys.executable, str(RUNNER), "--timeout", "180", "--log", "export_reimport", "--headless", "--import"],
                        cwd=ROOT, capture_output=True, text=True)
 
-    print(f"\nexport test: {passed} passed, {failed} failed")
+    print(f"\nexport test: {passed} passed, {failed} failed, {len(skipped)} skipped"
+          + (" (they need the NVIDIA runtime)" if skipped else ""))
     return 0 if failed == 0 else 1
 
 
