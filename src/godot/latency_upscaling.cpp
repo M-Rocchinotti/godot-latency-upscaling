@@ -181,22 +181,40 @@ void LatencyUpscaling::_bind_methods() {
 
 void LatencyUpscaling::connect_frame_signals() {
 	// Engine singletons are only reachable by name once Godot has registered them, which happens
-	// after the SCENE initialisation level: hence this runs from the startup callback. Reflex and the
-	// upscaler (the current camera, before the frame renders) both need frame_pre_draw.
-	const bool wanted = boot_state().reflex_enabled || Upscaler::get().backend() != UpscaleBackend::None;
-	if (signals_connected_ || !wanted || !Engine::get_singleton()->has_singleton("RenderingServer")) {
+	// after the SCENE initialisation level: hence this runs from the startup callback. Reflex (its
+	// markers) and the upscaler (the current camera, before the frame renders) each connect their
+	// own frame_pre_draw handler, so neither depends on the other being on.
+	if (!Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
-	RenderingServer::get_singleton()->connect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
-	signals_connected_ = true;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (!signals_connected_ && boot_state().reflex_enabled) {
+		rs->connect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
+		signals_connected_ = true;
+	}
+	if (!upscaler_signal_connected_ && Upscaler::get().backend() != UpscaleBackend::None) {
+		rs->connect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_upscaler_pre_draw));
+		upscaler_signal_connected_ = true;
+	}
 }
 
 void LatencyUpscaling::disconnect_frame_signals() {
-	if (!signals_connected_ || !Engine::get_singleton()->has_singleton("RenderingServer")) {
+	if (!Engine::get_singleton()->has_singleton("RenderingServer")) {
 		return;
 	}
-	RenderingServer::get_singleton()->disconnect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
-	signals_connected_ = false;
+	RenderingServer *rs = RenderingServer::get_singleton();
+	if (signals_connected_) {
+		rs->disconnect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_frame_pre_draw));
+		signals_connected_ = false;
+	}
+	if (upscaler_signal_connected_) {
+		rs->disconnect("frame_pre_draw", callable_mp(this, &LatencyUpscaling::on_upscaler_pre_draw));
+		upscaler_signal_connected_ = false;
+	}
+}
+
+void LatencyUpscaling::on_upscaler_pre_draw() {
+	Upscaler::get().pre_draw();
 }
 
 // The NVIDIA runtime ships with Windows exports through the editor plugin's export plugin, so an
@@ -263,7 +281,6 @@ void LatencyUpscaling::on_frame() {
 }
 
 void LatencyUpscaling::on_frame_pre_draw() {
-	Upscaler::get().pre_draw();
 	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
 	if (!device) {
 		return;

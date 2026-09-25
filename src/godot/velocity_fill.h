@@ -46,7 +46,6 @@ private:
 
 	godot::RID shader_, pipeline_, sampler_, uniform_set_;
 	bool failed_ = false;
-	uint64_t set_key_[3] = {}; // depth, velocity, filled RIDs the uniform set was built for
 };
 
 } // namespace lu

@@ -96,7 +96,8 @@ protected:
 
 private:
 	void connect_frame_signals();
-	void on_frame_pre_draw();
+	void on_frame_pre_draw(); // Reflex
+	void on_upscaler_pre_draw(); // the upscaler's camera tracking
 	void on_render_frame_begin(int64_t frame_id);
 	void on_render_frame_end(int64_t frame_id);
 	void apply_sleep_mode();
@@ -112,7 +113,8 @@ private:
 	bool left_button_was_down_ = false;
 	int64_t drawn_frame_id_ = 0; // main thread: frame whose draw this iteration queued
 	uint64_t overlay_id_ = 0; // ObjectID of the overlay node
-	bool signals_connected_ = false;
+	bool signals_connected_ = false; // Reflex's frame_pre_draw handler
+	bool upscaler_signal_connected_ = false;
 	bool export_check_registered_ = false; // nvidia_runtime_export_check.gd, owned by the editor's exporter
 };
 

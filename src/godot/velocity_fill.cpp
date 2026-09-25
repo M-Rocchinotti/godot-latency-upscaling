@@ -108,15 +108,10 @@ RID VelocityFill::run(RenderSceneBuffersRD *rb, const Projection &reprojection, 
 	RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
 	const RID depth = rb->get_depth_texture();
 	const Vector2i size = rb->get_internal_size();
-	// Our own texture in the render buffers: freed and forgotten with them when Godot reconfigures.
+	// Our own texture in the render buffers. Every re-configuration (resize, quality change, the
+	// takeover) frees all named textures (RenderSceneBuffersRD::configure -> cleanup(),
+	// render_scene_buffers_rd.cpp:127-137 in 4.7.2), so it is created again at the new size here.
 	RID filled = rb->has_texture(fill_context(), fill_name()) ? rb->get_texture(fill_context(), fill_name()) : RID();
-	if (filled.is_valid()) {
-		const Ref<RDTextureFormat> format = rd->texture_get_format(filled);
-		if (format.is_null() || static_cast<int>(format->get_width()) != size.x || static_cast<int>(format->get_height()) != size.y) {
-			rb->clear_context(fill_context());
-			filled = RID();
-		}
-	}
 	if (!filled.is_valid()) {
 		// RGBA16F: a storage format every Vulkan GPU supports without extended-format features.
 		filled = rb->create_texture(fill_context(), fill_name(), RenderingDevice::DATA_FORMAT_R16G16B16A16_SFLOAT,
@@ -127,9 +122,9 @@ RID VelocityFill::run(RenderSceneBuffersRD *rb, const Projection &reprojection, 
 		error = "the velocity fill texture could not be created";
 		return velocity;
 	}
-	const uint64_t key[3] = { static_cast<uint64_t>(depth.get_id()), static_cast<uint64_t>(velocity.get_id()),
-		static_cast<uint64_t>(filled.get_id()) };
-	if (std::memcmp(key, set_key_, sizeof(key)) != 0 || !uniform_set_.is_valid() || !rd->uniform_set_is_valid(uniform_set_)) {
+	// Freeing any of its textures (the re-configuration above) frees the uniform set with it
+	// (RenderingDevice frees dependent uniform sets), so a valid set still names today's textures.
+	if (!uniform_set_.is_valid() || !rd->uniform_set_is_valid(uniform_set_)) {
 		if (uniform_set_.is_valid() && rd->uniform_set_is_valid(uniform_set_)) {
 			rd->free_rid(uniform_set_);
 		}
@@ -150,7 +145,6 @@ RID VelocityFill::run(RenderSceneBuffersRD *rb, const Projection &reprojection, 
 		out->add_id(filled);
 		uniforms.push_back(out);
 		uniform_set_ = rd->uniform_set_create(uniforms, shader_, 0);
-		std::memcpy(set_key_, key, sizeof(key));
 	}
 	FillParams params = {};
 	for (int c = 0; c < 4; ++c) {
@@ -188,7 +182,6 @@ void VelocityFill::release() {
 			*rid = RID();
 		}
 	}
-	std::memset(set_key_, 0, sizeof(set_key_));
 }
 
 } // namespace lu
