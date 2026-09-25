@@ -41,8 +41,14 @@ UPSCALER = "src/godot/upscaler.cpp"
 REF_GLSL = "src/godot/reference_upscaler_glsl.h"
 INTERCEPTOR = "src/vk/marker_interceptor.cpp"
 NATIVE = "src/upscale/native_reference.cpp"
+CUT = "src/upscale/camera_cut.cpp"
+PROJECT_ID = "src/dlss/project_id.cpp"
+FILL = "src/godot/velocity_fill.cpp"
+RUNTIME_GD = "addons/latency_upscaling/nvidia_runtime.gd"
+FETCH = "tools/fetch_nvidia_sdk.py"
 
-# (name, file, original text, mutated text, suite: "unit" or a tests/run_all.py --only word)
+# (name, file, original text, mutated text, suite: "unit", "export" (tests/run_export.py) or a
+# tests/run_all.py --only word)
 MUTATIONS = [
     # --- pure modules, caught by the C++ unit tests ---
     ("patch: timeline struct not prepended", PATCH,
@@ -143,12 +149,16 @@ MUTATIONS = [
      "\t\tconfig->set_scaling_3d_mode(RenderingServer::VIEWPORT_SCALING_3D_MODE_FSR2);", "upscaler"),
     # --- Phase 2: command-buffer interception (marker dispatch replaced by the native recording) ---
     ("interceptor: marker dispatch also runs (fake driver)", INTERCEPTOR,
-     "\trestore(command_buffer, state);\n}", "\trestore(command_buffer, state);\n\tnext_.dispatch(command_buffer, x, y, z);\n}", "unit"),
+     "\tsubstituted_.fetch_add(1, std::memory_order_relaxed);\n}",
+     "\tsubstituted_.fetch_add(1, std::memory_order_relaxed);\n\tnext_.dispatch(command_buffer, x, y, z);\n}", "unit"),
     ("interceptor: marker dispatch also runs (image test)", INTERCEPTOR,
-     "\trestore(command_buffer, state);\n}", "\trestore(command_buffer, state);\n\tnext_.dispatch(command_buffer, x, y, z);\n}",
-     "upscaler"),
+     "\tsubstituted_.fetch_add(1, std::memory_order_relaxed);\n}",
+     "\tsubstituted_.fetch_add(1, std::memory_order_relaxed);\n\tnext_.dispatch(command_buffer, x, y, z);\n}", "upscaler"),
     ("interceptor: host state not re-bound", INTERCEPTOR,
-     "\trestore(command_buffer, state);\n}", "\t(void)state;\n}", "unit"),
+     "\trestore(command_buffer, state);\n\tif (!recorded) {", "\t(void)state;\n\tif (!recorded) {", "unit"),
+    ("interceptor: state not re-bound before a declined dispatch (review r4)", INTERCEPTOR,
+     "\trestore(command_buffer, state);\n\tif (!recorded) {",
+     "\tif (recorded) {\n\t\trestore(command_buffer, state);\n\t}\n\tif (!recorded) {", "unit"),
     ("interceptor: dynamic offsets dropped on re-bind", INTERCEPTOR,
      "\t\t\t\tstatic_cast<uint32_t>(bind.dynamic_offsets.size()),", "\t\t\t\t0u,", "unit"),
     ("interceptor: marker still tracked after another compute pipeline", INTERCEPTOR,
@@ -182,6 +192,55 @@ MUTATIONS = [
      "\t\t\t\tpriorities.assign(info.queueCount, 0.5f);", "unit"),
     ("streamline chain: private data not requested", "src/dlss/streamline.cpp",
      "\trequest.features.private_data = true;\n\treturn true;", "\treturn true;", "unit"),
+    # --- Phase 2 gate, review r4: camera cuts, sky motion, licence record, minors ---
+    ("cut: a turn is never a cut", CUT,
+     "\tif (thresholds.max_angle_degrees > 0.0 && rotation_angle_degrees(previous, current) > thresholds.max_angle_degrees) {",
+     "\tif (false) {", "unit"),
+    ("cut: a camera switch is not a cut", CUT,
+     "\tif (camera_switched) {\n\t\treturn CutReason::CameraSwitch;", "\tif (false) {\n\t\treturn CutReason::CameraSwitch;", "unit"),
+    ("cut: the distance threshold is inclusive", CUT,
+     "> thresholds.max_distance) {", ">= thresholds.max_distance) {", "unit"),
+    ("cut: a mirrored basis counts as a rotation", CUT,
+     "|| mirrored_a != mirrored_b) {", ") {", "unit"),
+    ("settings: a cut angle over 180 accepted", SETTINGS,
+     "value < 0.0 || value > 180.0) {", "value < 0.0) {", "unit"),
+    ("project id: the RFC 9562 variant not set", PROJECT_ID,
+     "\tb[8] = static_cast<uint8_t>((b[8] & 0x3F) | 0x80); // variant 10xx (RFC 9562)\n", "", "unit"),
+    ("project id: trailing characters accepted", PROJECT_ID,
+     "\treturn pos == id.size();", "\treturn true;", "unit"),
+    ("cuts: a camera switch keeps the history", UPSCALER,
+     "snap.camera_serial != view.camera_serial, snap.cut_thresholds);", "false, snap.cut_thresholds);", "upscaler"),
+    ("cuts: the new camera is only tracked after its first frame", UPSCALER,
+     "\tif (Window *root = tree != nullptr ? tree->get_root() : nullptr) {\n\t\ttrack_camera(root);\n\t}",
+     "\t(void)tree;", "upscaler"),
+    ("cuts: reset_dlss_history() ignored", "src/godot/upscaler.h",
+     "\tvoid reset_history() { request_reset(ResetReason::Api, -1); }", "\tvoid reset_history() {}", "upscaler"),
+    ("fill: the sky keeps Godot's zero motion", FILL,
+     "\tif (depth == 0.0 || params.mode == 1u) {", "\tif (params.mode == 1u) {", "upscaler"),
+    ("fill: the previous camera is not used", UPSCALER,
+     "\tconst bool use_previous = view.have_previous_camera && !view.reset;", "\tconst bool use_previous = false;", "upscaler"),
+    ("fill: the jitter stays in the projection", UPSCALER,
+     "\tframe.projection = without_jitter(scene->get_cam_projection(), ndc_x, ndc_y);",
+     "\tframe.projection = scene->get_cam_projection();", "upscaler"),
+    ("fill: previous -> current instead of current -> previous", FILL,
+     "previous.xy / previous.w * 0.5 + 0.5 - uv", "uv - (previous.xy / previous.w * 0.5 + 0.5)", "upscaler"),
+    ("signature: an unsigned interposer is loaded", "src/dlss/streamline.cpp",
+     "\tif (!verify_nvidia_signature(interposer)) {", "\tif (false) {", "fallback"),
+    ("project id: one fixed ID for every project", BOOT,
+     "\t\tg_state.dlss_project_id = dlss::project_id_from_digest(digest.ptr());",
+     "\t\tg_state.dlss_project_id = \"0a1c5b38-6e3f-4d7a-9c21-4b8e5f2d7a90\";", "fallback"),
+    ("licence: a text that is not the pinned file is shown", RUNTIME_GD,
+     "\tif actual != expected:\n\t\treturn \"the text is not", "\tif false:\n\t\treturn \"the text is not", "nvidia runtime"),
+    ("licence: an acceptance without who is recorded", RUNTIME_GD,
+     "\tif str(acceptance.get(\"accepted_by\", \"\")).strip_edges() == \"\" or", "\tif false and", "nvidia runtime"),
+    ("licence: the fetch tool records itself as accepting", FETCH,
+     "        \"accepted_by\": acceptance[\"accepted_by\"],", "        \"accepted_by\": \"command line (--accept-nvidia-licences)\",",
+     "nvidia runtime"),
+    ("licence: --show-licences prints a text that is not the pinned file", FETCH,
+     "        if actual != expected:\n            raise ValueError(f\"the text at", "        if False:\n            raise ValueError(f\"the text at",
+     "nvidia runtime"),
+    ("export: no warning when the plugin is off", "addons/latency_upscaling/nvidia_runtime_export_check.gd",
+     "\tif reason != \"\":\n\t\tpush_warning(", "\tif false:\n\t\tpush_warning(", "export"),
     ("loader override: the host keeps the real loader", DISPATCH,
      "\t\t\t\tcomplete = from_override = fill_next(L.loader_override, next, commands, commands_complete);",
      "\t\t\t\tcomplete = from_override = false;", "validation"),
@@ -204,6 +263,9 @@ def build(target: str) -> bool:
 def suite_fails(suite: str) -> bool:
     if suite == "unit":
         proc = subprocess.run([str(ROOT / "build" / "unit_tests" / "unit_tests.exe")], capture_output=True, text=True)
+    elif suite == "export":
+        proc = subprocess.run([sys.executable, str(ROOT / "tests" / "run_export.py")], cwd=ROOT,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
     else:
         proc = subprocess.run([sys.executable, str(ROOT / "tests" / "run_all.py"), "--only", suite], cwd=ROOT,
                               capture_output=True, text=True, encoding="utf-8", errors="replace")
