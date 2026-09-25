@@ -104,7 +104,6 @@ private:
 	void run_upscaler_takeovers(); // render thread
 	void release_upscaler(); // render thread
 	void register_export_check(); // editor: warn when an export goes without the NVIDIA runtime
-	void unregister_export_check();
 
 	static LatencyUpscaling *singleton_;
 	ReflexMode mode_ = REFLEX_MODE_ON;
@@ -114,8 +113,7 @@ private:
 	int64_t drawn_frame_id_ = 0; // main thread: frame whose draw this iteration queued
 	uint64_t overlay_id_ = 0; // ObjectID of the overlay node
 	bool signals_connected_ = false;
-	godot::Object *export_host_ = nullptr; // an EditorPlugin outside the tree, only to reach add_export_plugin
-	godot::Variant export_check_; // nvidia_runtime_export_check.gd instance
+	bool export_check_registered_ = false; // nvidia_runtime_export_check.gd, owned by the editor's exporter
 };
 
 } // namespace lu

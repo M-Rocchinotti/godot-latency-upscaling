@@ -202,10 +202,12 @@ void LatencyUpscaling::disconnect_frame_signals() {
 // The NVIDIA runtime ships with Windows exports through the editor plugin's export plugin, so an
 // export made while the plugin is disabled goes without it. This check runs in every editor session
 // (the extension is loaded whether or not the plugin is enabled) and warns at export time. It needs
-// no editor bindings: EditorPlugin::add_export_plugin only forwards to the editor's exporter, so an
-// EditorPlugin instance outside the scene tree is enough to reach it.
+// no editor bindings: EditorPlugin::add_export_plugin only forwards to the editor's exporter, so a
+// short-lived EditorPlugin instance outside the scene tree is enough to reach it. The exporter then
+// owns the check and releases it with the editor; it is never removed at the extension's shutdown
+// (doing so crashed the editor at exit in about one run in six: tests/run_package.py).
 void LatencyUpscaling::register_export_check() {
-	if (export_host_ != nullptr || !Engine::get_singleton()->is_editor_hint()) {
+	if (export_check_registered_ || !Engine::get_singleton()->is_editor_hint()) {
 		return;
 	}
 	const Ref<Resource> script = ResourceLoader::get_singleton()->load(EXPORT_CHECK_SCRIPT);
@@ -215,19 +217,9 @@ void LatencyUpscaling::register_export_check() {
 		log::warning("could not register the export check (%s)", script.is_null() ? "script missing" : "no EditorPlugin");
 		return;
 	}
-	export_check_ = script->call("new");
-	host_object->call("add_export_plugin", export_check_);
-	export_host_ = host_object;
-}
-
-void LatencyUpscaling::unregister_export_check() {
-	if (export_host_ == nullptr) {
-		return;
-	}
-	export_host_->call("remove_export_plugin", export_check_);
-	export_host_->call("free");
-	export_host_ = nullptr;
-	export_check_ = Variant();
+	host_object->call("add_export_plugin", script->call("new"));
+	host_object->call("free");
+	export_check_registered_ = true;
 }
 
 void LatencyUpscaling::on_startup() {
@@ -359,7 +351,6 @@ void LatencyUpscaling::release_upscaler() {
 }
 
 void LatencyUpscaling::on_shutdown() {
-	unregister_export_check();
 	Upscaler::get().shutdown();
 	if (Engine::get_singleton()->has_singleton("RenderingServer")) {
 		RenderingServer *rs = RenderingServer::get_singleton();
