@@ -24,9 +24,13 @@ Configuration: tools/.rtx_remote.json (git-ignored), e.g.
 Commands:
     status                       read-only: GPU, driver, load, logged-on sessions, free space, our
                                  folder, our processes and tasks
-    deploy [--godot]             copy the project (demo, tests, addon with its DLLs and, when fetched,
+    deploy [--godot] [--validation-layer]
+                                 copy the project (demo, tests, addon with its DLLs and, when fetched,
                                  the NVIDIA runtime in bin/nvidia/) and the tools (vk_probe.exe,
-                                 unit_tests.exe, sl_probe.exe if built); --godot also copies Godot
+                                 unit_tests.exe, sl_probe.exe and medium_launcher.exe if built);
+                                 --godot also copies Godot; --validation-layer copies the Khronos
+                                 validation layer (DLL + manifest, portable files) from the local
+                                 Vulkan SDK into tools/vklayer/
     probe                        run vk_probe.exe, sl_probe.exe (Streamline's DLSS verdict and
                                  requirements, if deployed) and the unit tests over SSH (no window)
     run NAME [--env K=V]... -- ARGS...
@@ -37,7 +41,11 @@ Commands:
                                  one-shot scheduled task (needed for a real swapchain). Hidden
                                  launcher, no console. --headless required unless --window-ok; with
                                  --window-ok: preflight first, a normal window without focus, at
-                                 most WINDOW_MAX_SECONDS, logged in docs/RTX_WINDOWED_RUNS.md
+                                 most WINDOW_MAX_SECONDS, logged in docs/RTX_WINDOWED_RUNS.md.
+                                 --medium-integrity starts Godot through medium_launcher.exe at
+                                 medium integrity: UAC is off on that PC, so every process is
+                                 elevated and the Vulkan loader would ignore VK_ADD_LAYER_PATH;
+                                 --validation adds that for tools/vklayer/ (and --gpu-validation)
     preflight                    read-only: is the PC idle enough for a short window? (GPU load,
                                  foreground window of the user's session, known game launchers)
     collect NAME                 fetch runs\\NAME\\ (log, exit code, PNG captures) to build/rtx/NAME/
@@ -152,7 +160,19 @@ $root = {q(r.root)}
     return 0
 
 
-def stage_project() -> list[Path]:
+def vulkan_sdk_bin() -> Path:
+    """The local Vulkan SDK's Bin folder (VULKAN_SDK or tools/.vulkan_sdk_path, as tests/run_all.py)."""
+    configured = os.environ.get("VULKAN_SDK") or ""
+    path_file = ROOT / "tools" / ".vulkan_sdk_path"
+    if not configured and path_file.exists():
+        configured = path_file.read_text(encoding="utf-8").strip()
+    sdk_bin = Path(configured) / "Bin"
+    if not configured or not (sdk_bin / "VkLayer_khronos_validation.json").exists():
+        sys.exit("rtx_remote: no Vulkan SDK with the validation layer: set VULKAN_SDK or tools/.vulkan_sdk_path")
+    return sdk_bin
+
+
+def stage_project(validation_layer: bool = False) -> list[Path]:
     """Build the tarballs to copy: the project (always) and the tools."""
     if STAGE.exists():
         shutil.rmtree(STAGE)
@@ -171,9 +191,16 @@ def stage_project() -> list[Path]:
         if not exe.exists():
             sys.exit(f"rtx_remote: {exe.relative_to(ROOT)} missing: build it (tools/build.py vk_probe tests)")
         shutil.copy2(exe, tools / exe.name)
-    sl_probe = ROOT / "build" / "tools" / "sl_probe.exe"
-    if sl_probe.exists():
-        shutil.copy2(sl_probe, tools / sl_probe.name)
+    for optional in ("sl_probe.exe", "medium_launcher.exe"):
+        exe = ROOT / "build" / "tools" / optional
+        if exe.exists():
+            shutil.copy2(exe, tools / exe.name)
+    if validation_layer:
+        sdk_bin = vulkan_sdk_bin()
+        layer = tools / "vklayer"
+        layer.mkdir()
+        for name in ("VkLayer_khronos_validation.dll", "VkLayer_khronos_validation.json"):
+            shutil.copy2(sdk_bin / name, layer / name)
     out = STAGE / "project_and_tools.tar.gz"
     with tarfile.open(out, "w:gz") as tar:
         tar.add(project, arcname="project")
@@ -190,8 +217,8 @@ def stage_godot() -> Path:
     return out
 
 
-def cmd_deploy(r: Remote, with_godot: bool) -> int:
-    archives = stage_project()
+def cmd_deploy(r: Remote, with_godot: bool, validation_layer: bool = False) -> int:
+    archives = stage_project(validation_layer)
     _, out = r.ps(f"$r = {q(r.root)}; if (Test-Path (Join-Path $r 'godot\\{GODOT_EXES[0]}')) {{ 'yes' }} else {{ 'no' }}")
     if with_godot or out.strip() != "yes":
         archives.append(stage_godot())
@@ -397,9 +424,17 @@ $p.ExitCode | Out-File (Join-Path $d 'exit.txt'); 'exit ' + $p.ExitCode
     return cmd_collect(r, name) if code == 0 else code
 
 
-def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout: int, env: dict[str, str] | None = None) -> int:
+def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout: int, env: dict[str, str] | None = None,
+                medium: bool = False, validation: bool = False) -> int:
     godot_args_ok(args, window_ok)
-    env = env or {}
+    env = dict(env or {})
+    if validation:
+        # The layer copied by `deploy --validation-layer`; the loader only honours the path in a
+        # process below high integrity, hence the launcher.
+        medium = True
+        env["VK_ADD_LAYER_PATH"] = f"{r.root}\\tools\\vklayer"
+        if "--gpu-validation" not in args:
+            args = ["--gpu-validation"] + args
     env_ok(env)
     windowed = "--headless" not in args
     preflight = ""
@@ -414,7 +449,8 @@ def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout:
     # VBScript string: double quotes doubled. The launcher waits for Godot. Window style: hidden for
     # headless runs; 4 (SW_SHOWNOACTIVATE) for windowed ones: a normal window that does not take the
     # keyboard focus from whatever the user is doing.
-    cmdline = " ".join('""' + a + '""' for a in [exe, "--path", f"{r.root}\\project", "--log-file", f"{d}\\godot.log"] + args)
+    launcher = [f"{r.root}\\tools\\medium_launcher.exe"] if medium else []
+    cmdline = " ".join('""' + a + '""' for a in launcher + [exe, "--path", f"{r.root}\\project", "--log-file", f"{d}\\godot.log"] + args)
     vbs = (f'Set sh = CreateObject("WScript.Shell")\r\n'
            f'sh.Environment("Process")("LU_RUN_DIR") = "{d}"\r\n'
            + "".join(f'sh.Environment("Process")("{k}") = "{v}"\r\n' for k, v in env.items()) +
@@ -450,7 +486,8 @@ $result
         lines = out.strip().splitlines()
         start = next((line.split() for line in lines if line.startswith("START ")), ["START", "?", "?", "?"])
         result = next((line for line in lines if line.startswith(("exit ", "TIMEOUT"))), "no result")
-        log_windowed_run(name, [f"{k}={v}" for k, v in env.items()] + args, " ".join(start[1:3]), start[3],
+        log_windowed_run(name, [f"{k}={v}" for k, v in env.items()] + (["(medium integrity)"] if medium else []) + args,
+                         " ".join(start[1:3]), start[3],
                          "stopped at the time limit" if result == "TIMEOUT" else result, preflight)
     return cmd_collect(r, name) if "exit" in out else 124
 
@@ -535,13 +572,15 @@ def main(argv: list[str]) -> int:
     if command == "status":
         return cmd_status(r)
     if command == "deploy":
-        return cmd_deploy(r, "--godot" in rest)
+        return cmd_deploy(r, "--godot" in rest, "--validation-layer" in rest)
     if command == "probe":
         return cmd_probe(r)
     if command == "preflight":
         return 0 if cmd_preflight(r)[0] else 4
-    if command in ("run", "session") and rest:
-        return (cmd_run if command == "run" else cmd_session)(r, rest[0], godot_args, window_ok, timeout, env)
+    if command == "session" and rest:
+        return cmd_session(r, rest[0], godot_args, window_ok, timeout, env, "--medium-integrity" in rest, "--validation" in rest)
+    if command == "run" and rest:
+        return cmd_run(r, rest[0], godot_args, window_ok, timeout, env)
     if command == "collect" and rest:
         return cmd_collect(r, rest[0])
     if command == "cleanup":

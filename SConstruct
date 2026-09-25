@@ -122,3 +122,12 @@ sl_env.Append(CXXFLAGS=["/EHsc"])
 sl_env.VariantDir("build/obj/sl_probe", "tools/sl_probe", duplicate=False)
 sl_probe = sl_env.Program("build/tools/sl_probe.exe", ["build/obj/sl_probe/sl_probe.cpp"])
 Alias("sl_probe", sl_probe)
+
+# medium_launcher: starts a command at medium integrity from an elevated process, so the Vulkan
+# loader honours VK_ADD_LAYER_PATH (validation runs on the RTX test PC, where UAC is off).
+launcher_env = env.Clone()
+launcher_env["LIBS"] = ["kernel32", "advapi32"]
+launcher_env.Append(LINKFLAGS=["/SUBSYSTEM:WINDOWS"])
+launcher_env.VariantDir("build/obj/medium_launcher", "tools/medium_launcher", duplicate=False)
+medium_launcher = launcher_env.Program("build/tools/medium_launcher.exe", ["build/obj/medium_launcher/medium_launcher.cpp"])
+Alias("medium_launcher", medium_launcher)

@@ -7,6 +7,7 @@
     build.cmd tests                # only the C++ unit tests (build/unit_tests/unit_tests.exe)
     build.cmd vk_probe             # the window-less Vulkan probe (build/tools/vk_probe.exe)
     build.cmd sl_probe             # the window-less Streamline/DLSS probe (build/tools/sl_probe.exe)
+    build.cmd medium_launcher      # runs a command at medium integrity (build/tools/medium_launcher.exe)
     build.cmd -j 3                 # parallel compile jobs (default 2: the reference machine has 4 cores)
     build.cmd --clean              # remove the SCons outputs for the selected targets
 
@@ -37,7 +38,7 @@ INNER_FLAG = "--inside-devshell"
 # interactive work on the machine.
 LOW_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
 TARGETS = {"debug": ["target=template_debug"], "release": ["target=template_release"], "tests": ["unit_tests"],
-           "vk_probe": ["vk_probe"], "sl_probe": ["sl_probe"]}
+           "vk_probe": ["vk_probe"], "sl_probe": ["sl_probe"], "medium_launcher": ["medium_launcher"]}
 
 
 def venv_python() -> Path:
