@@ -19,20 +19,29 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
 
 namespace lu::dlss {
 
+// The Streamline features slInit loads, as sl::Feature values (sl::Feature is uint32_t): DLSS
+// Super Resolution always; with `fg_permitted` (Phase 3) also DLSS Frame Generation and the Reflex
+// and PC-latency plugins it requires. Pure, so the gating is unit-tested. When fg is off the list
+// is exactly {kFeatureDLSS}, so slInit is byte-identical to before Phase 3.
+std::vector<uint32_t> streamline_features_to_load(bool fg_permitted);
+
 class Streamline : public UpscalerProvider {
 public:
 	static Streamline &get();
 
 	// CORE initialisation: verifies sl.interposer.dll's NVIDIA signature, loads it and initialises
-	// Streamline for Vulkan with DLSS only (no over-the-air updates: only the pinned files run).
-	// `project_id`: the project's GUID-like ID for NGX (dlss/project_id.h).
-	bool load(const std::wstring &runtime_dir, const std::string &project_id, std::string &reason);
+	// Streamline for Vulkan (no over-the-air updates: only the pinned files run). `project_id`: the
+	// project's GUID-like ID for NGX (dlss/project_id.h). `fg_permitted` (Phase 3, guarded off by
+	// default) also loads the Frame Generation plugins so their functions can be resolved once the
+	// device exists; nothing drives rendering with them yet and the Reflex backend is not switched.
+	bool load(const std::wstring &runtime_dir, const std::string &project_id, bool fg_permitted, std::string &reason);
 	// Undoes load() while no Vulkan call went through Streamline yet (no GPU supports DLSS).
 	void unload();
 	bool loaded() const;
@@ -54,14 +63,25 @@ public:
 	// The last warnings / errors Streamline reported (for the status).
 	std::vector<std::string> log_tail() const;
 
+	// Phase 3: whether the Frame Generation plugins were loaded and their functions resolved. It is
+	// never used to drive rendering in this milestone (the Reflex backend is not switched); a later
+	// milestone gates the actual Frame Generation on it.
+	bool frame_generation_ready() const;
+
 private:
 	struct Api;
 	Api &api() const;
+	// Phase 3: resolve the Frame Generation plugins' functions into the Api once the device exists
+	// (slGetFeatureFunction requires it). Graceful: on any failure it logs, leaves Frame Generation
+	// not ready, and returns without touching DLSS or the non-FG path. Caller holds mutex_.
+	void resolve_frame_generation_functions();
 
 	mutable std::mutex mutex_;
 	HMODULE module_ = nullptr;
 	bool initialized_ = false; // slInit succeeded
 	bool device_ready_ = false; // the DLSS functions are resolved for the device
+	bool fg_permitted_ = false; // Phase 3: Frame Generation plugins were requested at slInit
+	bool fg_runtime_ready_ = false; // Phase 3: their functions were resolved (not yet driving anything)
 	std::string version_;
 	uint64_t frame_ = 0;
 };

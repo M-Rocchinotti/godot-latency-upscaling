@@ -208,6 +208,21 @@ class FetchTests(unittest.TestCase):
         listed = re.findall(r'L"([^"]+\.dll)"', source)
         self.assertEqual(sorted(listed), sorted(self.m["super_resolution_files"]))
 
+    def test_the_export_list_carries_the_frame_generation_dlls(self) -> None:
+        fg = ["sl.dlss_g.dll", "sl.reflex.dll", "sl.pcl.dll", "nvngx_dlssg.dll"]
+        # Listed as the Frame Generation set, shipped with Windows exports, and among the fetched files.
+        self.assertEqual(sorted(self.m.get("fg_files", [])), sorted(fg))
+        fetched = {Path(f).name for f in self.m["files"]}
+        for name in fg:
+            self.assertIn(name, self.m["export_files"], f"{name} not in export_files")
+            self.assertIn(name, fetched, f"{name} not fetched")
+        # The export set is a subset of the fetched files (nothing shipped that is not fetched).
+        self.assertTrue(set(self.m["export_files"]) <= fetched)
+        # The Frame Generation model library falls under the NVIDIA RTX SDKs licence (like DLSS SR);
+        # the sl.* Frame Generation DLLs are MIT (Streamline), already covered by the sl.*.dll entry.
+        rtx = next(lic for lic in self.m["licences"] if lic["file"] == "nvngx_dlss.license.txt")
+        self.assertIn("nvngx_dlssg.dll", rtx["name"])
+
     def test_the_lock_is_written_and_then_enforced(self) -> None:
         archive = make_zip(self.tmp / "release.zip", release_members())
         code = self.run_main("--download", "--accept-nvidia-licences", "--accepted-by", "Test Person", "--write-lock", "--zip", str(archive),

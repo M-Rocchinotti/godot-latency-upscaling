@@ -23,11 +23,22 @@
 		"sl.dlss.dll",
 		"nvngx_dlss.dll"
 	],
+	"fg_files_comment": "The DLSS Frame Generation DLLs (Phase 3). They ship with exports (they are in export_files) but are only loaded at runtime when Frame Generation is enabled and the GPU supports it (a GeForce RTX 40 series or newer); otherwise they sit unused. nvngx_dlssg.dll is under the NVIDIA RTX SDKs licence (like nvngx_dlss.dll); the sl.* DLLs are MIT (Streamline).",
+	"fg_files": [
+		"sl.dlss_g.dll",
+		"sl.reflex.dll",
+		"sl.pcl.dll",
+		"nvngx_dlssg.dll"
+	],
 	"export_files": [
 		"sl.interposer.dll",
 		"sl.common.dll",
 		"sl.dlss.dll",
 		"nvngx_dlss.dll",
+		"sl.dlss_g.dll",
+		"sl.reflex.dll",
+		"sl.pcl.dll",
+		"nvngx_dlssg.dll",
 		"nvngx_dlss.license.txt",
 		"license.txt",
 		"3rd-party-licenses.md"
@@ -38,7 +49,7 @@
 	"licences_comment": "The licences to accept are the licence files of the pinned release: 'file' is the file in the archive (its SHA-256 is in nvidia_runtime.lock.json), 'text' the same file at the release's commit on GitHub. The editor dialog and tools/fetch_nvidia_sdk.py --show-licences show 'text' only after checking that its SHA-256 is the locked one, so the text accepted is the text that ships with the DLLs. 'acceptance' says whether the developer has to accept a licence (the NVIDIA RTX SDKs licence) or only receives it (Streamline's MIT licence); the acceptance record lists both, marking which were accepted.",
 	"licences": [
 		{
-			"name": "NVIDIA RTX SDKs licence (the DLSS runtime, nvngx_dlss.dll)",
+			"name": "NVIDIA RTX SDKs licence (the DLSS runtime: nvngx_dlss.dll and nvngx_dlssg.dll)",
 			"file": "nvngx_dlss.license.txt",
 			"page": "https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt",
 			"text": "https://raw.githubusercontent.com/NVIDIA-RTX/Streamline/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt",

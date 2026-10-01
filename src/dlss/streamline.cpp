@@ -6,11 +6,15 @@
 
 #include <sl.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
 #include <sl_helpers.h>
+#include <sl_pcl.h>
+#include <sl_reflex.h>
 
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <type_traits>
 
 namespace lu::dlss {
 
@@ -28,6 +32,16 @@ struct Streamline::Api {
 	// DLSS feature functions (resolved once the device exists).
 	PFun_slDLSSGetOptimalSettings *DLSSGetOptimalSettings = nullptr;
 	PFun_slDLSSSetOptions *DLSSSetOptions = nullptr;
+	// Frame Generation feature functions (Phase 3; resolved when FG is permitted and the device
+	// exists, but not yet used to drive rendering — a later milestone switches Reflex and evaluates).
+	PFun_slDLSSGSetOptions *DLSSGSetOptions = nullptr;
+	PFun_slDLSSGGetState *DLSSGGetState = nullptr;
+	PFun_slReflexSetOptions *ReflexSetOptions = nullptr;
+	PFun_slReflexSleep *ReflexSleep = nullptr;
+	PFun_slReflexGetState *ReflexGetState = nullptr;
+	PFun_slPCLSetMarker *PCLSetMarker = nullptr;
+	PFun_slPCLSetOptions *PCLSetOptions = nullptr;
+	PFun_slPCLGetState *PCLGetState = nullptr;
 };
 
 namespace {
@@ -145,6 +159,17 @@ void streamline_log(int type, const char *message) {
 	log::info("Streamline: %s", line.c_str());
 }
 
+std::vector<uint32_t> streamline_features_to_load(bool fg_permitted) {
+	std::vector<uint32_t> features = { sl::kFeatureDLSS };
+	if (fg_permitted) {
+		// DLSS Frame Generation plus the Reflex and PC-latency plugins Streamline requires for it.
+		features.push_back(sl::kFeatureDLSS_G);
+		features.push_back(sl::kFeatureReflex);
+		features.push_back(sl::kFeaturePCL);
+	}
+	return features;
+}
+
 Streamline &Streamline::get() {
 	static Streamline *instance = new Streamline(); // never destroyed: Vulkan calls may reach it during teardown
 	return *instance;
@@ -155,8 +180,9 @@ Streamline::Api &Streamline::api() const {
 	return api;
 }
 
-bool Streamline::load(const std::wstring &runtime_dir, const std::string &project_id, std::string &reason) {
+bool Streamline::load(const std::wstring &runtime_dir, const std::string &project_id, bool fg_permitted, std::string &reason) {
 	std::lock_guard<std::mutex> lock(mutex_);
+	fg_permitted_ = fg_permitted;
 	if (initialized_) {
 		return true;
 	}
@@ -193,7 +219,11 @@ bool Streamline::load(const std::wstring &runtime_dir, const std::string &projec
 		return false;
 	}
 
-	static const sl::Feature features[] = { sl::kFeatureDLSS };
+	// DLSS Super Resolution always; the Frame Generation plugins too when fg is permitted (Phase 3,
+	// off by default). Static storage: Streamline may keep the pointer past slInit. sl::Feature is
+	// uint32_t, so the pure helper's vector is the same type.
+	static std::vector<sl::Feature> features;
+	features = streamline_features_to_load(fg_permitted);
 	static std::wstring plugin_path;
 	plugin_path = dir;
 	static const wchar_t *paths[1];
@@ -209,8 +239,8 @@ bool Streamline::load(const std::wstring &runtime_dir, const std::string &projec
 	// present path run. No command-list state tracking (the layer re-binds Godot's state), frame-based
 	// tagging, and no over-the-air updates: only the pinned, verified files run.
 	pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
-	pref.featuresToLoad = features;
-	pref.numFeaturesToLoad = 1;
+	pref.featuresToLoad = features.data();
+	pref.numFeaturesToLoad = static_cast<uint32_t>(features.size());
 	pref.engine = sl::EngineType::eCustom;
 	pref.engineVersion = "Godot 4.7";
 	static std::string project;
@@ -238,6 +268,8 @@ void Streamline::unload() {
 	FreeLibrary(module_);
 	module_ = nullptr;
 	initialized_ = false;
+	device_ready_ = false;
+	fg_runtime_ready_ = false;
 	api() = Api();
 }
 
@@ -309,7 +341,40 @@ bool Streamline::initialize(const vk::DeviceContext &, std::string &reason) {
 		version_ = buffer;
 	}
 	device_ready_ = true;
+	// Phase 3: resolve the Frame Generation plugins' functions now that the device is set (required by
+	// slGetFeatureFunction). Guarded off: this never fails DLSS and nothing drives rendering with them.
+	if (fg_permitted_) {
+		resolve_frame_generation_functions();
+	}
 	return true;
+}
+
+void Streamline::resolve_frame_generation_functions() {
+	Api &a = api();
+	auto get = [&a](sl::Feature feature, const char *name, auto &slot) -> bool {
+		void *function = nullptr;
+		if (a.GetFeatureFunction(feature, name, function) != sl::Result::eOk || function == nullptr) {
+			return false;
+		}
+		slot = reinterpret_cast<std::remove_reference_t<decltype(slot)>>(function);
+		return true;
+	};
+	const bool ok = get(sl::kFeatureDLSS_G, "slDLSSGSetOptions", a.DLSSGSetOptions) &&
+			get(sl::kFeatureDLSS_G, "slDLSSGGetState", a.DLSSGGetState) &&
+			get(sl::kFeatureReflex, "slReflexSetOptions", a.ReflexSetOptions) &&
+			get(sl::kFeatureReflex, "slReflexSleep", a.ReflexSleep) &&
+			get(sl::kFeatureReflex, "slReflexGetState", a.ReflexGetState) &&
+			get(sl::kFeaturePCL, "slPCLSetMarker", a.PCLSetMarker) &&
+			get(sl::kFeaturePCL, "slPCLSetOptions", a.PCLSetOptions) &&
+			get(sl::kFeaturePCL, "slPCLGetState", a.PCLGetState);
+	fg_runtime_ready_ = ok;
+	if (ok) {
+		log::info("Streamline: Frame Generation plugins loaded and resolved (not yet driving rendering)");
+	} else {
+		// Expected on anything that is not an RTX 40 series+: DLSS Super Resolution is unaffected.
+		log::warning("Streamline: Frame Generation was permitted but its plugin functions could not be resolved; "
+					 "Frame Generation stays off (Reflex and DLSS are unaffected)");
+	}
 }
 
 void Streamline::shutdown() {
@@ -322,6 +387,12 @@ void Streamline::shutdown() {
 	api().Shutdown();
 	initialized_ = false;
 	device_ready_ = false;
+	fg_runtime_ready_ = false;
+}
+
+bool Streamline::frame_generation_ready() const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return fg_runtime_ready_;
 }
 
 bool Streamline::optimal_render_size(ImageSize target, upscale::Quality mode, ImageSize &render) const {

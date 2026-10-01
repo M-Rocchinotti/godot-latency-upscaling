@@ -1,9 +1,11 @@
 @tool
 extends EditorExportPlugin
-## Ships the NVIDIA runtime for DLSS with Windows exports: the Super Resolution DLLs and NVIDIA's
-## licence files go into nvidia/ beside the game executable, where the addon looks for them (the
-## folder of its own library). Nothing is added when the runtime is not installed; then the export
-## says so, because the game will run without DLSS.
+## Ships the NVIDIA runtime for DLSS with Windows exports: the Super Resolution DLLs, the Frame
+## Generation DLLs (Phase 3; they ride along but are only loaded at runtime when Frame Generation is
+## enabled on a supported GPU) and NVIDIA's licence files go into nvidia/ beside the game executable,
+## where the addon looks for them (the folder of its own library). The exact set is
+## nvidia_runtime.json "export_files". Nothing is added when the runtime is not installed; then the
+## export says so, because the game will run without DLSS.
 
 const Runtime := preload("res://addons/latency_upscaling/nvidia_runtime.gd")
 const DLSS_ENABLED_SETTING := "latency_upscaling/dlss/enabled"

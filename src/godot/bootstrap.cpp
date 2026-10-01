@@ -93,7 +93,7 @@ dlss::UpscalerProvider *load_streamline(const std::wstring &runtime_dir, bool fo
 				if (!why.empty() && !force) {
 					return false;
 				}
-				if (load_failed || (!streamline.loaded() && !streamline.load(runtime_dir, g_state.dlss_project_id, why))) {
+				if (load_failed || (!streamline.loaded() && !streamline.load(runtime_dir, g_state.dlss_project_id, g_state.fg_permitted, why))) {
 					load_failed = true;
 					return false;
 				}
@@ -276,6 +276,10 @@ void bootstrap_core() {
 		log::warning("%s", warning.c_str());
 	}
 	const Settings &settings = g_state.resolved.settings;
+	// Phase 3, Frame Generation: whether the settings permit it at startup (off by default, guarded).
+	// Resolved here so load_streamline can request the Frame Generation plugins; nothing of the
+	// runtime is loaded and the Reflex backend is not switched until a later milestone.
+	g_state.fg_permitted = settings.fg_enabled && settings.fg_mode != FrameGenerationMode::Off;
 
 	g_state.editor = engine->is_editor_hint();
 	const Dictionary version = engine->get_version_info();
@@ -401,12 +405,11 @@ void bootstrap_core() {
 		vk::register_feature(&upscale_feature);
 	}
 
-	// Phase 3, Frame Generation (milestone H2): real capability detection, still guarded off. The GPU
-	// the plugin sees is classified (vendor / architecture / driver) and fed to dlss::FgFeature, but
-	// no Streamline Frame Generation feature is loaded and the Reflex backend is not switched (H3/H5).
-	// So Frame Generation still reports "unavailable" on every non-Ada GPU and the Reflex / DLSS /
-	// pass-through behaviour is unchanged.
-	g_state.fg_permitted = settings.fg_enabled && settings.fg_mode != FrameGenerationMode::Off;
+	// Phase 3, Frame Generation (milestones H2/H3): real capability detection and, when permitted, the
+	// Frame Generation plugins are loaded into Streamline above (their functions resolved on an RTX 40
+	// series+). Still guarded off: the Reflex backend is not switched and nothing drives Frame
+	// Generation (a later milestone). So it still reports "unavailable" on every non-Ada GPU and the
+	// Reflex / DLSS / pass-through behaviour is unchanged.
 	const dlss::FgCaps fg_caps = resolve_fg_caps();
 	dlss::FgFeature::get().configure(fg_caps);
 	const dlss::FgStatus fg_status = dlss::FgFeature::get().status();

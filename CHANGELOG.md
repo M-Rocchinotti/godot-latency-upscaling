@@ -4,11 +4,29 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - Phase 3 (in progress)
 
-Phase 3: DLSS Frame Generation, **all guarded off**. No Streamline Frame Generation feature is
-loaded, the Reflex backend is not switched, and Frame Generation reports "unavailable" on every
-non-Ada GPU; the Reflex, DLSS and pass-through behaviour is byte-identical to 0.2.0.
-Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
-`docs/PHASE3_FG.md`.
+Phase 3: DLSS Frame Generation, **all guarded off**. The Reflex backend is not switched and nothing
+drives Frame Generation, so it reports "unavailable" on every non-Ada GPU and the Reflex, DLSS and
+pass-through behaviour is byte-identical to 0.2.0. Hardware-independent (builds and tests on the GTX
+1080 dev box). The version is not bumped yet. See `docs/PHASE3_FG.md`.
+
+### Milestone H3 — load the Streamline Frame Generation plugins, ship them with exports
+
+- `dlss::streamline_features_to_load(fg_permitted)` (pure, unit-tested): with Frame Generation off,
+  slInit loads exactly `kFeatureDLSS` (byte-identical to before Phase 3); with it permitted, also
+  `kFeatureDLSS_G`, `kFeatureReflex` and `kFeaturePCL`. `fg_permitted` is threaded from bootstrap
+  into `Streamline::load()`.
+- `Streamline` resolves the Frame Generation plugins' functions (slDLSSGSetOptions / slDLSSGGetState,
+  slReflex*, slPCL*) into its `Api` once the device exists (slGetFeatureFunction requires it), when
+  Frame Generation is permitted. They are never called to drive rendering and the Reflex backend is
+  not switched (a later milestone). If a plugin is missing or unsupported (e.g. forced on here on the
+  GTX 1080) it logs, leaves Frame Generation not ready, and never fails DLSS or the non-FG path.
+- Windows exports now carry the Frame Generation DLLs (`sl.dlss_g.dll`, `sl.reflex.dll`,
+  `sl.pcl.dll`, `nvngx_dlssg.dll`): added to `nvidia_runtime.json` `export_files` (and a labelled
+  `fg_files` set); they are already pinned in `nvidia_runtime.lock.json`. The licence manifest lists
+  `nvngx_dlssg.dll` under the NVIDIA RTX SDKs licence (the sl.* DLLs are MIT, Streamline). They ride
+  along but are only loaded at runtime when Frame Generation is enabled on a supported GPU.
+- Tests: the feature-list gating (C++ unit test: fg off → only DLSS; fg on → the three added) and the
+  export manifest (Python: `fg_files`/`export_files`/`files` carry the four FG DLLs, licence names).
 
 ### Milestone H2 — real capability detection
 

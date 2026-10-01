@@ -263,6 +263,26 @@ TEST(dlss_runtime_files_are_checked_by_existence_only) {
 
 #include "dlss/streamline.h"
 
+#include <sl.h>
+
+#include <algorithm>
+
+TEST(streamline_feature_list_adds_frame_generation_only_when_permitted) {
+	// Frame Generation off (the default): exactly DLSS Super Resolution, so slInit is byte-identical
+	// to before Phase 3 and the pass-through path is unchanged.
+	const std::vector<uint32_t> off = streamline_features_to_load(false);
+	CHECK_EQ(off.size(), static_cast<size_t>(1));
+	CHECK_EQ(off[0], static_cast<uint32_t>(sl::kFeatureDLSS));
+	// Frame Generation permitted: DLSS plus the three plugins Frame Generation needs.
+	const std::vector<uint32_t> on = streamline_features_to_load(true);
+	CHECK_EQ(on.size(), static_cast<size_t>(4));
+	CHECK_EQ(on[0], static_cast<uint32_t>(sl::kFeatureDLSS)); // still first
+	auto has = [&](uint32_t feature) { return std::find(on.begin(), on.end(), feature) != on.end(); };
+	CHECK(has(static_cast<uint32_t>(sl::kFeatureDLSS_G)));
+	CHECK(has(static_cast<uint32_t>(sl::kFeatureReflex)));
+	CHECK(has(static_cast<uint32_t>(sl::kFeaturePCL)));
+}
+
 TEST(streamline_in_the_chain_asks_for_private_data) {
 	StreamlineChainFeature &chain = StreamlineChainFeature::get();
 	vk::PhysicalDeviceCaps caps = rtx_caps();
