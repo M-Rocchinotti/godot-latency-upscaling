@@ -50,6 +50,12 @@ Commands:
                                  --validation adds that for tools/vklayer/ (and --gpu-validation)
     preflight                    read-only: is the PC idle enough for a short window? (GPU load,
                                  fullscreen app in front yes/no, known game running yes/no)
+    push LOCAL SUBDIR            copy a local folder -- an exported game -- into the test folder's
+                                 SUBDIR (replacing it), each file checked by SHA-256 after the copy;
+                                 portable files only, nothing is installed
+    session NAME --exe SUBDIR\\GAME.exe ...
+                                 the same session run, of that executable (an exported game) instead of
+                                 the editor binary: no --path; every rule above applies unchanged
     collect NAME                 fetch runs\\NAME\\ (log, exit code, PNG captures) to build/rtx/NAME/
     cleanup [--purge]            stop our processes, delete our tasks; --purge removes the folder
     selftest                     all of the above without a window (deploy, probe, SSH and session
@@ -61,12 +67,14 @@ never from the user's desktop.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -465,8 +473,16 @@ $p.ExitCode | Out-File (Join-Path $d 'exit.txt'); 'exit ' + $p.ExitCode
     return cmd_collect(r, name) if code == 0 else code
 
 
+def exe_in_root(r: Remote, exe_rel: str) -> str:
+    """The absolute path of an executable inside the test folder (`push`ed there), or exit."""
+    parts = exe_rel.replace("/", "\\").split("\\")
+    if not exe_rel.lower().endswith(".exe") or ":" in exe_rel or any(not part or part == ".." for part in parts):
+        sys.exit(f"rtx_remote: --exe must name an .exe inside the test folder, got {exe_rel}")
+    return r.root + "\\" + "\\".join(parts)
+
+
 def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout: int, env: dict[str, str] | None = None,
-                medium: bool = False, validation: bool = False) -> int:
+                medium: bool = False, validation: bool = False, exe_rel: str = "") -> int:
     godot_args_ok(args, window_ok)
     env = dict(env or {})
     if validation:
@@ -487,11 +503,16 @@ def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout:
         timeout = min(timeout, WINDOW_MAX_SECONDS)
     d = run_dir(r, name)
     exe = f"{r.root}\\godot\\{GODOT_EXES[0]}"  # GUI subsystem: no console window
+    project = ["--path", f"{r.root}\\project"]
+    if exe_rel:
+        # An exported game: its own executable, which carries its project (no --path).
+        exe = exe_in_root(r, exe_rel)
+        project = []
     # VBScript string: double quotes doubled. The launcher waits for Godot. Window style: hidden for
     # headless runs; 4 (SW_SHOWNOACTIVATE) for windowed ones: a normal window that does not take the
     # keyboard focus from whatever the user is doing.
     launcher = [f"{r.root}\\tools\\medium_launcher.exe"] if medium else []
-    cmdline = " ".join('""' + a + '""' for a in launcher + [exe, "--path", f"{r.root}\\project", "--log-file", f"{d}\\godot.log"] + args)
+    cmdline = " ".join('""' + a + '""' for a in launcher + [exe] + project + ["--log-file", f"{d}\\godot.log"] + args)
     vbs = (f'Set sh = CreateObject("WScript.Shell")\r\n'
            f'sh.Environment("Process")("LU_RUN_DIR") = "{d}"\r\n'
            + "".join(f'sh.Environment("Process")("{k}") = "{v}"\r\n' for k, v in env.items()) +
@@ -527,10 +548,58 @@ $result
         lines = out.strip().splitlines()
         start = next((line.split() for line in lines if line.startswith("START ")), ["START", "?", "?", "?"])
         result = next((line for line in lines if line.startswith(("exit ", "TIMEOUT"))), "no result")
-        log_windowed_run(name, [f"{k}={v}" for k, v in env.items()] + (["(medium integrity)"] if medium else []) + args,
+        log_windowed_run(name, [f"{k}={v}" for k, v in env.items()] + (["(medium integrity)"] if medium else [])
+                         + ([exe_rel] if exe_rel else []) + args,
                          " ".join(start[1:3]), start[3],
                          "stopped at the time limit" if result == "TIMEOUT" else result, preflight)
     return cmd_collect(r, name) if "exit" in out else 124
+
+
+def cmd_push(r: Remote, local: Path, subdir: str) -> int:
+    """Copies a local folder (an exported game) into the test folder's SUBDIR, replacing it, and checks
+    every file's SHA-256 there against the local one."""
+    if not subdir.replace("_", "").replace("-", "").isalnum():
+        sys.exit("rtx_remote: SUBDIR may only contain letters, digits, - and _")
+    if not local.is_dir():
+        sys.exit(f"rtx_remote: {local} is not a folder")
+    dest = f"{r.root}\\{subdir}"
+    files = sorted(path for path in local.rglob("*") if path.is_file())
+    folders = sorted({str(path.parent.relative_to(local)) for path in files} - {"."})
+    r.ps(f"$d = {q(dest)}; if (Test-Path $d) {{ Remove-Item -Recurse -Force $d }}; New-Item -ItemType Directory -Force -Path $d | Out-Null\n"
+         + "".join(f"New-Item -ItemType Directory -Force -Path {q(dest + chr(92) + f)} | Out-Null\n" for f in folders) + "exit 0")
+    local_sha = {}
+    for path in files:
+        rel = str(path.relative_to(local)).replace("/", "\\")
+        print(f"copying {rel} ({path.stat().st_size / 1e6:.1f} MB)...", flush=True)
+        r.scp_to(path, f"{dest}\\{rel}", timeout=3600)
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                digest.update(block)
+        local_sha[rel.lower()] = digest.hexdigest()
+    # A virus scanner may still hold a file it has just seen arrive: the check is tried again.
+    # A just-written large file can hash wrong while the OS or a virus scanner is still flushing or
+    # reading it, so a mismatch (not only a failed command) is retried after a settle before it counts.
+    remote_sha = {}
+    for attempt in range(4):
+        code, out = r.ps(f"$d = {q(dest)}; Get-ChildItem -Recurse -File $d | ForEach-Object {{ "
+                         "$_.FullName.Substring($d.Length + 1) + '|' + (Get-FileHash -Algorithm SHA256 $_.FullName).Hash }}",
+                         timeout=900, check=False)
+        remote_sha = {}
+        for line in out.strip().splitlines():
+            rel, _, sha = line.strip().rpartition("|")
+            if rel:
+                remote_sha[rel.lower()] = sha.lower()
+        if code == 0 and remote_sha == local_sha:
+            break
+        if attempt < 3:
+            time.sleep(20)
+    if remote_sha != local_sha:
+        bad = sorted(set(local_sha.items()) ^ set(remote_sha.items()))
+        print(f"rtx_remote: the copy in {dest} differs from {local} after {attempt + 1} checks: {bad[:6]}")
+        return 1
+    print(f"pushed {len(files)} file(s) to {r.cfg['host']}:{dest}, every SHA-256 checked")
+    return 0
 
 
 def cmd_collect(r: Remote, name: str) -> int:
@@ -600,6 +669,11 @@ def main(argv: list[str]) -> int:
         env[key] = value
         del rest[i:i + 2]
     rest = [a for a in rest if a != "--window-ok"]
+    exe_rel = ""
+    if "--exe" in rest:
+        i = rest.index("--exe")
+        exe_rel = rest[i + 1]
+        del rest[i:i + 2]
     timeout = 600
     if "--timeout" in rest:
         i = rest.index("--timeout")
@@ -619,7 +693,10 @@ def main(argv: list[str]) -> int:
     if command == "preflight":
         return 0 if cmd_preflight(r)[0] else 4
     if command == "session" and rest:
-        return cmd_session(r, rest[0], godot_args, window_ok, timeout, env, "--medium-integrity" in rest, "--validation" in rest)
+        return cmd_session(r, rest[0], godot_args, window_ok, timeout, env, "--medium-integrity" in rest, "--validation" in rest,
+                           exe_rel)
+    if command == "push" and len(rest) == 2:
+        return cmd_push(r, Path(rest[0]), rest[1])
     if command == "run" and rest:
         return cmd_run(r, rest[0], godot_args, window_ok, timeout, env)
     if command == "collect" and rest:
