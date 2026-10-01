@@ -185,6 +185,51 @@ std::vector<std::string> split_list(const String &text) {
 }
 #endif
 
+// Phase 3, Frame Generation (milestone H2): the REAL capability of the GPU the plugin sees at
+// start-up. The vendor, architecture and driver come from the gpu_precheck adapter probe (the same
+// temporary-instance enumeration DLSS uses, through the real Vulkan loader, before Godot's device
+// exists; dlss::check_adapters / dlss::nvidia_driver_version / dlss::classify_nvidia_architecture),
+// reading the first adapter — the one Godot picks by default. Nothing of the NVIDIA runtime is
+// loaded here and the Reflex backend is not touched. The OS / HAGS gate is deferred (os_known
+// false): its real check belongs to the milestone that loads Frame Generation, and leaving it
+// unknown avoids falsely refusing a capable GPU.
+dlss::FgCaps resolve_fg_caps() {
+	dlss::FgCaps caps;
+	if (!g_state.hook_installed || g_state.editor) {
+		return caps; // not probed (the editor, or no hook): "needs a GeForce RTX 40 series GPU"
+	}
+	std::string why;
+	if (!vulkan_rendering_expected(why)) {
+		caps.probed = true;
+		caps.vulkan_device = false; // headless / non-Vulkan: nothing to generate
+		return caps;
+	}
+	std::string error;
+	bool captured = false;
+	dlss::check_adapters(
+			[&](const vk::PhysicalDeviceCaps &c, std::string &) -> bool {
+				if (!captured) { // the first adapter is the one Godot picks by default
+					caps.probed = true;
+					caps.vulkan_device = true;
+					caps.vendor_id = c.vendor_id;
+					caps.device_id = c.device_id;
+					caps.gpu_name = c.name;
+					const dlss::DriverVersion driver = dlss::nvidia_driver_version(c.driver_version);
+					caps.driver_major = driver.major;
+					caps.driver_minor = driver.minor;
+					caps.architecture = dlss::classify_nvidia_architecture(c.vendor_id, c.name, c.device_id);
+					captured = true;
+				}
+				return false; // Frame Generation only reads the adapter; it accepts none and loads nothing
+			},
+			error);
+	if (!captured) {
+		caps.probed = true;
+		caps.vulkan_device = false; // Vulkan reported no GPU, or the loader was unavailable
+	}
+	return caps;
+}
+
 } // namespace
 
 const BootState &boot_state() {
@@ -356,18 +401,21 @@ void bootstrap_core() {
 		vk::register_feature(&upscale_feature);
 	}
 
-	// Phase 3, Frame Generation (milestone H1): the settings, the public API and a stubbed support
-	// detection, all guarded off. No Streamline Frame Generation feature is loaded, the Reflex
-	// backend is not switched, and the capability is not probed, so Frame Generation reports
-	// "unavailable" on every GPU and the Reflex / DLSS / pass-through behaviour is unchanged.
+	// Phase 3, Frame Generation (milestone H2): real capability detection, still guarded off. The GPU
+	// the plugin sees is classified (vendor / architecture / driver) and fed to dlss::FgFeature, but
+	// no Streamline Frame Generation feature is loaded and the Reflex backend is not switched (H3/H5).
+	// So Frame Generation still reports "unavailable" on every non-Ada GPU and the Reflex / DLSS /
+	// pass-through behaviour is unchanged.
 	g_state.fg_permitted = settings.fg_enabled && settings.fg_mode != FrameGenerationMode::Off;
-	dlss::FgFeature::get().configure(dlss::FgCaps{}); // not probed in milestone H1 -> unsupported
-	if (g_state.fg_permitted) {
-		g_state.fg_reason = "permitted by settings, but Frame Generation is not yet available (Phase 3 in progress)";
-	} else if (!settings.fg_enabled) {
-		g_state.fg_reason = "fg/enabled is off";
+	const dlss::FgCaps fg_caps = resolve_fg_caps();
+	dlss::FgFeature::get().configure(fg_caps);
+	const dlss::FgStatus fg_status = dlss::FgFeature::get().status();
+	if (!fg_status.supported) {
+		g_state.fg_reason = fg_status.reason; // why the hardware cannot run Frame Generation
+	} else if (g_state.fg_permitted) {
+		g_state.fg_reason = "hardware-capable and permitted by settings, but Frame Generation is not yet loaded (Phase 3 in progress)";
 	} else {
-		g_state.fg_reason = "fg/mode is Off";
+		g_state.fg_reason = settings.fg_enabled ? "hardware-capable, but fg/mode is Off" : "hardware-capable, but fg/enabled is off";
 	}
 	log::info("Frame Generation: %s", g_state.fg_reason.c_str());
 

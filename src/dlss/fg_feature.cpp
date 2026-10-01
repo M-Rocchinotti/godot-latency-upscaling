@@ -1,8 +1,79 @@
 #include "dlss/fg_feature.h"
 
+#include <cctype>
 #include <cstdio>
+#include <string>
 
 namespace lu::dlss {
+namespace {
+
+std::string to_lower(const std::string &s) {
+	std::string out = s;
+	for (char &c : out) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return out;
+}
+
+// The model number right after a tag ("rtx" / "gtx") in a lowercased GPU name, e.g. "rtx 4080" ->
+// 4080. 0 when the tag is absent or not followed by digits.
+int model_number_after(const std::string &lower, const char *tag) {
+	const size_t tag_pos = lower.find(tag);
+	if (tag_pos == std::string::npos) {
+		return 0;
+	}
+	size_t pos = tag_pos + std::string(tag).size();
+	while (pos < lower.size() && (lower[pos] == ' ' || lower[pos] == '-')) {
+		++pos;
+	}
+	int value = 0;
+	bool any = false;
+	while (pos < lower.size() && lower[pos] >= '0' && lower[pos] <= '9') {
+		value = value * 10 + (lower[pos] - '0');
+		any = true;
+		if (value > 100000) {
+			break; // a runaway number is not a model we know
+		}
+		++pos;
+	}
+	return any ? value : 0;
+}
+
+} // namespace
+
+NvArchitecture classify_nvidia_architecture(uint32_t vendor_id, const std::string &name, uint32_t /*device_id*/) {
+	if (vendor_id != 0x10DE) {
+		return NvArchitecture::Unknown; // not NVIDIA; the vendor check reports that separately
+	}
+	const std::string lower = to_lower(name);
+	// Explicit generation keywords first: they disambiguate workstation cards whose number does not
+	// follow the GeForce scheme (e.g. "RTX 6000 Ada", "RTX 5880 Ada").
+	if (lower.find("blackwell") != std::string::npos) {
+		return NvArchitecture::Blackwell;
+	}
+	if (lower.find("ada") != std::string::npos) {
+		return NvArchitecture::Ada;
+	}
+	// GeForce RTX consumer numbering.
+	const int rtx = model_number_after(lower, "rtx");
+	if (rtx > 0) {
+		if (rtx >= 5000 && rtx < 6000) {
+			return NvArchitecture::Blackwell; // RTX 50xx
+		}
+		if (rtx >= 4000 && rtx < 5000) {
+			return NvArchitecture::Ada; // RTX 40xx
+		}
+		if (rtx >= 2000 && rtx < 4000) {
+			return NvArchitecture::PreAda; // RTX 20xx (Turing) / 30xx (Ampere): no Frame Generation
+		}
+		return NvArchitecture::Unknown; // an RTX number we do not recognise: be conservative
+	}
+	// Every GTX card (Turing 16xx, Pascal 10xx, Maxwell 9xx and older) predates Ada.
+	if (model_number_after(lower, "gtx") > 0) {
+		return NvArchitecture::PreAda;
+	}
+	return NvArchitecture::Unknown; // an NVIDIA name we cannot place: conservative
+}
 
 int max_multiplier_for(NvArchitecture architecture) {
 	switch (architecture) {
@@ -18,8 +89,8 @@ int max_multiplier_for(NvArchitecture architecture) {
 }
 
 std::string check_frame_generation(const FgCaps &caps) {
-	// Until a later milestone really queries the capability (Streamline + a device observation), the
-	// honest answer is "not confirmed as an RTX 40 series+": this is the guarded-off milestone H1.
+	// Not probed (e.g. the editor, where Frame Generation is moot): the honest, player-actionable
+	// default, as in milestone H1.
 	if (!caps.probed) {
 		return "needs a GeForce RTX 40 series GPU";
 	}
@@ -38,12 +109,17 @@ std::string check_frame_generation(const FgCaps &caps) {
 	}
 	if (caps.driver_major < FG_MIN_DRIVER_MAJOR ||
 			(caps.driver_major == FG_MIN_DRIVER_MAJOR && caps.driver_minor < FG_MIN_DRIVER_MINOR)) {
+		// Frame Generation needs native Vulkan optical flow (driver 527.64+); older drivers offer it
+		// only through Direct3D interop, which this Vulkan addon cannot use.
 		std::snprintf(buffer, sizeof(buffer),
-				"the NVIDIA driver %u.%02u is older than %u.%02u, the minimum for Frame Generation: update the driver",
+				"the NVIDIA driver %u.%02u is below %u.%02u, which Frame Generation needs for native Vulkan optical "
+				"flow (older drivers support it only through Direct3D interop): update the driver",
 				caps.driver_major, caps.driver_minor, FG_MIN_DRIVER_MAJOR, FG_MIN_DRIVER_MINOR);
 		return buffer;
 	}
-	if (!caps.os_supported) {
+	// The OS / HAGS requirement only refuses a capable GPU once it has actually been determined; the
+	// real gate belongs to the milestone that loads Frame Generation (os_known is false until then).
+	if (caps.os_known && !caps.os_supported) {
 		return "needs Windows 10 20H1 or newer with hardware-accelerated GPU scheduling on";
 	}
 	return std::string();
@@ -64,7 +140,7 @@ FgStatus FgFeature::status() const {
 	FgStatus s;
 	const std::string reason = check_frame_generation(caps_);
 	s.supported = reason.empty();
-	s.active = false; // milestone H1 loads no Frame Generation runtime
+	s.active = false; // no Frame Generation runtime is loaded before milestone H5 / the RTX milestones
 	s.reason = s.supported ? std::string("Frame Generation is not yet available in this version") : reason;
 	s.max_multiplier = s.supported ? max_multiplier_for(caps_.architecture) : 1;
 	return s;

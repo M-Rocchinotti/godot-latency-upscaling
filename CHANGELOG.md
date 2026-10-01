@@ -4,11 +4,33 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - Phase 3 (in progress)
 
-Phase 3: DLSS Frame Generation. Milestone H1 — the settings, the public API surface and a stubbed
-support detection, **all guarded off**. No Streamline Frame Generation feature is loaded, the Reflex
-backend is not switched, and Frame Generation reports "unavailable" on every GPU; the Reflex, DLSS
-and pass-through behaviour is byte-identical to 0.2.0. Hardware-independent (builds and tests on the
-GTX 1080 dev box). The version is not bumped yet. See `docs/PHASE3_FG.md`.
+Phase 3: DLSS Frame Generation, **all guarded off**. No Streamline Frame Generation feature is
+loaded, the Reflex backend is not switched, and Frame Generation reports "unavailable" on every
+non-Ada GPU; the Reflex, DLSS and pass-through behaviour is byte-identical to 0.2.0.
+Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
+`docs/PHASE3_FG.md`.
+
+### Milestone H2 — real capability detection
+
+- `bootstrap.cpp::resolve_fg_caps()` fills `FgCaps` with the real GPU the plugin sees at start-up,
+  from the `gpu_precheck` adapter probe (`dlss::check_adapters`, reused — the same temporary-instance
+  enumeration DLSS uses, through the real Vulkan loader, reading the adapter Godot picks by default),
+  the driver decoded with `dlss::nvidia_driver_version`, and the architecture from the new pure
+  `dlss::classify_nvidia_architecture()` (RTX 50xx Blackwell, RTX 40xx / "Ada" names Ada, RTX
+  30xx/20xx and every GTX pre-Ada, non-NVIDIA / unplaceable unknown → conservative). No NVIDIA
+  runtime is loaded and the Reflex backend is untouched.
+- The driver reason below 527.64 now notes that older drivers offer Frame Generation only through
+  Direct3D interop (this Vulkan addon needs native Vulkan optical flow). The OS / HAGS requirement is
+  deferred (`os_known` false), so it does not refuse a capable GPU yet.
+- On the GTX 1080 dev box Frame Generation stays unavailable, now with the accurate reason
+  `"NVIDIA GeForce GTX 1080 does not support Frame Generation (needs a GeForce RTX 40 series GPU or
+  newer)"`.
+- Unit tests: the architecture classifier for real adapter names (RTX 50/40/30/20, GTX, Ada/Blackwell
+  workstation keywords, AMD/Intel, unplaceable), and `check_frame_generation()` with realistic cap
+  inputs (Ada/Blackwell supported, Ampere/Turing/Pascal/AMD/Intel unavailable, old-driver interop
+  note, headless no-Vulkan, OS known-bad vs. not-probed).
+
+### Milestone H1 — settings, API surface, stubbed detection
 
 ### Added
 

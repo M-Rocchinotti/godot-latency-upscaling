@@ -2,17 +2,18 @@
 //
 // Frame Generation (and Multi Frame Generation on GeForce RTX 50) needs a GeForce RTX 40 series
 // (Ada) GPU or newer, a recent NVIDIA driver and Windows 10 20H1+ with hardware-accelerated GPU
-// scheduling. Milestone H1 is the settings, the public API and this stubbed support detection, all
-// guarded off: no Streamline Frame Generation feature is loaded yet (a later, RTX-only milestone),
-// so the capability is not probed and the status is "unavailable" on every GPU, with a
-// player-actionable reason.
+// scheduling. Milestone H2 fills FgCaps with the REAL GPU the plugin sees at start-up (vendor,
+// architecture and driver from the gpu_precheck adapter probe, dlss::check_adapters /
+// dlss::nvidia_driver_version, reused), still guarded off: no Streamline Frame Generation feature
+// is loaded and the Reflex backend is not switched (that is H3/H5). The OS / HAGS requirement is
+// not probed yet (its real gate belongs to the milestone that loads Frame Generation), so os_known
+// is false and a capable GPU is not refused on OS grounds here.
 //
 // check_frame_generation() is the real capability logic. It is unit-tested with injected fake caps
-// (dlss::FgCaps), ready for the later milestone that fills FgCaps from the presenting device and
-// Streamline's capability query. The status wording mirrors dlss::DlssFeature / get_dlss_status():
-// a bare reason here, "unavailable: " / "off: " prefixed by the public API.
+// (dlss::FgCaps); bootstrap.cpp builds the real caps. The status wording mirrors dlss::DlssFeature /
+// get_dlss_status(): a bare reason here, "unavailable: " / "off: " prefixed by the public API.
 //
-// Pure C++: no Godot types, so the rules are unit-tested.
+// Pure C++: no Godot types, so the rules and the architecture classifier are unit-tested.
 #pragma once
 
 #include <cstdint>
@@ -31,18 +32,26 @@ enum class NvArchitecture : int { Unknown = 0, PreAda = 1, Ada = 2, Blackwell = 
 inline constexpr uint32_t FG_MIN_DRIVER_MAJOR = 527;
 inline constexpr uint32_t FG_MIN_DRIVER_MINOR = 64;
 
-// What Frame Generation's decision needs. A later milestone fills these from the presenting device
-// and Streamline; until then `probed` is false and support is refused everywhere.
+// What Frame Generation's decision needs. Milestone H2 fills the GPU fields from the adapter the
+// plugin probes at start-up; the OS / HAGS gate is deferred (os_known false), so it does not refuse
+// a capable GPU yet.
 struct FgCaps {
-	bool probed = false; // the capability was really queried (false in milestone H1)
+	bool probed = false; // the GPU capability was really queried (false: not probed, e.g. the editor)
 	bool vulkan_device = false; // a Vulkan device exists (headless / non-Vulkan: nothing to generate)
 	uint32_t vendor_id = 0; // 0x10DE for NVIDIA
+	uint32_t device_id = 0; // PCI device ID (a secondary signal for the architecture classifier)
 	std::string gpu_name;
 	uint32_t driver_major = 0;
 	uint32_t driver_minor = 0;
 	NvArchitecture architecture = NvArchitecture::Unknown;
-	bool os_supported = false; // Windows 10 20H1+ with hardware-accelerated GPU scheduling on
+	bool os_known = false; // the OS / HAGS requirement was determined (false in milestone H2)
+	bool os_supported = false; // Windows 10 20H1+ with HAGS on (only consulted when os_known)
 };
+
+// The NVIDIA GPU architecture from the adapter's vendor, name and device ID (pure, unit-tested).
+// Non-NVIDIA -> Unknown. GeForce RTX 50xx -> Blackwell, RTX 40xx (or an "Ada" name) -> Ada, RTX
+// 30xx / 20xx and every GTX -> PreAda; an NVIDIA name it cannot place -> Unknown (conservative).
+NvArchitecture classify_nvidia_architecture(uint32_t vendor_id, const std::string &name, uint32_t device_id);
 
 // The highest frame-generation multiplier an architecture offers: 1 = no Frame Generation, 2 = Ada
 // Frame Generation, 4 = Blackwell Multi Frame Generation.

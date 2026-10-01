@@ -4,10 +4,11 @@ Design, milestones and risks for DLSS Frame Generation (FG) and Multi Frame Gene
 godot-latency-upscaling. Phase 3 builds on the same in-process Vulkan dispatch layer as Reflex
 (Phase 1) and DLSS Super Resolution (Phase 2); it adds no engine fork.
 
-> Status: **Phase 3 in progress.** Milestone **H1** (this change) is landed: the FG settings, the
-> public API surface and a stubbed support detection, **all guarded off**. No Streamline Frame
-> Generation feature is loaded, the Reflex backend is not switched, and FG reports "unavailable" on
-> every GPU. Everything in H1 is hardware-independent and builds and tests on the GTX 1080 dev box.
+> Status: **Phase 3 in progress.** Milestone **H1** (settings, public API, stubbed detection) and
+> **H2** (real capability detection of the GPU the plugin sees) are landed, **all guarded off**. No
+> Streamline Frame Generation feature is loaded, the Reflex backend is not switched, and FG reports
+> "unavailable" on every non-Ada GPU. Everything is hardware-independent and builds and tests on the
+> GTX 1080 dev box.
 
 ## What Frame Generation is
 
@@ -75,10 +76,23 @@ with the reason (on this GTX 1080) `"needs a GeForce RTX 40 series GPU"`.
 
 `dlss::check_frame_generation(const FgCaps &)` is the real capability logic (pure C++, unit-tested
 with injected fake caps): it refuses non-NVIDIA GPUs, anything older than Ada, drivers below the FG
-minimum, a missing Vulkan device, and an unsupported OS / HAGS state, each with a player-actionable
-reason. In milestone H1 the caps are **not probed** (no runtime is loaded), so `FgFeature` is
-configured with a stub and reports "unavailable" everywhere. A later milestone fills `FgCaps` from
-the presenting device and Streamline's capability query.
+minimum, a missing Vulkan device, and a known-bad OS / HAGS state, each with a player-actionable
+reason.
+
+**Milestone H2** fills `FgCaps` with the real GPU the plugin sees at start-up:
+`bootstrap.cpp::resolve_fg_caps()` runs the `gpu_precheck` adapter probe (`dlss::check_adapters`,
+the same temporary-instance enumeration DLSS uses, through the real Vulkan loader, before Godot's
+device exists), reads the first adapter (Godot's default), and classifies the architecture with the
+pure `dlss::classify_nvidia_architecture(vendor, name, device_id)` — GeForce RTX 50xx -> Blackwell
+(MFG, max 4), RTX 40xx or an "Ada" name -> Ada (FG, max 2), RTX 30xx/20xx and every GTX -> pre-Ada,
+non-NVIDIA or an unplaceable NVIDIA name -> unknown (conservative, unsupported). The driver is
+decoded with `dlss::nvidia_driver_version`; below 527.64 the reason notes that older drivers offer
+FG only through Direct3D interop, which this Vulkan addon cannot use. The OS / HAGS requirement is
+**not probed yet** (`os_known` false): its real gate belongs to the milestone that loads FG, and
+leaving it unknown avoids falsely refusing a capable GPU. No NVIDIA runtime is loaded and the Reflex
+backend is untouched. On the GTX 1080 dev box the probe classifies Pascal, so FG stays unavailable:
+`"NVIDIA GeForce GTX 1080 does not support Frame Generation (needs a GeForce RTX 40 series GPU or
+newer)"`.
 
 ## Requirements (target)
 
@@ -94,8 +108,8 @@ Hardware-independent milestones (**H**) build and test on the GTX 1080 dev box; 
 
 | ID | Scope | Depends on |
 |---|---|---|
-| **H1** | Settings, public API surface, stubbed support detection, status dict, docs. All guarded off; behaviour byte-identical to Phase 2. | — |
-| **H2** | Resolve the FG runtime files (`sl.dlss_g` etc.) and the real capability query (`FgCaps` from the device + Streamline), still without activating FG. | H1 |
+| **H1** | Settings, public API surface, stubbed support detection, status dict, docs. All guarded off; behaviour byte-identical to Phase 2. **Landed.** | — |
+| **H2** | Real capability detection of the GPU the plugin sees (vendor / architecture / driver via the gpu_precheck probe), still guarded off; OS / HAGS deferred. **Landed.** | H1 |
 | **H3** | The Reflex -> `sl.reflex` / `sl.pcl` switch plumbing behind a flag, off by default; direct Reflex path unchanged when FG off. | H2 |
 | **H4** | Present-path scheduling scaffolding and the VSync-off / Reflex-on guards, with FG still inert. | H3 |
 | **H5** | Degraded present-only FG path (interpolating the final image including the HUD), guarded. | H4 |

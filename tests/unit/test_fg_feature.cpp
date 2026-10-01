@@ -1,7 +1,8 @@
-// Frame Generation's capability logic (dlss::check_frame_generation) against injected fake caps:
-// the reasons the API reports for non-RTX-40, non-NVIDIA, old-driver and unsupported-OS GPUs, the
-// supported path on Ada / Blackwell, and the stubbed holder (not probed -> unavailable everywhere,
-// which is the guarded-off milestone H1 state on this GTX 1080 dev box).
+// Frame Generation's capability logic against injected fake caps: the architecture classifier for
+// real adapter names (the signal bootstrap feeds from the gpu_precheck probe), and the reasons the
+// API reports for non-RTX-40, non-NVIDIA, old-driver, unsupported-OS and headless GPUs, plus the
+// supported path on Ada / Blackwell. On this GTX 1080 dev box the real probe classifies Pascal, so
+// Frame Generation stays unavailable with an accurate reason (guarded-off milestone H2).
 #include "dlss/fg_feature.h"
 #include "test_framework.h"
 
@@ -12,7 +13,8 @@ using namespace lu::dlss;
 
 namespace {
 
-// A fully capable, really-probed RTX 40 series GPU: the baseline the refusals are derived from.
+// A fully capable, really-probed RTX 40 series GPU with a known-good OS: the baseline the refusals
+// are derived from (os_known true here so the OS branch can be exercised).
 FgCaps rtx40_caps() {
 	FgCaps caps;
 	caps.probed = true;
@@ -22,11 +24,48 @@ FgCaps rtx40_caps() {
 	caps.driver_major = 591;
 	caps.driver_minor = 86;
 	caps.architecture = NvArchitecture::Ada;
+	caps.os_known = true;
 	caps.os_supported = true;
 	return caps;
 }
 
+// The caps the bootstrap probe would build for a given adapter (NVIDIA driver 591.86, OS not yet
+// probed, as in milestone H2), so the tests exercise the same path the real probe takes.
+FgCaps caps_for(uint32_t vendor_id, const std::string &name) {
+	FgCaps caps;
+	caps.probed = true;
+	caps.vulkan_device = true;
+	caps.vendor_id = vendor_id;
+	caps.gpu_name = name;
+	caps.driver_major = 591;
+	caps.driver_minor = 86;
+	caps.architecture = classify_nvidia_architecture(vendor_id, name, 0);
+	return caps; // os_known stays false, like the real H2 probe
+}
+
+const uint32_t NV = 0x10DE;
+const uint32_t AMD = 0x1002;
+const uint32_t INTEL = 0x8086;
+
 } // namespace
+
+TEST(fg_classifier_places_real_adapter_names) {
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce RTX 5090", 0) == NvArchitecture::Blackwell);
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce RTX 5070 Ti", 0) == NvArchitecture::Blackwell);
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce RTX 4080", 0) == NvArchitecture::Ada);
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce RTX 4060 Laptop GPU", 0) == NvArchitecture::Ada);
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce RTX 3080", 0) == NvArchitecture::PreAda); // Ampere
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce RTX 2070 SUPER", 0) == NvArchitecture::PreAda); // Turing
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce GTX 1080", 0) == NvArchitecture::PreAda); // Pascal (this box)
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA GeForce GTX 1660 Ti", 0) == NvArchitecture::PreAda); // Turing GTX
+	// Workstation cards: the "Ada" / "Blackwell" keyword wins over the number.
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA RTX 6000 Ada Generation", 0) == NvArchitecture::Ada);
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA RTX 5880 Ada Generation", 0) == NvArchitecture::Ada);
+	// Non-NVIDIA and unplaceable NVIDIA names are Unknown (conservative).
+	CHECK(classify_nvidia_architecture(AMD, "AMD Radeon RX 7900 XTX", 0) == NvArchitecture::Unknown);
+	CHECK(classify_nvidia_architecture(INTEL, "Intel Arc A770", 0) == NvArchitecture::Unknown);
+	CHECK(classify_nvidia_architecture(NV, "NVIDIA RTX A6000", 0) == NvArchitecture::Unknown); // Ampere workstation
+}
 
 TEST(fg_max_multiplier_by_architecture) {
 	CHECK_EQ(max_multiplier_for(NvArchitecture::Ada), 2); // Frame Generation (2x)
@@ -37,14 +76,13 @@ TEST(fg_max_multiplier_by_architecture) {
 
 TEST(fg_check_accepts_ada_and_blackwell) {
 	CHECK_EQ(check_frame_generation(rtx40_caps()), std::string());
-	FgCaps blackwell = rtx40_caps();
-	blackwell.architecture = NvArchitecture::Blackwell;
-	blackwell.gpu_name = "NVIDIA GeForce RTX 5090";
-	CHECK_EQ(check_frame_generation(blackwell), std::string());
+	// Real adapter names through the classifier, OS not probed (H2): still supported.
+	CHECK_EQ(check_frame_generation(caps_for(NV, "NVIDIA GeForce RTX 4080")), std::string());
+	CHECK_EQ(check_frame_generation(caps_for(NV, "NVIDIA GeForce RTX 5090")), std::string());
 }
 
 TEST(fg_check_explains_every_refusal) {
-	// Not probed yet (milestone H1 on every box): the honest, player-actionable default.
+	// Not probed (e.g. the editor): the honest, player-actionable default.
 	FgCaps unprobed;
 	CHECK_EQ(check_frame_generation(unprobed), std::string("needs a GeForce RTX 40 series GPU"));
 
@@ -53,40 +91,41 @@ TEST(fg_check_explains_every_refusal) {
 	headless.vulkan_device = false;
 	CHECK(check_frame_generation(headless).find("no Vulkan device") == 0);
 
-	// Not an NVIDIA GPU.
-	FgCaps amd = rtx40_caps();
-	amd.vendor_id = 0x1002;
-	amd.gpu_name = "AMD Radeon RX 7900 XTX";
-	CHECK(check_frame_generation(amd).find("AMD Radeon RX 7900 XTX is not an NVIDIA GPU") == 0);
-	CHECK(check_frame_generation(amd).find("GeForce RTX 40 series") != std::string::npos);
+	// Not an NVIDIA GPU: AMD and Intel.
+	CHECK(check_frame_generation(caps_for(AMD, "AMD Radeon RX 7900 XTX")).find("AMD Radeon RX 7900 XTX is not an NVIDIA GPU") == 0);
+	CHECK(check_frame_generation(caps_for(INTEL, "Intel Arc A770")).find("is not an NVIDIA GPU") != std::string::npos);
 
-	// NVIDIA, but older than Ada: the reference GTX 1080 (Pascal) and an RTX 30 (Ampere).
-	FgCaps gtx1080 = rtx40_caps();
-	gtx1080.gpu_name = "NVIDIA GeForce GTX 1080";
-	gtx1080.architecture = NvArchitecture::PreAda;
-	CHECK(check_frame_generation(gtx1080).find("NVIDIA GeForce GTX 1080 does not support Frame Generation") == 0);
-	CHECK(check_frame_generation(gtx1080).find("GeForce RTX 40 series GPU or newer") != std::string::npos);
-	FgCaps unknown_arch = rtx40_caps();
-	unknown_arch.architecture = NvArchitecture::Unknown;
-	CHECK(check_frame_generation(unknown_arch).find("does not support Frame Generation") != std::string::npos);
+	// NVIDIA, but older than Ada: Pascal (this box), Turing and Ampere.
+	const std::string pascal = check_frame_generation(caps_for(NV, "NVIDIA GeForce GTX 1080"));
+	CHECK(pascal.find("NVIDIA GeForce GTX 1080 does not support Frame Generation") == 0);
+	CHECK(pascal.find("GeForce RTX 40 series GPU or newer") != std::string::npos);
+	CHECK(check_frame_generation(caps_for(NV, "NVIDIA GeForce RTX 2070")).find("does not support Frame Generation") != std::string::npos);
+	CHECK(check_frame_generation(caps_for(NV, "NVIDIA GeForce RTX 3090")).find("does not support Frame Generation") != std::string::npos);
 
-	// Ada, but the driver is too old.
+	// Ada, but the driver predates native Vulkan optical flow: the reason notes the interop fallback.
 	FgCaps old_driver = rtx40_caps();
 	old_driver.driver_major = FG_MIN_DRIVER_MAJOR;
 	old_driver.driver_minor = FG_MIN_DRIVER_MINOR - 1;
-	CHECK(check_frame_generation(old_driver).find("is older than") != std::string::npos);
+	const std::string old_reason = check_frame_generation(old_driver);
+	CHECK(old_reason.find("below 527.64") != std::string::npos);
+	CHECK(old_reason.find("native Vulkan optical flow") != std::string::npos);
+	CHECK(old_reason.find("interop") != std::string::npos);
 	old_driver.driver_minor = FG_MIN_DRIVER_MINOR; // the minimum itself passes
 	CHECK(check_frame_generation(old_driver).empty());
 
-	// Ada and a current driver, but the OS / HAGS requirement is not met.
+	// Ada and a current driver, but the OS / HAGS requirement is known-bad.
 	FgCaps bad_os = rtx40_caps();
-	bad_os.os_supported = false;
+	bad_os.os_supported = false; // os_known stays true
 	CHECK(check_frame_generation(bad_os).find("Windows 10 20H1") != std::string::npos);
+	// When the OS is not yet probed (os_known false, as in H2), it does not refuse a capable GPU.
+	FgCaps os_unknown = rtx40_caps();
+	os_unknown.os_known = false;
+	os_unknown.os_supported = false;
+	CHECK(check_frame_generation(os_unknown).empty());
 }
 
-TEST(fg_feature_is_unavailable_until_probed) {
-	// Milestone H1: configure() is called with a stub that was not probed, so Frame Generation is
-	// unavailable on every GPU and the max multiplier is 1 (as on this GTX 1080 dev box).
+TEST(fg_feature_reports_the_configured_caps) {
+	// Not probed (milestone H1 / the editor): unavailable everywhere, max multiplier 1.
 	FgFeature feature;
 	feature.configure(FgCaps{});
 	FgStatus s = feature.status();
@@ -95,11 +134,17 @@ TEST(fg_feature_is_unavailable_until_probed) {
 	CHECK_EQ(s.reason, std::string("needs a GeForce RTX 40 series GPU"));
 	CHECK_EQ(s.max_multiplier, 1);
 
-	// A later milestone will configure it with real, probed caps: the supported path (still not
-	// active, since no runtime is loaded) and the hardware's multiplier ceiling.
-	feature.configure(rtx40_caps());
+	// This GTX 1080 dev box (what the real H2 probe classifies): unavailable, naming the GPU.
+	feature.configure(caps_for(NV, "NVIDIA GeForce GTX 1080"));
+	s = feature.status();
+	CHECK(!s.supported);
+	CHECK(s.reason.find("NVIDIA GeForce GTX 1080 does not support Frame Generation") == 0);
+	CHECK_EQ(s.max_multiplier, 1);
+
+	// A Blackwell GPU: supported (still not active, no runtime loaded), multiplier ceiling 4.
+	feature.configure(caps_for(NV, "NVIDIA GeForce RTX 5090"));
 	s = feature.status();
 	CHECK(s.supported);
 	CHECK(!s.active);
-	CHECK_EQ(s.max_multiplier, 2);
+	CHECK_EQ(s.max_multiplier, 4);
 }
