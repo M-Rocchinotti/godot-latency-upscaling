@@ -48,6 +48,7 @@ PURE_SOURCES = [
     "src/core/settings.cpp",
     "src/core/testing.cpp",
     "src/dlss/dlss_feature.cpp",
+    "src/dlss/fg_feature.cpp",
     "src/dlss/dlss_recorder.cpp",
     "src/dlss/jitter.cpp",
     "src/dlss/project_id.cpp",

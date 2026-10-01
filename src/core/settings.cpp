@@ -34,6 +34,9 @@ const std::vector<const char *> &all_setting_keys() {
 		keys::DLSS_PRESET,
 		keys::DLSS_CUT_ANGLE,
 		keys::DLSS_CUT_DISTANCE,
+		keys::FG_ENABLED,
+		keys::FG_MODE,
+		keys::FG_MULTIPLIER,
 	};
 	return list;
 }
@@ -52,6 +55,10 @@ unsigned int fps_limit_to_interval_us(double fps_limit) {
 	return static_cast<unsigned int>(std::lround(1000000.0 / fps_limit));
 }
 
+bool is_valid_mfg_multiplier(int multiplier) {
+	return multiplier == 0 || multiplier == 2 || multiplier == 3 || multiplier == 4;
+}
+
 const char *reflex_mode_name(ReflexMode mode) {
 	switch (mode) {
 		case ReflexMode::Off:
@@ -60,6 +67,16 @@ const char *reflex_mode_name(ReflexMode mode) {
 			return "On";
 		case ReflexMode::OnBoost:
 			return "On + Boost";
+	}
+	return "unknown";
+}
+
+const char *frame_generation_mode_name(FrameGenerationMode mode) {
+	switch (mode) {
+		case FrameGenerationMode::Off:
+			return "Off";
+		case FrameGenerationMode::On:
+			return "On";
 	}
 	return "unknown";
 }
@@ -108,7 +125,7 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 		for (const auto &[key, value] : layer.values) {
 			bool accepted = true;
 			if (key == keys::ENABLED || key == keys::ENABLE_IN_EDITOR || key == keys::REFLEX_FLASH_INDICATOR ||
-					key == keys::OVERLAY_ENABLED || key == keys::DLSS_ENABLED) {
+					key == keys::OVERLAY_ENABLED || key == keys::DLSS_ENABLED || key == keys::FG_ENABLED) {
 				if (!is_bool_value(value)) {
 					out.warnings.push_back(describe(layer, key, value, "true or false"));
 					accepted = false;
@@ -120,6 +137,8 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 					out.settings.reflex_flash_indicator = value != 0.0;
 				} else if (key == keys::DLSS_ENABLED) {
 					out.settings.dlss_enabled = value != 0.0;
+				} else if (key == keys::FG_ENABLED) {
+					out.settings.fg_enabled = value != 0.0;
 				} else {
 					out.settings.overlay_enabled = value != 0.0;
 				}
@@ -165,6 +184,20 @@ ResolvedSettings resolve_settings(const std::vector<SettingsLayer> &layers) {
 					accepted = false;
 				} else {
 					out.settings.reflex_fps_limit = value;
+				}
+			} else if (key == keys::FG_MODE) {
+				if (value != 0.0 && value != 1.0) {
+					out.warnings.push_back(describe(layer, key, value, "0 (Off) or 1 (On)"));
+					accepted = false;
+				} else {
+					out.settings.fg_mode = static_cast<FrameGenerationMode>(static_cast<int>(value));
+				}
+			} else if (key == keys::FG_MULTIPLIER) {
+				if (value != std::floor(value) || !is_valid_mfg_multiplier(static_cast<int>(value))) {
+					out.warnings.push_back(describe(layer, key, value, "0 (Auto), 2, 3 or 4"));
+					accepted = false;
+				} else {
+					out.settings.fg_multiplier = static_cast<int>(value);
 				}
 			} else {
 				out.warnings.push_back(layer.name + ": unknown setting '" + key + "' ignored");

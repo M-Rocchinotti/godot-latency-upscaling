@@ -36,6 +36,11 @@ public:
 		DLSS_PRESET_L = 3,
 		DLSS_PRESET_M = 4,
 	};
+	// DLSS Frame Generation (Phase 3). The multiplier (0 Auto, 2 / 3 / 4) chooses 2x / MFG.
+	enum FrameGenerationMode {
+		FRAME_GENERATION_OFF = 0,
+		FRAME_GENERATION_ON = 1,
+	};
 
 	static LatencyUpscaling *get_singleton() { return singleton_; }
 
@@ -70,6 +75,16 @@ public:
 	// Throws the upscaler's history away on the next frame: call it on camera cuts the automatic
 	// detection cannot see (a teleport shorter than dlss/cut_distance, a scene change behind a fade).
 	void reset_dlss_history();
+	// DLSS Frame Generation / Multi Frame Generation (Phase 3; guarded off until a later milestone,
+	// so on this version it is unavailable on every GPU and these are inert settings).
+	bool is_frame_generation_supported() const; // a GeForce RTX 40 series GPU or newer could run it
+	bool is_frame_generation_active() const; // Frame Generation is generating frames now
+	godot::String get_frame_generation_status() const; // "active (...)", "off: ..." or "unavailable: ..."
+	void set_frame_generation_mode(FrameGenerationMode mode);
+	FrameGenerationMode get_frame_generation_mode() const;
+	void set_mfg_multiplier(int multiplier); // Multi Frame Generation: 0 = Auto, else 2 / 3 / 4
+	int get_mfg_multiplier() const;
+	int get_max_frame_generation_multiplier() const; // highest multiplier the hardware offers (1 = none)
 #ifdef DEBUG_ENABLED
 	// Test hooks (debug builds only, tests/upscaler_tests.gd): upscaler conventions relative to
 	// Godot's (+1 = Godot's), a history reset, N frames of UBO / velocity read-backs, and the native
@@ -110,6 +125,10 @@ private:
 	ReflexMode mode_ = REFLEX_MODE_ON;
 	double fps_limit_ = 0.0;
 	bool flash_marker_ = true;
+	// Frame Generation's live settings (Phase 3). Stored here like the Reflex mode; guarded off, so
+	// in this version they only feed get_status() and the public getters (no runtime effect).
+	FrameGenerationMode fg_mode_ = FRAME_GENERATION_OFF;
+	int mfg_multiplier_ = 0; // 0 = Auto, else 2 / 3 / 4
 	bool left_button_was_down_ = false;
 	int64_t drawn_frame_id_ = 0; // main thread: frame whose draw this iteration queued
 	uint64_t overlay_id_ = 0; // ObjectID of the overlay node
@@ -123,3 +142,4 @@ private:
 VARIANT_ENUM_CAST(lu::LatencyUpscaling::ReflexMode);
 VARIANT_ENUM_CAST(lu::LatencyUpscaling::DlssQuality);
 VARIANT_ENUM_CAST(lu::LatencyUpscaling::DlssPreset);
+VARIANT_ENUM_CAST(lu::LatencyUpscaling::FrameGenerationMode);

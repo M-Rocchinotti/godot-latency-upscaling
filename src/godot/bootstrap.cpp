@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/testing.h"
 #include "dlss/dlss_feature.h"
+#include "dlss/fg_feature.h"
 #include "dlss/gpu_precheck.h"
 #include "dlss/project_id.h"
 #include "dlss/runtime_files.h"
@@ -354,6 +355,22 @@ void bootstrap_core() {
 		vk::enable_command_interception();
 		vk::register_feature(&upscale_feature);
 	}
+
+	// Phase 3, Frame Generation (milestone H1): the settings, the public API and a stubbed support
+	// detection, all guarded off. No Streamline Frame Generation feature is loaded, the Reflex
+	// backend is not switched, and the capability is not probed, so Frame Generation reports
+	// "unavailable" on every GPU and the Reflex / DLSS / pass-through behaviour is unchanged.
+	g_state.fg_permitted = settings.fg_enabled && settings.fg_mode != FrameGenerationMode::Off;
+	dlss::FgFeature::get().configure(dlss::FgCaps{}); // not probed in milestone H1 -> unsupported
+	if (g_state.fg_permitted) {
+		g_state.fg_reason = "permitted by settings, but Frame Generation is not yet available (Phase 3 in progress)";
+	} else if (!settings.fg_enabled) {
+		g_state.fg_reason = "fg/enabled is off";
+	} else {
+		g_state.fg_reason = "fg/mode is Off";
+	}
+	log::info("Frame Generation: %s", g_state.fg_reason.c_str());
+
 	if (g_state.hook_installed) {
 		log::info("Vulkan hook installed (%d import slot(s)); Reflex %s", static_cast<int>(g_state.patched_imports.size()),
 				g_state.reflex_enabled ? "enabled" : g_state.reflex_reason.c_str());

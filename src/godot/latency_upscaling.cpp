@@ -5,6 +5,7 @@
 #include "core/settings.h"
 #include "core/version.h"
 #include "dlss/dlss_feature.h"
+#include "dlss/fg_feature.h"
 #include "godot/bootstrap.h"
 #include "reflex/latency_stats.h"
 #include "reflex/reflex_ll2.h"
@@ -85,6 +86,8 @@ LatencyUpscaling::LatencyUpscaling() {
 	mode_ = static_cast<ReflexMode>(settings.reflex_mode);
 	fps_limit_ = settings.reflex_fps_limit;
 	flash_marker_ = settings.reflex_flash_indicator;
+	fg_mode_ = static_cast<FrameGenerationMode>(settings.fg_mode);
+	mfg_multiplier_ = settings.fg_multiplier;
 }
 
 LatencyUpscaling::~LatencyUpscaling() {
@@ -118,6 +121,14 @@ void LatencyUpscaling::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_dlss_preset", "preset"), &LatencyUpscaling::set_dlss_preset);
 	ClassDB::bind_method(D_METHOD("get_dlss_preset"), &LatencyUpscaling::get_dlss_preset);
 	ClassDB::bind_method(D_METHOD("reset_dlss_history"), &LatencyUpscaling::reset_dlss_history);
+	ClassDB::bind_method(D_METHOD("is_frame_generation_supported"), &LatencyUpscaling::is_frame_generation_supported);
+	ClassDB::bind_method(D_METHOD("is_frame_generation_active"), &LatencyUpscaling::is_frame_generation_active);
+	ClassDB::bind_method(D_METHOD("get_frame_generation_status"), &LatencyUpscaling::get_frame_generation_status);
+	ClassDB::bind_method(D_METHOD("set_frame_generation_mode", "mode"), &LatencyUpscaling::set_frame_generation_mode);
+	ClassDB::bind_method(D_METHOD("get_frame_generation_mode"), &LatencyUpscaling::get_frame_generation_mode);
+	ClassDB::bind_method(D_METHOD("set_mfg_multiplier", "multiplier"), &LatencyUpscaling::set_mfg_multiplier);
+	ClassDB::bind_method(D_METHOD("get_mfg_multiplier"), &LatencyUpscaling::get_mfg_multiplier);
+	ClassDB::bind_method(D_METHOD("get_max_frame_generation_multiplier"), &LatencyUpscaling::get_max_frame_generation_multiplier);
 #ifdef DEBUG_ENABLED
 	ClassDB::bind_method(D_METHOD("_set_upscaler_test_conventions", "jitter_x", "jitter_y", "motion"),
 			&LatencyUpscaling::_set_upscaler_test_conventions);
@@ -136,6 +147,8 @@ void LatencyUpscaling::_bind_methods() {
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "dlss_quality", PROPERTY_HINT_ENUM, "Auto,DLAA,Quality,Balanced,Performance,Ultra Performance"),
 			"set_dlss_quality", "get_dlss_quality");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "dlss_preset", PROPERTY_HINT_ENUM, "Default,J,K,L,M"), "set_dlss_preset", "get_dlss_preset");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "frame_generation", PROPERTY_HINT_ENUM, "Off,On"), "set_frame_generation_mode", "get_frame_generation_mode");
+	ADD_PROPERTY(PropertyInfo(Variant::INT, "mfg_multiplier", PROPERTY_HINT_ENUM, "Auto:0,2x:2,3x:3,4x:4"), "set_mfg_multiplier", "get_mfg_multiplier");
 
 	BIND_ENUM_CONSTANT(REFLEX_MODE_OFF);
 	BIND_ENUM_CONSTANT(REFLEX_MODE_ON);
@@ -151,6 +164,8 @@ void LatencyUpscaling::_bind_methods() {
 	BIND_ENUM_CONSTANT(DLSS_PRESET_K);
 	BIND_ENUM_CONSTANT(DLSS_PRESET_L);
 	BIND_ENUM_CONSTANT(DLSS_PRESET_M);
+	BIND_ENUM_CONSTANT(FRAME_GENERATION_OFF);
+	BIND_ENUM_CONSTANT(FRAME_GENERATION_ON);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -431,6 +446,55 @@ void LatencyUpscaling::reset_dlss_history() {
 	Upscaler::get().reset_history();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Frame Generation (Phase 3; guarded off). The capability is reported by dlss::FgFeature (stubbed
+// in milestone H1, so unavailable on every GPU); the mode and multiplier are stored here but have
+// no runtime effect yet. A later, RTX-only milestone loads the Streamline Frame Generation feature,
+// switches Reflex to sl.reflex and makes these take effect.
+// ---------------------------------------------------------------------------------------------
+
+bool LatencyUpscaling::is_frame_generation_supported() const {
+	return dlss::FgFeature::get().status().supported;
+}
+
+bool LatencyUpscaling::is_frame_generation_active() const {
+	return dlss::FgFeature::get().status().active;
+}
+
+String LatencyUpscaling::get_frame_generation_status() const {
+	const dlss::FgStatus s = dlss::FgFeature::get().status();
+	if (!s.supported) {
+		return String("unavailable: ") + String::utf8(s.reason.c_str());
+	}
+	if (!s.active) {
+		return String("off: ") + String::utf8(s.reason.c_str());
+	}
+	return vformat("active (%dx)", s.max_multiplier);
+}
+
+void LatencyUpscaling::set_frame_generation_mode(FrameGenerationMode mode) {
+	ERR_FAIL_COND_MSG(mode < FRAME_GENERATION_OFF || mode > FRAME_GENERATION_ON,
+			"Frame Generation mode must be FRAME_GENERATION_OFF or FRAME_GENERATION_ON.");
+	fg_mode_ = mode;
+}
+
+LatencyUpscaling::FrameGenerationMode LatencyUpscaling::get_frame_generation_mode() const {
+	return fg_mode_;
+}
+
+void LatencyUpscaling::set_mfg_multiplier(int multiplier) {
+	ERR_FAIL_COND_MSG(!is_valid_mfg_multiplier(multiplier), "Multi Frame Generation multiplier must be 0 (Auto), 2, 3 or 4.");
+	mfg_multiplier_ = multiplier;
+}
+
+int LatencyUpscaling::get_mfg_multiplier() const {
+	return mfg_multiplier_;
+}
+
+int LatencyUpscaling::get_max_frame_generation_multiplier() const {
+	return dlss::FgFeature::get().status().max_multiplier;
+}
+
 #ifdef DEBUG_ENABLED
 void LatencyUpscaling::_set_upscaler_test_conventions(double jitter_x, double jitter_y, double motion) {
 	Upscaler::get().set_test_conventions(static_cast<float>(jitter_x), static_cast<float>(jitter_y), static_cast<float>(motion));
@@ -627,6 +691,9 @@ Dictionary LatencyUpscaling::get_status() const {
 	entry(keys::DLSS_PRESET, static_cast<int>(s.dlss_preset));
 	entry(keys::DLSS_CUT_ANGLE, s.dlss_cut_angle_degrees);
 	entry(keys::DLSS_CUT_DISTANCE, s.dlss_cut_distance);
+	entry(keys::FG_ENABLED, s.fg_enabled);
+	entry(keys::FG_MODE, static_cast<int>(s.fg_mode));
+	entry(keys::FG_MULTIPLIER, s.fg_multiplier);
 	d["settings"] = settings;
 	Dictionary upscaling = Upscaler::get().status();
 	Dictionary dlss;
@@ -647,6 +714,17 @@ Dictionary LatencyUpscaling::get_status() const {
 	dlss["project_id"] = String::utf8(boot.dlss_project_id.c_str());
 	dlss["project_id_source"] = String::utf8(boot.dlss_project_id_source.c_str());
 	upscaling["dlss"] = dlss;
+	// Frame Generation (Phase 3; guarded off, so supported/active are false on every GPU in this
+	// version). mode / multiplier are the live settings; max_multiplier is the hardware's ceiling.
+	Dictionary fg;
+	const dlss::FgStatus fg_status = dlss::FgFeature::get().status();
+	fg["supported"] = fg_status.supported;
+	fg["active"] = fg_status.active;
+	fg["mode"] = static_cast<int>(fg_mode_);
+	fg["multiplier"] = mfg_multiplier_;
+	fg["max_multiplier"] = fg_status.max_multiplier;
+	fg["reason"] = String::utf8(fg_status.reason.c_str());
+	upscaling["frame_generation"] = fg;
 	d["upscaling"] = upscaling;
 	d["warnings"] = to_packed(boot.resolved.warnings);
 	return d;
@@ -740,6 +818,11 @@ void LatencyUpscaling::register_project_settings() {
 		{ keys::DLSS_PRESET, static_cast<int>(defaults.dlss_preset), PROPERTY_HINT_ENUM, "Default,J,K,L,M", false },
 		{ keys::DLSS_CUT_ANGLE, defaults.dlss_cut_angle_degrees, PROPERTY_HINT_RANGE, "0,180,0.1,degrees", false },
 		{ keys::DLSS_CUT_DISTANCE, defaults.dlss_cut_distance, PROPERTY_HINT_RANGE, "0,1000,0.01,or_greater,suffix:m", false },
+		// Frame Generation (Phase 3, guarded off). fg/enabled is a permit-at-startup flag like a later
+		// milestone's runtime load, so it needs a restart; the mode and multiplier are run-time values.
+		{ keys::FG_ENABLED, defaults.fg_enabled, PROPERTY_HINT_NONE, "", true },
+		{ keys::FG_MODE, static_cast<int>(defaults.fg_mode), PROPERTY_HINT_ENUM, "Off,On", false },
+		{ keys::FG_MULTIPLIER, defaults.fg_multiplier, PROPERTY_HINT_ENUM, "Auto:0,2x:2,3x:3,4x:4", false },
 	};
 	// The project ID for NGX: a string, so not part of the numeric settings above. Empty means
 	// "derived from application/config/name" (dlss/project_id.h).

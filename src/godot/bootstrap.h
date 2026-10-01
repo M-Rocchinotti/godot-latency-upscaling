@@ -31,6 +31,10 @@ struct BootState {
 	std::string dlss_runtime_reason; // why the NVIDIA runtime was not loaded ("" when it was)
 	std::string dlss_project_id; // the project ID handed to NGX (dlss/project_id.h)
 	std::string dlss_project_id_source; // "project setting" or "derived from application/config/name"
+	// Phase 3, Frame Generation (guarded off in milestone H1). fg_permitted: the settings would
+	// permit Frame Generation at startup; nothing of the runtime is loaded yet, so it is only logged.
+	bool fg_permitted = false;
+	std::string fg_reason; // why Frame Generation is not permitted / not loaded (for the log)
 	std::vector<std::string> hidden_extensions; // debug-build test knob
 	// Debug-build test knob: "reference" runs the reference upscaler through RenderingDevice,
 	// "native" records it natively into Godot's command buffer (marker interception).

@@ -17,7 +17,32 @@ TEST(settings_builtin_defaults) {
 	CHECK(r.settings.dlss_preset == lu::upscale::Preset::Default);
 	CHECK_EQ(r.settings.dlss_cut_angle_degrees, 60.0);
 	CHECK_EQ(r.settings.dlss_cut_distance, 10.0);
+	CHECK(!r.settings.fg_enabled); // Phase 3: Frame Generation is guarded off by default
+	CHECK(r.settings.fg_mode == FrameGenerationMode::Off);
+	CHECK_EQ(r.settings.fg_multiplier, 0); // 0 = Auto
 	CHECK(r.warnings.empty());
+}
+
+TEST(settings_fg_values_are_validated) {
+	SettingsLayer good{ "project setting", { { keys::FG_ENABLED, 1.0 }, { keys::FG_MODE, 1.0 }, { keys::FG_MULTIPLIER, 3.0 } } };
+	ResolvedSettings r = resolve_settings({ good });
+	CHECK(r.settings.fg_enabled);
+	CHECK(r.settings.fg_mode == FrameGenerationMode::On);
+	CHECK_EQ(r.settings.fg_multiplier, 3);
+	CHECK(r.warnings.empty());
+	// 0 (Auto), 2, 3 and 4 are the only valid multipliers; mode is 0 or 1.
+	SettingsLayer bad{ "env", { { keys::FG_MODE, 2.0 }, { keys::FG_MULTIPLIER, 1.0 }, { keys::FG_ENABLED, 0.5 } } };
+	r = resolve_settings({ good, bad });
+	CHECK(r.settings.fg_mode == FrameGenerationMode::On); // bad values ignored, the good layer stands
+	CHECK_EQ(r.settings.fg_multiplier, 3);
+	CHECK(r.settings.fg_enabled);
+	CHECK_EQ(r.warnings.size(), size_t(3));
+	SettingsLayer bad_multiplier{ "env", { { keys::FG_MULTIPLIER, 5.0 } } };
+	r = resolve_settings({ bad_multiplier });
+	CHECK_EQ(r.settings.fg_multiplier, 0); // 5 rejected, the default stands
+	CHECK_EQ(r.warnings.size(), size_t(1));
+	CHECK(is_valid_mfg_multiplier(0) && is_valid_mfg_multiplier(2) && is_valid_mfg_multiplier(3) && is_valid_mfg_multiplier(4));
+	CHECK(!is_valid_mfg_multiplier(1) && !is_valid_mfg_multiplier(5) && !is_valid_mfg_multiplier(-1));
 }
 
 TEST(settings_cut_thresholds_are_validated) {

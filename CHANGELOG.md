@@ -2,6 +2,36 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased] - Phase 3 (in progress)
+
+Phase 3: DLSS Frame Generation. Milestone H1 — the settings, the public API surface and a stubbed
+support detection, **all guarded off**. No Streamline Frame Generation feature is loaded, the Reflex
+backend is not switched, and Frame Generation reports "unavailable" on every GPU; the Reflex, DLSS
+and pass-through behaviour is byte-identical to 0.2.0. Hardware-independent (builds and tests on the
+GTX 1080 dev box). The version is not bumped yet. See `docs/PHASE3_FG.md`.
+
+### Added
+
+- Settings: `latency_upscaling/fg/enabled` (permit at startup, off by default, restart), `fg/mode`
+  (0 Off, 1 On) and `fg/multiplier` (0 Auto, 2 / 3 / 4 for Multi Frame Generation), resolved and
+  validated in the pure settings module.
+- API: the `frame_generation` and `mfg_multiplier` properties, `is_frame_generation_supported()`,
+  `is_frame_generation_active()`, `get_frame_generation_status()` ("active (...)", "off: ...",
+  "unavailable: <reason>", worded like `get_dlss_status()`) and `get_max_frame_generation_multiplier()`.
+  `get_status()["upscaling"]["frame_generation"]` reports {supported, active, mode, multiplier,
+  max_multiplier, reason}.
+- `dlss::FgFeature` and the pure `dlss::check_frame_generation()` capability logic: refuses
+  non-NVIDIA, pre-Ada, old-driver, no-Vulkan-device and unsupported-OS GPUs with a player-actionable
+  reason. The capability is not probed in H1, so it is unavailable everywhere (on this GTX 1080:
+  "needs a GeForce RTX 40 series GPU").
+- Bootstrap resolves the Frame Generation settings and logs whether it is permitted, beside the DLSS
+  block, without loading any runtime or switching the Reflex backend.
+- `docs/PHASE3_FG.md`: the Phase 3 design, milestones (H1-H6 hardware-independent, R1-R6 RTX-only)
+  and risks.
+- Unit tests: the new `fg/*` settings (valid and invalid), and Frame Generation capability detection
+  with injected fake caps (RTX 40 / 50 supported, GTX 1080 / non-NVIDIA / old driver / unsupported
+  OS unavailable with the right reason).
+
 ## [0.2.0] - 2026-09-25
 
 Phase 2: DLSS Super Resolution / DLAA.

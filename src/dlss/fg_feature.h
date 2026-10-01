@@ -1,0 +1,79 @@
+// DLSS Frame Generation (Phase 3) capability + status holder.
+//
+// Frame Generation (and Multi Frame Generation on GeForce RTX 50) needs a GeForce RTX 40 series
+// (Ada) GPU or newer, a recent NVIDIA driver and Windows 10 20H1+ with hardware-accelerated GPU
+// scheduling. Milestone H1 is the settings, the public API and this stubbed support detection, all
+// guarded off: no Streamline Frame Generation feature is loaded yet (a later, RTX-only milestone),
+// so the capability is not probed and the status is "unavailable" on every GPU, with a
+// player-actionable reason.
+//
+// check_frame_generation() is the real capability logic. It is unit-tested with injected fake caps
+// (dlss::FgCaps), ready for the later milestone that fills FgCaps from the presenting device and
+// Streamline's capability query. The status wording mirrors dlss::DlssFeature / get_dlss_status():
+// a bare reason here, "unavailable: " / "off: " prefixed by the public API.
+//
+// Pure C++: no Godot types, so the rules are unit-tested.
+#pragma once
+
+#include <cstdint>
+#include <mutex>
+#include <string>
+
+namespace lu::dlss {
+
+// The NVIDIA GPU architecture, as far as Frame Generation cares. Frame Generation needs Ada or
+// newer; Multi Frame Generation (3x / 4x) needs Blackwell. "Unknown" is the honest value until a
+// later milestone really queries it; it counts as unsupported.
+enum class NvArchitecture : int { Unknown = 0, PreAda = 1, Ada = 2, Blackwell = 3 };
+
+// Frame Generation's minimum NVIDIA driver (README requirements: 520, 527.64+ for native Vulkan
+// optical flow; the stricter number is used so the Vulkan path is covered).
+inline constexpr uint32_t FG_MIN_DRIVER_MAJOR = 527;
+inline constexpr uint32_t FG_MIN_DRIVER_MINOR = 64;
+
+// What Frame Generation's decision needs. A later milestone fills these from the presenting device
+// and Streamline; until then `probed` is false and support is refused everywhere.
+struct FgCaps {
+	bool probed = false; // the capability was really queried (false in milestone H1)
+	bool vulkan_device = false; // a Vulkan device exists (headless / non-Vulkan: nothing to generate)
+	uint32_t vendor_id = 0; // 0x10DE for NVIDIA
+	std::string gpu_name;
+	uint32_t driver_major = 0;
+	uint32_t driver_minor = 0;
+	NvArchitecture architecture = NvArchitecture::Unknown;
+	bool os_supported = false; // Windows 10 20H1+ with hardware-accelerated GPU scheduling on
+};
+
+// The highest frame-generation multiplier an architecture offers: 1 = no Frame Generation, 2 = Ada
+// Frame Generation, 4 = Blackwell Multi Frame Generation.
+int max_multiplier_for(NvArchitecture architecture);
+
+// "" when Frame Generation could run on these caps, otherwise a player-actionable reason (without a
+// leading "unavailable: "; the public API adds that, mirroring get_dlss_status()).
+std::string check_frame_generation(const FgCaps &caps);
+
+struct FgStatus {
+	bool supported = false; // the hardware / driver / OS could run Frame Generation
+	bool active = false; // Frame Generation is generating frames now (never in milestone H1)
+	std::string reason; // why not (when !supported or !active)
+	int max_multiplier = 1; // the highest multiplier the hardware offers (1 = none)
+};
+
+// Process-wide holder, configured once at CORE start-up (bootstrap.cpp). Guarded off in milestone
+// H1: configure() is called with a stub (not probed), so status().supported is false everywhere.
+class FgFeature {
+public:
+	static FgFeature &get();
+
+	// CORE initialisation. `caps`: the capability for this run (milestone H1 passes a stub that was
+	// not probed, so Frame Generation reports "unavailable" regardless of the GPU).
+	void configure(const FgCaps &caps);
+
+	FgStatus status() const;
+
+private:
+	mutable std::mutex mutex_;
+	FgCaps caps_;
+};
+
+} // namespace lu::dlss
