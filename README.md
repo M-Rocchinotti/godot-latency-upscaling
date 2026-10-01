@@ -92,7 +92,8 @@ Restart the editor and your game afterwards. Windows exports then carry the four
 Resolution needs and NVIDIA's licence files in `nvidia/` beside the game executable. That needs the
 editor plugin enabled; an export made with it disabled warns that it goes without the runtime.
 Before you ship, read the NVIDIA section at the end of this file: NVIDIA's licence has conditions
-for games (notification, attribution).
+for any game given to others (end-user terms, the NVIDIA Marks with NVIDIA's approval) and a
+notification before a commercial release.
 
 ### Building
 
@@ -540,10 +541,14 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 - DLSS uses NVIDIA's Streamline and DLSS binaries, which are **not** in this repository or its
   release zip: the developer fetches them after accepting NVIDIA's licences, and exports carry them
   together with NVIDIA's licence files. The DLSS library is licensed under the NVIDIA RTX SDKs
-  licence. A game that ships it must notify NVIDIA before a commercial release
-  (https://developer.nvidia.com/sw-notification), attribute the DLSS SDK and show the NVIDIA marks
-  on its splash screen, in its about box and in its credits as the licence requires, and have each
-  use of the marks approved by NVIDIA. The addon cannot do that for you. This repository contains
+  licence. A game that gives a build with it to anyone -- commercially or not -- must first have
+  end-user terms at least as protective of NVIDIA as that licence (2(c)), attribute the DLSS SDK and
+  show the NVIDIA Marks on its splash screen, in its about box (if any) and in its credits
+  (Supplement 7.1(b)), each use of the Marks approved by NVIDIA in writing beforehand (7.2(c)), and
+  any website, store or packaging mention of NVIDIA approved too (7.1(a)); before a commercial
+  release it must also notify NVIDIA (https://developer.nvidia.com/sw-notification, Supplement 4).
+  Builds that stay on the developer's own machines are not distributed. The addon cannot do any of
+  that for you. This repository contains
   Streamline's public headers (MIT). See `THIRD_PARTY_NOTICES.md`.
 - UI wording follows NVIDIA's RTX UI guidelines as far as they are known: "NVIDIA Reflex Low
   Latency" with Off / On / On + Boost; "NVIDIA DLSS" with the mode names (DLAA, Quality, Balanced,

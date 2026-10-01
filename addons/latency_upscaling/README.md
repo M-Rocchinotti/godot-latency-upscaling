@@ -48,7 +48,8 @@ NVIDIA RTX SDKs licence (Streamline's own is MIT); it records who accepted, when
 Windows exports carry the runtime in `nvidia/` beside the game while the plugin is enabled (an
 export without it warns). The addon resets DLSS's history on camera cuts by itself; call
 `reset_dlss_history()` on cuts it cannot see (a short teleport). NVIDIA's licence has conditions for
-games that ship DLSS (notification, attribution): see `THIRD_PARTY_NOTICES.md`.
+any game given to others (end-user terms, the NVIDIA Marks with NVIDIA's prior approval) and a
+notification before a commercial release: see `THIRD_PARTY_NOTICES.md`.
 
 ## Platforms
 

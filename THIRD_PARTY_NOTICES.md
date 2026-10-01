@@ -107,13 +107,21 @@ of the release; the same text at
 https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/external/ngx-sdk/license.txt). Summary of the clauses that matter for a
 game using this addon (a reading, not legal advice):
 
-- The DLLs may only be distributed as part of an application with material additional
-  functionality, never stand-alone and never under an open-source licence.
-- Before a commercial release (including "a plug-in to a commercial application") the developer
-  must notify NVIDIA: https://developer.nvidia.com/sw-notification
-- The developer must show NVIDIA attribution and marks as the licence requires (splash screen,
-  about box, credits) and submit each proposed use of the marks to NVIDIA for approval.
-- Only release (not development / watermarked) DLLs may ship, with NVIDIA's signatures intact.
+- Distribution to anyone -- commercial or not, paid or free, testers included -- has conditions:
+  the DLLs only inside an application with material additional functionality, never stand-alone
+  and never under an open-source licence (2(a), 4(b), 4(e)); end-user terms at least as protective
+  of NVIDIA as NVIDIA's licence, and the users' privacy, security and legal rights protected
+  (2(c)); the DLSS SDK attributed and the NVIDIA Marks on the application's splash screen, in its
+  about box (if present) and in its credits (Supplement 7.1(b)), each use of the Marks approved by
+  NVIDIA in writing beforehand, per NVIDIA's guidelines (7.2(c): samples at least two weeks ahead,
+  no answer in ten business days means not approved); any mention of NVIDIA as DLSS's supplier on
+  websites, packaging or trade-show material approved by NVIDIA beforehand (7.1(a)).
+- Additionally, before a commercial release (including "a plug-in to a commercial application"),
+  NVIDIA must be notified: https://developer.nvidia.com/sw-notification (Supplement 4).
+- Running a build on the developer's own machines is use, not distribution: none of the above is
+  needed for that.
+- Only NVIDIA's own release DLLs may ship, unmodified (4(a); the lock's SHA-256), with NVIDIA's
+  licence files beside them.
 
 Streamline itself (`sl.*.dll`) is MIT-licensed (`license.txt` of the release,
 https://github.com/NVIDIA-RTX/Streamline/blob/2122257e0fce486f91b385aa63b9a09b0a34b363/license.txt).
