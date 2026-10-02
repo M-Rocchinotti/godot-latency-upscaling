@@ -4,6 +4,7 @@
 // supported path on Ada / Blackwell. On this GTX 1080 dev box the real probe classifies Pascal, so
 // Frame Generation stays unavailable with an accurate reason (guarded-off milestone H2).
 #include "dlss/fg_feature.h"
+#include "core/settings.h"
 #include "test_framework.h"
 
 #include <string>
@@ -189,6 +190,32 @@ TEST(fg_ui_recomposition_needs_fg_driving_and_both_layers) {
 	CHECK(!neither.enabled);
 	CHECK(!neither.tag_hud_less);
 	CHECK(!neither.tag_ui);
+}
+
+TEST(fg_permitted_requires_both_the_settings_and_the_hardware) {
+	// The pure gate bootstrap applies (Blocker #1): Frame Generation is permitted at startup only when
+	// the developer enabled it (fg/enabled), chose a non-Off mode, AND the first adapter can actually
+	// run Frame Generation. The hardware term is the same predicate the API reports.
+	const bool rtx40 = check_frame_generation(caps_for(NV, "NVIDIA GeForce RTX 4080")).empty();
+	const bool gtx1080 = check_frame_generation(caps_for(NV, "NVIDIA GeForce GTX 1080")).empty();
+	const bool amd = check_frame_generation(caps_for(AMD, "AMD Radeon RX 7900 XTX")).empty();
+	CHECK(rtx40); // the FG-capable adapter supports it
+	CHECK(!gtx1080); // the dev box (Pascal) does not
+	CHECK(!amd);
+
+	// FG-capable hardware + the game's project.godot (fg/enabled=true, fg/mode=On): permitted.
+	CHECK(fg_permitted(true, FrameGenerationMode::On, rtx40));
+
+	// The crux of Blocker #1: the SAME enabled settings DO NOT permit Frame Generation on a non-FG GPU,
+	// so adding fg/enabled=true to project.godot leaves the GTX 1080 / RTX 20-30 / AMD / Intel player
+	// byte-identical to Frame Generation off — fg_permitted is false, so the Reflex LL2 path stays, no
+	// FG plugins are requested and the device is not modified.
+	CHECK(!fg_permitted(true, FrameGenerationMode::On, gtx1080));
+	CHECK(!fg_permitted(true, FrameGenerationMode::On, amd));
+
+	// Each settings term is still required even on FG-capable hardware.
+	CHECK(!fg_permitted(false, FrameGenerationMode::On, rtx40)); // fg/enabled off
+	CHECK(!fg_permitted(true, FrameGenerationMode::Off, rtx40)); // fg/mode Off
 }
 
 TEST(fg_feature_reports_the_configured_caps) {
