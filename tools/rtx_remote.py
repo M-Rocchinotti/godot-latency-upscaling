@@ -415,7 +415,10 @@ Remove-Item -Recurse -Force $d
     problems, summary = preflight_summary(gpu_load, answers)
     if not quiet:
         print(("OK    " if not problems else "BUSY  ") + summary + ("" if not problems else "; " + "; ".join(problems)))
-    return not problems, summary if not problems else summary + "; " + "; ".join(problems)
+    # The return (used for the run-log row and the "not idle" message) is always the clean
+    # summary -- the GPU load + the two yes/no answers, nothing else. The problems are only
+    # annotated on the console line above, never written to the repository log.
+    return not problems, summary
 
 
 def log_windowed_run(name: str, args: list[str], when: str, seconds: str, outcome: str, preflight: str) -> None:
