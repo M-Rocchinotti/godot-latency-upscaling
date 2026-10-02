@@ -20,7 +20,7 @@ godot-latency-upscaling. Phase 3 builds on the same in-process Vulkan dispatch l
 
 DLSS Frame Generation inserts AI-generated frames between rendered frames: FG on an RTX 40 series
 (Ada) GPU generates one frame per rendered frame (2x); Multi Frame Generation on an RTX 50 series
-(Blackwell) GPU generates up to three (3x / 4x). It raises the displayed frame rate but **not**
+(Blackwell) GPU generates up to three (3x / 4x) — up to 6x on the RTX 5080 tested here. It raises the displayed frame rate but **not**
 input responsiveness, so NVIDIA requires Reflex to be on whenever FG is on, to keep latency in
 check. FG trades a little latency and VRAM for smoothness; it is most useful when the base frame
 rate is already reasonable (NVIDIA recommends roughly 60 fps base before FG).
@@ -64,7 +64,7 @@ On the `LatencyUpscaling` singleton (reach it through `Engine`, as in the README
 | `is_frame_generation_supported() -> bool` | a GeForce RTX 40 series GPU or newer could run FG |
 | `is_frame_generation_active() -> bool` | FG is generating frames now (always false in H1) |
 | `get_frame_generation_status() -> String` | `"active (...)"`, `"off: ..."` or `"unavailable: <reason>"`, worded like `get_dlss_status()` |
-| `get_max_frame_generation_multiplier() -> int` | the hardware's ceiling (1 = none, 2 = Ada, 4 = Blackwell) |
+| `get_max_frame_generation_multiplier() -> int` | the hardware's ceiling (1 = none, 2 = Ada, up to 6 on Blackwell at run time — architecture guess 4 until the runtime reports it) |
 | `set_hudless_source(texture: RID)` (H6) | the 3D scene without the HUD (root viewport), for clean-UI FG; empty RID clears |
 | `set_ui_layer(texture: RID)` (H6) | the HUD on its own transparent layer (colour + alpha); empty RID clears |
 
@@ -95,7 +95,7 @@ reason.
 the same temporary-instance enumeration DLSS uses, through the real Vulkan loader, before Godot's
 device exists), reads the first adapter (Godot's default), and classifies the architecture with the
 pure `dlss::classify_nvidia_architecture(vendor, name, device_id)` — GeForce RTX 50xx -> Blackwell
-(MFG, max 4), RTX 40xx or an "Ada" name -> Ada (FG, max 2), RTX 30xx/20xx and every GTX -> pre-Ada,
+(MFG, max 4 — the runtime reports up to 6 once FG initialises), RTX 40xx or an "Ada" name -> Ada (FG, max 2), RTX 30xx/20xx and every GTX -> pre-Ada,
 non-NVIDIA or an unplaceable NVIDIA name -> unknown (conservative, unsupported). The driver is
 decoded with `dlss::nvidia_driver_version`; below 527.64 the reason notes that older drivers offer
 FG only through Direct3D interop, which this Vulkan addon cannot use. The OS / HAGS requirement is
@@ -171,9 +171,12 @@ interpolates the HUD-less colour and recomposes the UI cleanly onto real **and**
 The decision is the pure, unit-tested `fg_ui_recomposition(fg_driving, hud_less_valid, ui_valid)`
 (`src/dlss/fg_feature.{h,cpp}`): all three required, else present-only (four tags, recomposition off)
 **unchanged** — a game that provides neither, or only one, is never regressed, and FG off stays
-byte-identical. This is expected to resolve the UI-related present-only validation nits above
-(`vkCmdDraw-09600` / `vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213`), which stem from
-interpolating an untagged composited image. **(RTX-only to verify; the dev box cannot run FG.)**
+byte-identical. **Verified engaging on the RTX 5080** (driver 591.86): with both layers provided,
+DLSS-G recomposes the UI cleanly on real and generated frames (`is_frame_generation_recomposing()`
+true). The UI-related draw nit (`vkCmdDraw-09600`) is resolved by the HUD-less tag path; the
+`vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213` pair, however, **remains open** and is internal
+to NVIDIA's Streamline / DLSS-G (not the addon's tagging), so it is not fixable here — see
+`docs/ISSUES.md` #3. The dev box (GTX 1080) still cannot run FG; this was verified on the RTX box.
 
 **Game side — not done yet (blocker, see below).** For the plugin API to do anything a game must
 render its HUD on a transparent SubViewport so the root viewport is HUD-less, keep the weapon

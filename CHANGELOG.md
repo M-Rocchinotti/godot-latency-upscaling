@@ -52,9 +52,12 @@ is never regressed. Not 1.0: a few low-severity validation-layer messages under 
   ghosting). The decision is the pure, unit-tested `dlss::fg_ui_recomposition(fg_driving,
   hud_less_valid, ui_valid)` — all three required.
 - No regression: a game that provides neither image (or only one) keeps the present-only path (four
-  tags, recomposition off), unchanged; Frame Generation off stays byte-identical. RTX-only to verify
-  (the dev box cannot run FG); expected to resolve the UI-related present-only validation nits
-  (`vkCmdDraw-09600` / `vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213`).
+  tags, recomposition off), unchanged; Frame Generation off stays byte-identical. **Verified on the
+  RTX 5080** (driver 591.86): with both layers provided, UI recomposition engages
+  (`is_frame_generation_recomposing()` true) and the UI-related draw nit (`vkCmdDraw-09600`) is
+  resolved by the HUD-less tag path. The `vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213` pair,
+  however, **remains open** and is internal to NVIDIA's Streamline / DLSS-G, not the addon's tagging
+  (see `docs/ISSUES.md` #3).
 - The matching game-side HUD restructuring (render the HUD on a transparent SubViewport so the root
   viewport is HUD-less, then call the two setters) is **not included** — in crater-zombie-fps that is a
   large, RTX-only-verifiable change (the HUD is a CanvasLayer stack whose elements reach
