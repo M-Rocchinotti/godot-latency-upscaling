@@ -80,6 +80,24 @@ enum class FgAvailability {
 };
 FgAvailability fg_availability(bool supported, bool fg_mode_on, bool sr_active, bool vsync_on);
 
+// DLSS Frame Generation HUD-less recomposition (milestone H6). By default Frame Generation
+// interpolates the composited backbuffer (3D + UI), so the UI ghosts on generated frames. When the
+// game provides both a HUD-less colour (the 3D scene without UI) and a UI layer (colour + alpha),
+// Frame Generation can interpolate the HUD-less colour and recompose the UI cleanly onto real AND
+// generated frames instead. These are the resources to tag and whether to enable that path.
+struct FgUiRecomposition {
+	bool enabled = false; // DLSSGOptions.enableUserInterfaceRecomposition
+	bool tag_hud_less = false; // tag kBufferTypeHUDLessColor from the HUD-less source
+	bool tag_ui = false; // tag kBufferTypeUIColorAndAlpha from the UI layer
+};
+
+// Whether to drive HUD-less recomposition this frame (pure, unit-tested). It needs all three: Frame
+// Generation actually driving, a HUD-less colour to interpolate and a UI layer to recompose. Anything
+// less keeps the present-only path (no HUD-less / UI tags, recomposition off), so a game that provides
+// neither — or only one — is never regressed. `fg_driving`: Frame Generation is set to On this frame.
+// `hud_less_valid` / `ui_valid`: the game supplied the image and it resolved to a Vulkan image.
+FgUiRecomposition fg_ui_recomposition(bool fg_driving, bool hud_less_valid, bool ui_valid);
+
 // "" when Frame Generation could run on these caps, otherwise a player-actionable reason (without a
 // leading "unavailable: "; the public API adds that, mirroring get_dlss_status()).
 std::string check_frame_generation(const FgCaps &caps);

@@ -11,7 +11,9 @@ godot-latency-upscaling. Phase 3 builds on the same in-process Vulkan dispatch l
 > `frame_generation` is On and a DLSS SR / DLAA upscaler is active with VSync off. With Frame
 > Generation off (the default) the Reflex / DLSS / pass-through behaviour is byte-identical. The real
 > generation runs only on an RTX 40 series+ (verified in the R-series). Present-only means the UI
-> ghosts on generated frames; the HUD-less input (H6) fixes that.
+> ghosts on generated frames. **H6 (plugin side)** adds the HUD-less + UI recomposition tag path and
+> the `set_hudless_source` / `set_ui_layer` API that fix the ghosting; the matching **game-side** HUD
+> restructuring (crater-zombie-fps) is a separate, larger change and is **not done yet** (see H6).
 
 ## What Frame Generation is
 
@@ -62,6 +64,11 @@ On the `LatencyUpscaling` singleton (reach it through `Engine`, as in the README
 | `is_frame_generation_active() -> bool` | FG is generating frames now (always false in H1) |
 | `get_frame_generation_status() -> String` | `"active (...)"`, `"off: ..."` or `"unavailable: <reason>"`, worded like `get_dlss_status()` |
 | `get_max_frame_generation_multiplier() -> int` | the hardware's ceiling (1 = none, 2 = Ada, 4 = Blackwell) |
+| `set_hudless_source(texture: RID)` (H6) | the 3D scene without the HUD (root viewport), for clean-UI FG; empty RID clears |
+| `set_ui_layer(texture: RID)` (H6) | the HUD on its own transparent layer (colour + alpha); empty RID clears |
+
+Both H6 setters are no-ops unless DLSS Frame Generation is driving and both are set; see "Clean UI on
+generated frames" below.
 
 Project settings (`latency_upscaling/...`), read at CORE init like the rest:
 
@@ -141,6 +148,44 @@ whose UI was not tagged HUD-less. They are not from the addon's SR tagging or op
 HUD-less tag path (H6) is expected to resolve the UI-related ones, and the Streamline-internal ones
 are NVIDIA's. FG off is validation-clean.
 
+## Clean UI on generated frames (H6, HUD-less + UI recomposition)
+
+**Plugin side — landed.** Two engine-API methods let a game hand FG a clean UI instead of the
+present-only composite:
+
+- `LatencyUpscaling.set_hudless_source(texture: RID)` — the 3D scene without the HUD (the root
+  viewport, post-tonemap), as a RenderingServer texture RID.
+- `LatencyUpscaling.set_ui_layer(texture: RID)` — the HUD on its own (a transparent SubViewport),
+  colour + alpha, as a RenderingServer texture RID. An empty RID clears either one.
+
+They are stored on the main thread (`Upscaler::set_hudless_source` / `set_ui_layer`, on the snapshot)
+and resolved to Vulkan images on the render thread (`game_evaluate_image`: a RenderingServer texture
+RID -> its backing RenderingDevice texture via `texture_get_rd_texture` -> `evaluate_image`; a RID
+that does not resolve leaves the image invalid). When Frame Generation is driving **and** both images
+resolved, `dlss::Streamline::evaluate()` tags `kBufferTypeHUDLessColor` from the HUD-less source and
+`kBufferTypeUIColorAndAlpha` from the UI layer alongside the four Super Resolution tags, and
+`drive_frame_generation()` sets `DLSSGOptions.enableUserInterfaceRecomposition = true`, so DLSS-G
+interpolates the HUD-less colour and recomposes the UI cleanly onto real **and** generated frames.
+
+The decision is the pure, unit-tested `fg_ui_recomposition(fg_driving, hud_less_valid, ui_valid)`
+(`src/dlss/fg_feature.{h,cpp}`): all three required, else present-only (four tags, recomposition off)
+**unchanged** — a game that provides neither, or only one, is never regressed, and FG off stays
+byte-identical. This is expected to resolve the UI-related present-only validation nits above
+(`vkCmdDraw-09600` / `vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213`), which stem from
+interpolating an untagged composited image. **(RTX-only to verify; the dev box cannot run FG.)**
+
+**Game side — not done yet (blocker, see below).** For the plugin API to do anything a game must
+render its HUD on a transparent SubViewport so the root viewport is HUD-less, keep the weapon
+view-model in the 3D viewport, and call the two setters while FG/DLSS is active. In crater-zombie-fps
+the in-game HUD is a `CanvasLayer` stack (hosting the pause / results / loading menu layers and a
+workbench sheet on a higher layer) whose elements (`hud_minimap`, `hud_damage_indicators`,
+`hud_blood_overlay`, `hud_vignette`) reach the player camera with `get_viewport().get_camera_3d()` —
+which returns null inside a SubViewport — and whose interactive menus rely on the root viewport for
+GUI/mouse input (29 UI files touch `get_viewport()` / `get_window()`). Moving the HUD into a
+SubViewport is therefore a large, high-risk restructuring that cannot be visually verified on the
+GTX 1080 dev box (FG needs an RTX 40+). Per the plan's guidance ("keep present-only FG rather than
+break the HUD") the game-side move is deferred; the plugin API is in place for when it is done.
+
 ## Requirements (target)
 
 | Feature | GPU | Driver | Other |
@@ -160,7 +205,7 @@ Hardware-independent milestones (**H**) build and test on the GTX 1080 dev box; 
 | **H3** | Load the Streamline Frame Generation plugins (`sl.dlss_g`, `sl.reflex`, `sl.pcl`) into slInit when FG is permitted and resolve their functions on the device; ship the FG DLLs with Windows exports. Guarded off: no rendering uses them and the Reflex backend is not switched. **Landed.** | H2 |
 | **H4** | The Reflex backend switch: `SlReflexDevice` drives Reflex through sl.reflex / sl.pcl (same contract as `Ll2Device`, reusing `FrameSequencer`), chosen over VK_NV_low_latency2 when FG is permitted. LL2 kept out of the device; LL2 path byte-identical when FG off. **Landed.** | H3 |
 | **H5** | Drive present-only Frame Generation: `slDLSSGSetOptions(eOn, numFramesToGenerate)` on the SR viewport (reusing SR's depth + motion-vector tags, backbuffer auto-intercepted), the VSync-off / SR-active guards, and the live `slDLSSGGetState` status. UI ghosts on generated frames (no HUD-less tagging yet). **Landed.** | H4 |
-| **H6** | HUD-less-colour input contract and a game-side UI-layer hook for a clean FG image. | H5 |
+| **H6** | Clean UI on generated frames. **Plugin side landed:** `set_hudless_source` / `set_ui_layer` API, HUD-less + UI recomposition tagging (`kBufferTypeHUDLessColor` / `kBufferTypeUIColorAndAlpha`, `enableUserInterfaceRecomposition`), pure unit-tested `fg_ui_recomposition`; FG off byte-identical, present-only unchanged when the game provides neither. **Game side deferred** (crater-zombie-fps HUD is a CanvasLayer stack whose elements reach `get_viewport().get_camera_3d()` and whose menus route input through the root viewport; the SubViewport move is a large, RTX-only-verifiable change). | H5 |
 | **R1-R6** | The RTX-only counterparts: load `sl.dlss_g`, activate FG, verify the Reflex switch, measure latency/throughput, MFG multipliers, image quality. | H1-H6 |
 
 ## Risks

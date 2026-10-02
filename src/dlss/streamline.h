@@ -82,9 +82,12 @@ private:
 	// (slGetFeatureFunction requires it). Graceful: on any failure it logs, leaves Frame Generation
 	// not ready, and returns without touching DLSS or the non-FG path. Caller holds mutex_.
 	void resolve_frame_generation_functions();
-	// Phase 3, present-only: drive Frame Generation on this viewport (slDLSSGSetOptions) and read back
-	// its state (slDLSSGGetState), from inside evaluate() on the render thread. Caller holds mutex_.
-	void drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height);
+	// Phase 3: drive Frame Generation on this viewport (slDLSSGSetOptions) and read back its state
+	// (slDLSSGGetState), from inside evaluate() on the render thread. `enable_ui_recomposition` turns on
+	// DLSS-G's HUD-less recomposition path (milestone H6), set only when the HUD-less colour and UI
+	// layer were both tagged this frame; false keeps the present-only path. Caller holds mutex_.
+	void drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height,
+			bool enable_ui_recomposition);
 
 	mutable std::mutex mutex_;
 	HMODULE module_ = nullptr;

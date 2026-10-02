@@ -129,6 +129,8 @@ void LatencyUpscaling::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_mfg_multiplier", "multiplier"), &LatencyUpscaling::set_mfg_multiplier);
 	ClassDB::bind_method(D_METHOD("get_mfg_multiplier"), &LatencyUpscaling::get_mfg_multiplier);
 	ClassDB::bind_method(D_METHOD("get_max_frame_generation_multiplier"), &LatencyUpscaling::get_max_frame_generation_multiplier);
+	ClassDB::bind_method(D_METHOD("set_hudless_source", "texture"), &LatencyUpscaling::set_hudless_source);
+	ClassDB::bind_method(D_METHOD("set_ui_layer", "texture"), &LatencyUpscaling::set_ui_layer);
 #ifdef DEBUG_ENABLED
 	ClassDB::bind_method(D_METHOD("_set_upscaler_test_conventions", "jitter_x", "jitter_y", "motion"),
 			&LatencyUpscaling::_set_upscaler_test_conventions);
@@ -547,6 +549,14 @@ int LatencyUpscaling::get_mfg_multiplier() const {
 
 int LatencyUpscaling::get_max_frame_generation_multiplier() const {
 	return dlss::FgFeature::get().status().max_multiplier;
+}
+
+void LatencyUpscaling::set_hudless_source(const godot::RID &texture) {
+	Upscaler::get().set_hudless_source(texture);
+}
+
+void LatencyUpscaling::set_ui_layer(const godot::RID &texture) {
+	Upscaler::get().set_ui_layer(texture);
 }
 
 #ifdef DEBUG_ENABLED

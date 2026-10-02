@@ -164,6 +164,33 @@ TEST(fg_availability_decides_when_to_drive) {
 	CHECK(fg_availability(true, true, true, false) == FgAvailability::Driving); // on, upscaling, VSync off
 }
 
+TEST(fg_ui_recomposition_needs_fg_driving_and_both_layers) {
+	// Both the HUD-less colour and the UI layer present while Frame Generation drives: recompose, and
+	// both get tagged (the clean-UI path, milestone H6).
+	FgUiRecomposition both = fg_ui_recomposition(true, true, true);
+	CHECK(both.enabled);
+	CHECK(both.tag_hud_less);
+	CHECK(both.tag_ui);
+
+	// Frame Generation not driving: present-only even with both layers (nothing extra tagged), so the
+	// non-FG and FG-off paths are byte-identical to before H6.
+	FgUiRecomposition not_driving = fg_ui_recomposition(false, true, true);
+	CHECK(!not_driving.enabled);
+	CHECK(!not_driving.tag_hud_less);
+	CHECK(!not_driving.tag_ui);
+
+	// Only one layer provided (the game wired one but not the other): present-only, never a half-tagged
+	// recomposition that DLSS-G would reject.
+	CHECK(!fg_ui_recomposition(true, true, false).enabled); // HUD-less only
+	CHECK(!fg_ui_recomposition(true, false, true).enabled); // UI only
+
+	// Neither provided (the default): present-only, no regression.
+	FgUiRecomposition neither = fg_ui_recomposition(true, false, false);
+	CHECK(!neither.enabled);
+	CHECK(!neither.tag_hud_less);
+	CHECK(!neither.tag_ui);
+}
+
 TEST(fg_feature_reports_the_configured_caps) {
 	// Not probed (milestone H1 / the editor): unavailable everywhere, max multiplier 1.
 	FgFeature feature;

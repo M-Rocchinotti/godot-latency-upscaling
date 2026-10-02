@@ -47,6 +47,11 @@ struct EvaluateInputs {
 	EvaluateImage depth; // render size, reverse Z
 	EvaluateImage velocity; // render size, current -> previous, UV units
 	EvaluateImage output; // target size ("color_upscaled")
+	// Frame Generation HUD-less recomposition (milestone H6). Invalid unless the game provides them
+	// through LatencyUpscaling.set_hudless_source / set_ui_layer; only consulted when Frame Generation
+	// is driving. Both invalid (the default) keeps the present-only path, so nothing regresses.
+	EvaluateImage hud_less; // target size, the 3D scene without UI (eHUDLessColor)
+	EvaluateImage ui; // window / target size, the UI layer with alpha (eUIColorAndAlpha)
 	upscale::Quality mode = upscale::Quality::Quality; // concrete (Auto resolved)
 	upscale::Preset preset = upscale::Preset::Default;
 	float jitter_x = 0.0f; // render pixels, as Godot hands it to FSR2 (taa_jitter * render size / 2)

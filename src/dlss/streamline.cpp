@@ -551,13 +551,26 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 	sl::Resource depth = to_sl(in.depth);
 	sl::Resource velocity = to_sl(in.velocity);
 	sl::Resource output = to_sl(in.output);
+	// Milestone H6 HUD-less recomposition: when Frame Generation is driving and the game provided both
+	// a HUD-less colour and a UI layer, tag them too so DLSS-G interpolates the HUD-less colour and
+	// recomposes the UI cleanly onto real and generated frames. Otherwise only the Super Resolution
+	// four are tagged and the backbuffer (intercepted in interposer mode) is interpolated as a whole —
+	// the present-only path, where the UI ghosts (docs/PHASE3_FG.md). Pure, unit-tested decision.
+	const FgUiRecomposition recompose = fg_ui_recomposition(fg_request_on_, in.hud_less.valid(), in.ui.valid());
+	sl::Resource hud_less = to_sl(in.hud_less);
+	sl::Resource ui = to_sl(in.ui);
 	sl::ResourceTag tags[] = {
 		sl::ResourceTag(&color, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilPresent),
 		sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent),
 		sl::ResourceTag(&velocity, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent),
 		sl::ResourceTag(&output, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilPresent),
+		sl::ResourceTag(&hud_less, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent),
+		sl::ResourceTag(&ui, sl::kBufferTypeUIColorAndAlpha, sl::ResourceLifecycle::eValidUntilPresent),
 	};
-	r = a.SetTagForFrame(*token, viewport, tags, 4, command_buffer);
+	// The Super Resolution four always; the HUD-less colour and UI layer only when recomposing, so the
+	// present-only call is byte-identical to before H6 (same four tags, same count).
+	const uint32_t tag_count = recompose.enabled ? 6 : 4;
+	r = a.SetTagForFrame(*token, viewport, tags, tag_count, command_buffer);
 	if (r != sl::Result::eOk) {
 		error = result_text("slSetTagForFrame", r);
 		return false;
@@ -568,11 +581,10 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 		error = result_text("slEvaluateFeature", r);
 		return false;
 	}
-	// Phase 3, present-only Frame Generation: drive it on this viewport. The depth and motion vectors
-	// were just tagged for Super Resolution (the mandatory pair), and the backbuffer is intercepted in
-	// interposer mode, so no extra tagging is needed. UI is not tagged yet (that is the HUD-less
-	// milestone), so the game's UI ghosts on generated frames (docs/PHASE3_FG.md).
-	drive_frame_generation(in.viewport, in.color.width, in.color.height);
+	// Drive Frame Generation on this viewport. The depth and motion vectors were just tagged for Super
+	// Resolution (the mandatory pair) and the backbuffer is intercepted in interposer mode; HUD-less
+	// recomposition is enabled only when both its resources were tagged above.
+	drive_frame_generation(in.viewport, in.color.width, in.color.height, recompose.enabled);
 	return true;
 }
 
@@ -585,7 +597,8 @@ void Streamline::set_frame_generation_request(bool on, uint32_t num_frames_to_ge
 	}
 }
 
-void Streamline::drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height) {
+void Streamline::drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height,
+		bool enable_ui_recomposition) {
 	// Caller (evaluate) holds mutex_, on the render thread; slDLSSGSetOptions / slDLSSGGetState are not
 	// thread-safe, so they only ever run here.
 	Api &a = api();
@@ -597,6 +610,9 @@ void Streamline::drive_frame_generation(uint32_t viewport_id, uint32_t render_wi
 	options.mode = fg_request_on_ ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
 	options.numFramesToGenerate = fg_request_frames_;
 	options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff; // keep resources allocated across off/on
+	// Milestone H6: when the HUD-less colour and UI layer were tagged this frame, let DLSS-G allocate
+	// the codepath that interpolates them separately from the backbuffer so the UI does not ghost.
+	options.enableUserInterfaceRecomposition = enable_ui_recomposition ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 	a.DLSSGSetOptions(viewport, options);
 
 	FrameGenerationRuntime runtime;

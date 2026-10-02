@@ -97,6 +97,12 @@ public:
 	// when the backend is not DLSS.
 	void set_frame_generation(bool on, uint32_t num_frames_to_generate);
 	bool frame_generation_runtime(dlss::UpscalerProvider::FrameGenerationRuntime &out) const;
+	// Phase 3 Frame Generation HUD-less recomposition (milestone H6): the game's HUD-less source (the
+	// root 3D viewport, post-tonemap) and UI layer (a transparent HUD SubViewport), as RenderingServer
+	// texture RIDs. An empty RID clears it. They only take effect while DLSS Frame Generation drives;
+	// with neither set, Frame Generation stays on the present-only path (the UI ghosts). Main thread.
+	void set_hudless_source(const godot::RID &texture);
+	void set_ui_layer(const godot::RID &texture);
 	UpscaleBackend backend() const { return backend_; }
 	bool is_active() const; // upscaling the main viewport right now
 	std::string reason() const; // why it is not active ("" when active)
@@ -147,6 +153,12 @@ private:
 		upscale::CutThresholds cut_thresholds;
 		uint64_t camera_serial = 0; // +1 whenever another camera becomes current
 		VelocityFillMode velocity_fill = VelocityFillMode::FarPlane;
+		// Frame Generation HUD-less recomposition (milestone H6): the game's HUD-less source (the 3D
+		// scene without UI) and UI layer (with alpha), as RenderingServer texture RIDs. Empty unless the
+		// game set them; resolved to Vulkan images on the render thread and only used when Frame
+		// Generation drives. RID is a trivially copyable handle, so the snapshot copy is cheap.
+		godot::RID hudless_source;
+		godot::RID ui_layer;
 	};
 	struct ViewState { // render thread only
 		godot::RID history[2];

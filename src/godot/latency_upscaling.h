@@ -6,6 +6,7 @@
 #include <godot_cpp/core/binder_common.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/rid.hpp>
 
 #include <cstdint>
 
@@ -85,6 +86,16 @@ public:
 	void set_mfg_multiplier(int multiplier); // Multi Frame Generation: 0 = Auto, else 2 / 3 / 4
 	int get_mfg_multiplier() const;
 	int get_max_frame_generation_multiplier() const; // highest multiplier the hardware offers (1 = none)
+	// Clean UI on generated frames (milestone H6). By default Frame Generation interpolates the whole
+	// composited image, so the HUD ghosts on generated frames. A game can avoid that by rendering its
+	// HUD into a transparent SubViewport (leaving the root viewport HUD-less) and handing both here:
+	// the HUD-less source (the root viewport's texture) and the UI layer (the HUD SubViewport's
+	// texture). Frame Generation then interpolates the HUD-less colour and recomposes the UI cleanly.
+	// Pass an empty RID to clear. No effect unless DLSS Frame Generation is driving; with neither set,
+	// the present-only path (ghosting UI) is unchanged. Both are RenderingServer texture RIDs, e.g.
+	// get_viewport().get_texture().get_rid() and $HudSubViewport.get_texture().get_rid().
+	void set_hudless_source(const godot::RID &texture);
+	void set_ui_layer(const godot::RID &texture);
 #ifdef DEBUG_ENABLED
 	// Test hooks (debug builds only, tests/upscaler_tests.gd): upscaler conventions relative to
 	// Godot's (+1 = Godot's), a history reset, N frames of UBO / velocity read-backs, and the native

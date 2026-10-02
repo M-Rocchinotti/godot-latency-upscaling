@@ -123,6 +123,16 @@ FgAvailability fg_availability(bool supported, bool fg_mode_on, bool sr_active, 
 	return FgAvailability::Driving;
 }
 
+FgUiRecomposition fg_ui_recomposition(bool fg_driving, bool hud_less_valid, bool ui_valid) {
+	FgUiRecomposition out;
+	// All three are required: without the HUD-less colour there is nothing clean to interpolate, and
+	// without the UI layer there is nothing to recompose, so either alone keeps present-only.
+	out.enabled = fg_driving && hud_less_valid && ui_valid;
+	out.tag_hud_less = out.enabled;
+	out.tag_ui = out.enabled;
+	return out;
+}
+
 std::string check_frame_generation(const FgCaps &caps) {
 	// Not probed (e.g. the editor, where Frame Generation is moot): the honest, player-actionable
 	// default, as in milestone H1.

@@ -9,6 +9,28 @@ off (the default) the Reflex, DLSS and pass-through behaviour is byte-identical 
 Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
 `docs/PHASE3_FG.md`.
 
+### Milestone H6 (plugin side) — clean UI on generated frames (HUD-less + UI recomposition)
+
+- New engine API: `LatencyUpscaling.set_hudless_source(texture: RID)` (the 3D scene without the HUD,
+  the root viewport) and `set_ui_layer(texture: RID)` (the HUD on its own transparent layer, colour +
+  alpha); an empty RID clears either. The game passes RenderingServer texture RIDs; the addon resolves
+  them to Vulkan images on the render thread (`game_evaluate_image`: `texture_get_rd_texture` ->
+  `evaluate_image`, invalid if it does not resolve).
+- When DLSS Frame Generation is driving **and** both resolved, `dlss::Streamline::evaluate()` tags
+  `kBufferTypeHUDLessColor` and `kBufferTypeUIColorAndAlpha` alongside the four Super Resolution tags
+  and sets `DLSSGOptions.enableUserInterfaceRecomposition = true`, so DLSS-G interpolates the HUD-less
+  colour and recomposes the UI cleanly onto real and generated frames (fixes the present-only UI
+  ghosting). The decision is the pure, unit-tested `dlss::fg_ui_recomposition(fg_driving,
+  hud_less_valid, ui_valid)` — all three required.
+- No regression: a game that provides neither image (or only one) keeps the present-only path (four
+  tags, recomposition off), unchanged; Frame Generation off stays byte-identical. RTX-only to verify
+  (the dev box cannot run FG); expected to resolve the UI-related present-only validation nits
+  (`vkCmdDraw-09600` / `vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213`).
+- The matching game-side HUD restructuring (render the HUD on a transparent SubViewport so the root
+  viewport is HUD-less, then call the two setters) is **not included** — in crater-zombie-fps that is a
+  large, RTX-only-verifiable change (the HUD is a CanvasLayer stack whose elements reach
+  `get_viewport().get_camera_3d()` and whose menus route input through the root viewport).
+
 ### Fixed — Frame Generation device-lost from per-frame token mismatch (RTX 5080)
 
 - Present-only FG crashed with `VK_ERROR_DEVICE_LOST`: each subsystem minted its own Streamline frame

@@ -213,6 +213,16 @@ bool Upscaler::frame_generation_runtime(dlss::UpscalerProvider::FrameGenerationR
 	return dlss_provider_ != nullptr && dlss_provider_->frame_generation_runtime(out);
 }
 
+void Upscaler::set_hudless_source(const godot::RID &texture) {
+	std::lock_guard<std::mutex> lock(snapshot_mutex_);
+	snapshot_.hudless_source = texture; // resolved on the render thread; only used when Frame Generation drives
+}
+
+void Upscaler::set_ui_layer(const godot::RID &texture) {
+	std::lock_guard<std::mutex> lock(snapshot_mutex_);
+	snapshot_.ui_layer = texture;
+}
+
 void Upscaler::update() {
 	SceneTree *tree = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop());
 	Window *root = tree != nullptr ? tree->get_root() : nullptr;
@@ -590,6 +600,21 @@ dlss::EvaluateImage evaluate_image(RenderingDevice *rd, const RID &texture, VkIm
 	return image;
 }
 
+// Resolve a game-provided texture to a Vulkan image for Frame Generation's HUD-less recomposition.
+// The game passes what GDScript naturally produces — a RenderingServer texture RID (a viewport's
+// ViewportTexture) — so convert it to the backing RenderingDevice texture first. A few engine
+// textures have no RD backing (then texture_get_rd_texture returns an empty RID); fall back to
+// treating the RID as an RD texture, and if neither yields an image the EvaluateImage stays invalid,
+// which keeps Frame Generation on the present-only path (no regression).
+dlss::EvaluateImage game_evaluate_image(RenderingDevice *rd, const RID &rs_texture, VkImageLayout layout) {
+	if (!rs_texture.is_valid()) {
+		return dlss::EvaluateImage();
+	}
+	const RID rd_texture = RenderingServer::get_singleton()->texture_get_rd_texture(rs_texture);
+	const RID &texture = rd_texture.is_valid() ? rd_texture : rs_texture;
+	return evaluate_image(rd, texture, layout);
+}
+
 // Row-major copy of a Godot (column-major) projection.
 void row_major(const Projection &m, float out[4][4]) {
 	for (int r = 0; r < 4; ++r) {
@@ -642,6 +667,11 @@ void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, const RID &v
 	in.depth = evaluate_image(rd, rb->get_depth_texture(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	in.velocity = evaluate_image(rd, velocity, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL); // the filled copy
 	in.output = evaluate_image(rd, rb->get_texture(buffers_context(), upscaled_name()), VK_IMAGE_LAYOUT_GENERAL);
+	// Frame Generation HUD-less recomposition (milestone H6): the game's HUD-less 3D colour and UI
+	// layer, if it set them. Both are composited images Godot samples, so shader-read-only is their
+	// layout at the marker; the backend only tags them when Frame Generation drives.
+	in.hud_less = game_evaluate_image(rd, snap.hudless_source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	in.ui = game_evaluate_image(rd, snap.ui_layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	in.mode = snap.quality;
 	in.preset = snap.preset;
 	// As Godot hands its jitter to FSR2 (render pixels); the tests can change the convention.
