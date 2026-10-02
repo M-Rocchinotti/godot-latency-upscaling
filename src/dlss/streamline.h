@@ -85,9 +85,11 @@ private:
 	// Phase 3: drive Frame Generation on this viewport (slDLSSGSetOptions) and read back its state
 	// (slDLSSGGetState), from inside evaluate() on the render thread. `enable_ui_recomposition` turns on
 	// DLSS-G's HUD-less recomposition path (milestone H6), set only when the HUD-less colour and UI
-	// layer were both tagged this frame; false keeps the present-only path. Caller holds mutex_.
+	// layer were both tagged this frame; false keeps the present-only path. The `ui_layers_provided` /
+	// `hudless_valid` / `ui_valid` facts are recorded into fg_runtime_ for the status surface (measured
+	// from the real evaluate inputs, not the request). Caller holds mutex_.
 	void drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height,
-			bool enable_ui_recomposition);
+			bool enable_ui_recomposition, bool ui_layers_provided, bool hudless_valid, bool ui_valid);
 
 	mutable std::mutex mutex_;
 	HMODULE module_ = nullptr;

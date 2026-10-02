@@ -123,6 +123,7 @@ void LatencyUpscaling::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("reset_dlss_history"), &LatencyUpscaling::reset_dlss_history);
 	ClassDB::bind_method(D_METHOD("is_frame_generation_supported"), &LatencyUpscaling::is_frame_generation_supported);
 	ClassDB::bind_method(D_METHOD("is_frame_generation_active"), &LatencyUpscaling::is_frame_generation_active);
+	ClassDB::bind_method(D_METHOD("is_frame_generation_recomposing"), &LatencyUpscaling::is_frame_generation_recomposing);
 	ClassDB::bind_method(D_METHOD("get_frame_generation_status"), &LatencyUpscaling::get_frame_generation_status);
 	ClassDB::bind_method(D_METHOD("set_frame_generation_mode", "mode"), &LatencyUpscaling::set_frame_generation_mode);
 	ClassDB::bind_method(D_METHOD("get_frame_generation_mode"), &LatencyUpscaling::get_frame_generation_mode);
@@ -478,6 +479,11 @@ bool LatencyUpscaling::is_frame_generation_active() const {
 	return Upscaler::get().frame_generation_runtime(runtime) && runtime.active;
 }
 
+bool LatencyUpscaling::is_frame_generation_recomposing() const {
+	dlss::UpscalerProvider::FrameGenerationRuntime runtime;
+	return Upscaler::get().frame_generation_runtime(runtime) && runtime.recomposition_engaged;
+}
+
 String LatencyUpscaling::get_frame_generation_status() const {
 	const dlss::FgStatus s = dlss::FgFeature::get().status();
 	const bool sr_active = Upscaler::get().backend() == UpscaleBackend::Dlss && Upscaler::get().is_active();
@@ -494,9 +500,11 @@ String LatencyUpscaling::get_frame_generation_status() const {
 			dlss::UpscalerProvider::FrameGenerationRuntime rt;
 			const bool have = Upscaler::get().frame_generation_runtime(rt);
 			if (have && rt.active) {
-				return vformat("active (%dx, %dx%d -> %d presented)", static_cast<int>(rt.num_frames_to_generate) + 1,
+				// The UI path: "UI recomposed" when DLSS-G recomposes the HUD cleanly this frame, else
+				// "present-only" (the UI ghosts on generated frames because no clean layers engaged).
+				return vformat("active (%dx, %dx%d -> %d presented, %s)", static_cast<int>(rt.num_frames_to_generate) + 1,
 						static_cast<int>(rt.render_width), static_cast<int>(rt.render_height),
-						static_cast<int>(rt.num_frames_presented));
+						static_cast<int>(rt.num_frames_presented), rt.recomposition_engaged ? "UI recomposed" : "present-only");
 			}
 			if (have && !rt.status.empty()) {
 				return String("off: ") + String::utf8(rt.status.c_str());
@@ -788,10 +796,22 @@ Dictionary LatencyUpscaling::get_status() const {
 	fg["multiplier"] = mfg_multiplier_;
 	fg["max_multiplier"] = fg_status.max_multiplier;
 	fg["status"] = get_frame_generation_status();
+	// Milestone H6 HUD-less recomposition, measured in-engine (the authoritative signal for the RTX
+	// verifier: no desktop/swapchain grab needed). The keys always exist; they are false on any GPU
+	// where Frame Generation is not driving. recomposition_engaged true means DLSS-G is recomposing a
+	// clean UI this frame; ui_layers_provided / hudless_source_valid / ui_layer_valid pinpoint why not.
+	fg["recomposition_engaged"] = false;
+	fg["ui_layers_provided"] = false;
+	fg["hudless_source_valid"] = false;
+	fg["ui_layer_valid"] = false;
 	dlss::UpscalerProvider::FrameGenerationRuntime fg_runtime;
 	if (Upscaler::get().frame_generation_runtime(fg_runtime)) {
 		fg["num_frames_to_generate"] = static_cast<int>(fg_runtime.num_frames_to_generate);
 		fg["num_frames_presented"] = static_cast<int>(fg_runtime.num_frames_presented);
+		fg["recomposition_engaged"] = fg_runtime.recomposition_engaged;
+		fg["ui_layers_provided"] = fg_runtime.ui_layers_provided;
+		fg["hudless_source_valid"] = fg_runtime.hudless_source_valid;
+		fg["ui_layer_valid"] = fg_runtime.ui_layer_valid;
 	}
 	upscaling["frame_generation"] = fg;
 	d["upscaling"] = upscaling;

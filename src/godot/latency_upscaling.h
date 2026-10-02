@@ -80,6 +80,12 @@ public:
 	// so on this version it is unavailable on every GPU and these are inert settings).
 	bool is_frame_generation_supported() const; // a GeForce RTX 40 series GPU or newer could run it
 	bool is_frame_generation_active() const; // Frame Generation is generating frames now
+	// Whether DLSS-G is recomposing the clean UI onto presented frames THIS frame (HUD-less + UI layers
+	// engaged). A game that renders its HUD into a transparent SubViewport polls this every frame and,
+	// while true, keeps its own HUD composite out of the HUD-less source so the UI is drawn once, by
+	// Streamline, with no ghost. Lightweight (no status dict); false everywhere Frame Generation is not
+	// recomposing (non-FG hardware, present-only, FG off), so the caller's gate is a no-op there.
+	bool is_frame_generation_recomposing() const;
 	godot::String get_frame_generation_status() const; // "active (...)", "off: ..." or "unavailable: ..."
 	void set_frame_generation_mode(FrameGenerationMode mode);
 	FrameGenerationMode get_frame_generation_mode() const;

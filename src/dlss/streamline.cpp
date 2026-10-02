@@ -556,7 +556,9 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 	// recomposes the UI cleanly onto real and generated frames. Otherwise only the Super Resolution
 	// four are tagged and the backbuffer (intercepted in interposer mode) is interpolated as a whole —
 	// the present-only path, where the UI ghosts (docs/PHASE3_FG.md). Pure, unit-tested decision.
-	const FgUiRecomposition recompose = fg_ui_recomposition(fg_request_on_, in.hud_less.valid(), in.ui.valid());
+	const bool hudless_valid = in.hud_less.valid();
+	const bool ui_valid = in.ui.valid();
+	const FgUiRecomposition recompose = fg_ui_recomposition(fg_request_on_, hudless_valid, ui_valid);
 	sl::Resource hud_less = to_sl(in.hud_less);
 	sl::Resource ui = to_sl(in.ui);
 	sl::ResourceTag tags[] = {
@@ -583,8 +585,10 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 	}
 	// Drive Frame Generation on this viewport. The depth and motion vectors were just tagged for Super
 	// Resolution (the mandatory pair) and the backbuffer is intercepted in interposer mode; HUD-less
-	// recomposition is enabled only when both its resources were tagged above.
-	drive_frame_generation(in.viewport, in.color.width, in.color.height, recompose.enabled);
+	// recomposition is enabled only when both its resources were tagged above. The layer facts are
+	// recorded for the status surface (the game provided both RIDs, and each resolved to a Vulkan image).
+	drive_frame_generation(in.viewport, in.color.width, in.color.height, recompose.enabled,
+			in.hud_less_provided && in.ui_provided, hudless_valid, ui_valid);
 	return true;
 }
 
@@ -598,7 +602,7 @@ void Streamline::set_frame_generation_request(bool on, uint32_t num_frames_to_ge
 }
 
 void Streamline::drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height,
-		bool enable_ui_recomposition) {
+		bool enable_ui_recomposition, bool ui_layers_provided, bool hudless_valid, bool ui_valid) {
 	// Caller (evaluate) holds mutex_, on the render thread; slDLSSGSetOptions / slDLSSGGetState are not
 	// thread-safe, so they only ever run here.
 	Api &a = api();
@@ -619,11 +623,18 @@ void Streamline::drive_frame_generation(uint32_t viewport_id, uint32_t render_wi
 	runtime.num_frames_to_generate = options.numFramesToGenerate;
 	runtime.render_width = render_width;
 	runtime.render_height = render_height;
+	// Milestone H6 measurement (real evaluate state): whether the game provided both layers, whether
+	// each resolved to a Vulkan image, and whether DLSS-G's recomposition codepath was requested this
+	// frame. recomposition_engaged is only true when that was requested AND FG is actually generating.
+	runtime.ui_layers_provided = ui_layers_provided;
+	runtime.hudless_source_valid = hudless_valid;
+	runtime.ui_layer_valid = ui_valid;
 	if (a.DLSSGGetState != nullptr) {
 		sl::DLSSGState state{};
 		if (a.DLSSGGetState(viewport, state, &options) == sl::Result::eOk) {
 			const uint32_t status = static_cast<uint32_t>(state.status);
 			runtime.active = fg_request_on_ && status == static_cast<uint32_t>(sl::DLSSGStatus::eOk);
+			runtime.recomposition_engaged = enable_ui_recomposition && runtime.active;
 			runtime.num_frames_presented = state.numFramesActuallyPresented;
 			if (status != static_cast<uint32_t>(sl::DLSSGStatus::eOk)) {
 				if ((status & static_cast<uint32_t>(sl::DLSSGStatus::eFailReflexNotDetectedAtRuntime)) != 0) {

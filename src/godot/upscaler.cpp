@@ -672,6 +672,11 @@ void Upscaler::set_dlss_job(uint32_t job, RenderSceneBuffersRD *rb, const RID &v
 	// layout at the marker; the backend only tags them when Frame Generation drives.
 	in.hud_less = game_evaluate_image(rd, snap.hudless_source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 	in.ui = game_evaluate_image(rd, snap.ui_layer, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	// Whether the game SET each RID (non-empty), independent of whether it resolved to a Vulkan image:
+	// the status surface reports "provided" and "valid" separately so a non-resolving RID can be told
+	// apart from one the game never set.
+	in.hud_less_provided = snap.hudless_source.is_valid();
+	in.ui_provided = snap.ui_layer.is_valid();
 	in.mode = snap.quality;
 	in.preset = snap.preset;
 	// As Godot hands its jitter to FSR2 (render pixels); the tests can change the convention.

@@ -52,6 +52,11 @@ struct EvaluateInputs {
 	// is driving. Both invalid (the default) keeps the present-only path, so nothing regresses.
 	EvaluateImage hud_less; // target size, the 3D scene without UI (eHUDLessColor)
 	EvaluateImage ui; // window / target size, the UI layer with alpha (eUIColorAndAlpha)
+	// Whether the GAME set a non-empty RID for each layer (even if it did not resolve to a Vulkan
+	// image). Distinct from hud_less.valid() / ui.valid(): "provided but did not resolve" vs "never
+	// provided", which the status surface reports separately so the break can be pinpointed.
+	bool hud_less_provided = false;
+	bool ui_provided = false;
 	upscale::Quality mode = upscale::Quality::Quality; // concrete (Auto resolved)
 	upscale::Preset preset = upscale::Preset::Default;
 	float jitter_x = 0.0f; // render pixels, as Godot hands it to FSR2 (taa_jitter * render size / 2)
@@ -113,6 +118,12 @@ public:
 		uint32_t render_width = 0; // the Super Resolution render size
 		uint32_t render_height = 0;
 		std::string status; // why not active (when a runtime status bit is set), e.g. "Reflex not active"
+		// Milestone H6 HUD-less recomposition, measured from the REAL evaluate state (not the request
+		// flags) so the 5080 verifier gets the authoritative in-engine signal without a desktop grab.
+		bool ui_layers_provided = false; // the game handed us BOTH layers (non-empty RIDs) this frame
+		bool hudless_source_valid = false; // the HUD-less source resolved to a usable Vulkan image
+		bool ui_layer_valid = false; // the UI layer resolved to a usable Vulkan image
+		bool recomposition_engaged = false; // DLSS-G is recomposing the UI this frame (clean UI, not present-only)
 	};
 	virtual void set_frame_generation_request(bool on, uint32_t num_frames_to_generate) {
 		(void)on;
