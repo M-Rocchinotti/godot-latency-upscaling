@@ -32,7 +32,15 @@ SUMMARY = re.compile(r"GPU (\d+ %|load unknown), (a|no) fullscreen app in front,
 # is on the box, so both the fullscreen-app and the game answers may be yes or no. The privacy
 # guarantee this test enforces is unchanged: every field is a fixed yes/no boolean (plus the GPU
 # load) -- no app, window, or process name can appear here.
-LOGGED = re.compile(r"GPU \d+ %, (a|no) fullscreen app in front, (a|no) game (in front|running)")
+# A run whose preflight could not be established (the SSH call failed, timed out or returned nothing
+# usable) is logged with this exact fixed phrase instead of the GPU/fullscreen/game summary. It is a
+# constant -- it carries no app, window or process name -- so it is accepted as a whole alternative.
+# The privacy guarantee is unchanged: the pattern is anchored with ^...$ at the call site (hence the
+# non-capturing group around the alternation), so a state cell is accepted ONLY if it is exactly the
+# summary form or exactly this constant. Any row carrying a process/app/window name still fails, and
+# the file is separately asserted to contain no "foreground" field.
+LOGGED = re.compile(r"(?:GPU \d+ %, (a|no) fullscreen app in front, (a|no) game (in front|running)"
+                    r"|the preflight gave no usable answer)")
 
 
 class FakeRemote:
