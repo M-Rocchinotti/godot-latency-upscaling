@@ -81,6 +81,10 @@ const char *frame_generation_mode_name(FrameGenerationMode mode) {
 	return "unknown";
 }
 
+bool fg_permitted(bool fg_enabled, FrameGenerationMode fg_mode, bool hardware_supported) {
+	return fg_enabled && fg_mode != FrameGenerationMode::Off && hardware_supported;
+}
+
 SettingsLayer parse_settings_override(const std::string &name, const std::string &text, std::vector<std::string> &warnings) {
 	SettingsLayer layer;
 	layer.name = name;

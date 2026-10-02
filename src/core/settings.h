@@ -106,4 +106,12 @@ bool is_valid_mfg_multiplier(int multiplier);
 const char *reflex_mode_name(ReflexMode mode);
 const char *frame_generation_mode_name(FrameGenerationMode mode);
 
+// Whether Frame Generation is permitted at startup. Pure, so the gate bootstrap.cpp applies before it
+// prepares the FG device path is unit-tested. All three must hold: the developer permitted it
+// (`fg/enabled`), chose a non-Off mode, AND the GPU can actually run Frame Generation
+// (`hardware_supported`, from dlss::FgFeature::get().status().supported for the first adapter). On any
+// non-FG adapter the last term is false, so the result is false and the Reflex / DLSS / pass-through
+// behaviour is byte-identical to Frame Generation off — permitting FG never regresses a non-FG player.
+bool fg_permitted(bool fg_enabled, FrameGenerationMode fg_mode, bool hardware_supported);
+
 } // namespace lu

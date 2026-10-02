@@ -31,8 +31,10 @@ struct BootState {
 	std::string dlss_runtime_reason; // why the NVIDIA runtime was not loaded ("" when it was)
 	std::string dlss_project_id; // the project ID handed to NGX (dlss/project_id.h)
 	std::string dlss_project_id_source; // "project setting" or "derived from application/config/name"
-	// Phase 3, Frame Generation (guarded off in milestone H1). fg_permitted: the settings would
-	// permit Frame Generation at startup; nothing of the runtime is loaded yet, so it is only logged.
+	// Phase 3, Frame Generation. fg_permitted: the settings AND the real first-adapter hardware both
+	// permit Frame Generation at startup (fg/enabled, a non-Off mode, and an FG-capable GPU). Finalised
+	// after the hook install and the FG-capability probe, before reflex.configure / load_streamline /
+	// the optical-flow queue remap read it, so a non-FG GPU is byte-identical to Frame Generation off.
 	bool fg_permitted = false;
 	std::string fg_reason; // why Frame Generation is not permitted / not loaded (for the log)
 	std::vector<std::string> hidden_extensions; // debug-build test knob

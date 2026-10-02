@@ -276,10 +276,6 @@ void bootstrap_core() {
 		log::warning("%s", warning.c_str());
 	}
 	const Settings &settings = g_state.resolved.settings;
-	// Phase 3, Frame Generation: whether the settings permit it at startup (off by default, guarded).
-	// Resolved here so load_streamline can request the Frame Generation plugins; nothing of the
-	// runtime is loaded and the Reflex backend is not switched until a later milestone.
-	g_state.fg_permitted = settings.fg_enabled && settings.fg_mode != FrameGenerationMode::Off;
 
 	g_state.editor = engine->is_editor_hint();
 	const Dictionary version = engine->get_version_info();
@@ -319,6 +315,19 @@ void bootstrap_core() {
 		g_state.hook_reason = result.reason;
 		g_state.patched_imports = result.patched;
 	}
+
+	// Phase 3, Frame Generation: resolve the REAL first-adapter FG capability now. resolve_fg_caps()
+	// needs the hook state and the editor flag, both set just above, and the probe runs through the
+	// real Vulkan loader before Godot's device exists. Frame Generation is then permitted only when the
+	// settings ask for it AND the hardware can actually run it. This is finalised HERE — before
+	// reflex.configure(), load_streamline() and the optical-flow queue remap read g_state.fg_permitted
+	// below — so on non-FG hardware (any non-Ada GPU: this GTX 1080, RTX 20/30, AMD, Intel) the value
+	// is false and the Reflex LL2 path, the DLSS load and the device are byte-identical to Frame
+	// Generation off. Permitting FG in project.godot therefore never regresses a non-FG player.
+	const dlss::FgCaps fg_caps = resolve_fg_caps();
+	dlss::FgFeature::get().configure(fg_caps);
+	const bool fg_hardware_supported = dlss::FgFeature::get().status().supported;
+	g_state.fg_permitted = fg_permitted(settings.fg_enabled, settings.fg_mode, fg_hardware_supported);
 
 	reflex::ReflexFeature &reflex = reflex::ReflexFeature::get();
 	if (!g_state.hook_installed) {
@@ -415,18 +424,16 @@ void bootstrap_core() {
 		vk::register_feature(&upscale_feature);
 	}
 
-	// Phase 3, Frame Generation (milestones H2/H3): real capability detection and, when permitted, the
-	// Frame Generation plugins are loaded into Streamline above (their functions resolved on an RTX 40
-	// series+). Still guarded off: the Reflex backend is not switched and nothing drives Frame
-	// Generation (a later milestone). So it still reports "unavailable" on every non-Ada GPU and the
-	// Reflex / DLSS / pass-through behaviour is unchanged.
-	const dlss::FgCaps fg_caps = resolve_fg_caps();
-	dlss::FgFeature::get().configure(fg_caps);
+	// Phase 3, Frame Generation: the capability was resolved and fg_permitted finalised above (before
+	// anything read it). Here only the human-readable reason is composed and logged; when permitted, the
+	// Frame Generation plugins were requested from Streamline in the DLSS step above (their functions
+	// resolved on an RTX 40 series+). On every non-Ada GPU it reports "unavailable" and the Reflex /
+	// DLSS / pass-through behaviour is unchanged.
 	const dlss::FgStatus fg_status = dlss::FgFeature::get().status();
 	if (!fg_status.supported) {
 		g_state.fg_reason = fg_status.reason; // why the hardware cannot run Frame Generation
 	} else if (g_state.fg_permitted) {
-		g_state.fg_reason = "hardware-capable and permitted by settings, but Frame Generation is not yet loaded (Phase 3 in progress)";
+		g_state.fg_reason = "hardware-capable and permitted by settings";
 	} else {
 		g_state.fg_reason = settings.fg_enabled ? "hardware-capable, but fg/mode is Off" : "hardware-capable, but fg/enabled is off";
 	}
