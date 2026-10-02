@@ -54,8 +54,14 @@ struct FgCaps {
 NvArchitecture classify_nvidia_architecture(uint32_t vendor_id, const std::string &name, uint32_t device_id);
 
 // The highest frame-generation multiplier an architecture offers: 1 = no Frame Generation, 2 = Ada
-// Frame Generation, 4 = Blackwell Multi Frame Generation.
+// Frame Generation, 4 = Blackwell Multi Frame Generation. A conservative guess used until the
+// runtime reports the real ceiling.
 int max_multiplier_for(NvArchitecture architecture);
+
+// The frame multiplier for a Streamline numFramesToGenerateMax (sl_dlss_g.h DLSSGState): one real
+// frame plus that many generated, so the multiplier is numFramesToGenerateMax + 1 (5 -> 6x). 0 (no
+// generated frames) maps to 1 (no Frame Generation).
+int fg_multiplier_from_frames_to_generate(uint32_t num_frames_to_generate_max);
 
 // "" when Frame Generation could run on these caps, otherwise a player-actionable reason (without a
 // leading "unavailable: "; the public API adds that, mirroring get_dlss_status()).
@@ -78,11 +84,17 @@ public:
 	// not probed, so Frame Generation reports "unavailable" regardless of the GPU).
 	void configure(const FgCaps &caps);
 
+	// The runtime's real multiplier ceiling, from slDLSSGGetState().numFramesToGenerateMax once Frame
+	// Generation is loaded (RTX only). 0 clears it (fall back to the architecture guess). It overrides
+	// the guess only while Frame Generation is supported.
+	void set_runtime_max_multiplier(int multiplier);
+
 	FgStatus status() const;
 
 private:
 	mutable std::mutex mutex_;
 	FgCaps caps_;
+	int runtime_max_multiplier_ = 0; // 0 = not reported yet; use the architecture guess
 };
 
 } // namespace lu::dlss

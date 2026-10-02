@@ -47,3 +47,47 @@ fullscreen path, and ideally a run with V-Sync and VRR off confirmed on that mon
 **Not a blocker for the game integration.** Reflex is correct where it helps (the GTX 1080); on the
 RTX 5080 it is active and harmless. The game's settings expose it as NVIDIA asks and leave it On by
 default. This issue is about the addon's latency result, not the integration.
+
+## 2. Frame Generation crashed at vkCreateDevice on the RTX 5080 (fixed, pending RTX re-verify)
+
+**Symptom.** Phase 3 RTX bring-up on an RTX 5080 (driver 591.86): with Frame Generation **off** the
+addon is validation-clean and R1 passed (DLSS_G supported, `numFramesToGenerateMax = 5`, i.e. up to
+6x). With Frame Generation **on** the engine crashed deterministically at Vulkan device creation,
+*before* Streamline initialised — the validation layer caught a spec-invalid `VkDeviceCreateInfo` on
+the Frame Generation optical-flow-queue path:
+
+- `VUID-vkCreateDevice-ppEnabledExtensionNames-01387` — a required device-extension dependency was
+  missing: `VK_NV_optical_flow` was enabled without its dependencies.
+- `VUID-VkDeviceCreateInfo-queueFamilyIndex-02802` — two `VkDeviceQueueCreateInfo` for the same
+  `(queueFamilyIndex, flags)`.
+- `VUID-VkDeviceCreateInfo-pQueueCreateInfos-06755` — a family's `queueCount` exceeded its limit.
+
+**Cause.** The addon did not set the device up for Frame Generation itself, so the optical-flow
+queue / `VK_NV_optical_flow` ended up added without its dependency extensions, duplicated against an
+existing family entry, and over the family's queue limit.
+
+**Fix (`src/vk/device_patch.cpp`, `src/dlss/streamline.cpp`).**
+- The addon now requests the optical-flow queue itself, but only when the device actually offers an
+  optical-flow queue family and `VK_NV_optical_flow` with its dependency extensions
+  (`Streamline::request_device`, gated on `fg_permitted`). If the device cannot satisfy them, Frame
+  Generation is skipped (unavailable) and DLSS Super Resolution is unaffected — never an invalid
+  create.
+- When the optical-flow queue is requested, `DeviceCreatePatch` adds `VK_NV_optical_flow` **and its
+  <1.3 device-extension dependencies** `VK_KHR_format_feature_flags2` and `VK_KHR_synchronization2`
+  (vk.xml `depends`; Godot 4.7 creates a Vulkan 1.2 device, so none are core) — fixes 01387.
+- `DeviceCreatePatch::add_queues` now hardens the result: it **merges** any entries that share
+  `(queueFamilyIndex, flags)` (fixes 02802) and **caps** each family's `queueCount` to
+  `VkQueueFamilyProperties::queueCount` (fixes 06755). Correct placements never trigger either pass;
+  the default Frame-Generation-off path is byte-identical.
+
+**Also fixed alongside.** `get_max_frame_generation_multiplier()` was hardcoded to the
+architecture guess (Blackwell = 4). When Frame Generation is available at runtime it now derives
+from `slDLSSGGetState().numFramesToGenerateMax` (`numFramesToGenerateMax + 1`, so 5 -> 6x), falling
+back to the architecture guess when the runtime value is not available. The dev-box behaviour
+(unavailable -> 1) is unchanged.
+
+**Status.** Fixed and unit-tested (the device-create assembly: dependency added, no duplicate
+`(family, flags)`, `queueCount` capped; the multiplier mapping). Build + full suite green on the
+GTX 1080 with Frame Generation off (pass-through byte-identical, validation clean). The RTX windowed
+Frame-Generation-on probe is to be re-run to confirm the crash is gone (the fix's runtime path is
+RTX-only).

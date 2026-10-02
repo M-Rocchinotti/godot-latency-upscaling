@@ -9,6 +9,24 @@ off (the default) the Reflex, DLSS and pass-through behaviour is byte-identical 
 Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
 `docs/PHASE3_FG.md`.
 
+### Fixed — Frame Generation device-creation crash (RTX 5080 bring-up)
+
+- With Frame Generation on, the engine crashed at `vkCreateDevice` before Streamline init: a
+  spec-invalid `VkDeviceCreateInfo` on the optical-flow-queue path (VUID-...-01387 missing
+  `VK_NV_optical_flow` dependency; VUID-...-02802 duplicate `(queueFamilyIndex, flags)`;
+  VUID-...-06755 `queueCount` over the family limit). `src/vk/device_patch.cpp` now, when an
+  optical-flow queue is requested, adds `VK_NV_optical_flow` with its <1.3 dependencies
+  (`VK_KHR_format_feature_flags2`, `VK_KHR_synchronization2`), merges queue entries that share
+  `(queueFamilyIndex, flags)`, and caps each family's `queueCount` to its limit. The addon requests
+  the optical-flow queue itself (`Streamline::request_device`, when `fg_permitted` and the device
+  offers the queue + extensions), skipping Frame Generation gracefully otherwise. The
+  Frame-Generation-off path is byte-identical. See `docs/ISSUES.md` #2.
+- `get_max_frame_generation_multiplier()` now derives from `slDLSSGGetState().numFramesToGenerateMax`
+  (`+1`, so 5 -> 6x) when Frame Generation is available at runtime, falling back to the architecture
+  guess otherwise; the dev-box value (unavailable -> 1) is unchanged.
+- Tests: the device-create assembly (optical-flow dependency present, no duplicate `(family, flags)`,
+  `queueCount` capped) and the multiplier mapping / runtime override.
+
 ### Milestone H4 — Reflex through Streamline's sl.reflex (for Frame Generation)
 
 - `reflex::ReflexDevice` is now an interface the Godot singleton drives, with two implementations:

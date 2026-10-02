@@ -1,6 +1,7 @@
 #include "vk/device_patch.h"
 
 #include <bitset>
+#include <cstddef>
 #include <cstring>
 
 namespace lu::vk {
@@ -11,6 +12,15 @@ namespace {
 template <typename T>
 T *mutable_in_chain(const void *next, VkStructureType type) {
 	return reinterpret_cast<T *>(const_cast<VkBaseInStructure *>(find_in_chain(next, type)));
+}
+
+bool requests_optical_flow_queue(const DeviceRequest &request) {
+	for (const QueueRequest &q : request.queues) {
+		if ((q.required & VK_QUEUE_OPTICAL_FLOW_BIT_NV) != 0) {
+			return true;
+		}
+	}
+	return false;
 }
 
 } // namespace
@@ -34,8 +44,27 @@ void DeviceRequest::add_extension(const char *name) {
 DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const DeviceRequest &request,
 		const std::vector<VkQueueFamilyProperties> &families) :
 		info_(original) {
+	// DLSS Frame Generation: requesting an optical-flow queue means VK_NV_optical_flow runs, which on
+	// a device below Vulkan 1.3 pulls in VK_KHR_format_feature_flags2 and VK_KHR_synchronization2 as
+	// device-extension dependencies (vk.xml: VK_NV_optical_flow `depends`). All three must be in
+	// ppEnabledExtensionNames or vkCreateDevice is spec-invalid (VUID-vkCreateDevice-...-01387). Godot
+	// 4.7 creates a Vulkan 1.2 device, so none are core; they are added here when the FG queue is
+	// requested. The requester adds the FG queue only after checking the device offers all three.
+	std::vector<std::string> requested = request.extensions;
+	if (requests_optical_flow_queue(request)) {
+		for (const char *dependency : { VK_NV_OPTICAL_FLOW_EXTENSION_NAME, VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,
+					 VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME }) {
+			bool already = false;
+			for (const std::string &name : requested) {
+				already = already || name == dependency;
+			}
+			if (!already) {
+				requested.emplace_back(dependency);
+			}
+		}
+	}
 	names_.assign(original.ppEnabledExtensionNames, original.ppEnabledExtensionNames + original.enabledExtensionCount);
-	for (const std::string &wanted : request.extensions) {
+	for (const std::string &wanted : requested) {
 		bool present = false;
 		for (const char *name : names_) {
 			present = present || std::strcmp(name, wanted.c_str()) == 0;
@@ -199,6 +228,44 @@ void DeviceCreatePatch::add_queues(const VkDeviceCreateInfo &original, const std
 		}
 		queues_.push_back(assignment);
 	}
+
+	// Harden the result so it is always a valid VkDeviceCreateInfo, even if the host (or the merge
+	// with a feature's queues) produced a duplicate or an over-count. Correct placements above never
+	// trigger either pass; this repairs the Frame Generation optical-flow path the RTX bring-up hit.
+	auto materialize = [&](size_t i) {
+		if (priorities_[i].empty() && queue_infos_[i].queueCount > 0 && queue_infos_[i].pQueuePriorities != nullptr) {
+			priorities_[i].assign(queue_infos_[i].pQueuePriorities, queue_infos_[i].pQueuePriorities + queue_infos_[i].queueCount);
+		}
+	};
+	// (1) Never two VkDeviceQueueCreateInfo for the same (queueFamilyIndex, flags)
+	// (VUID-VkDeviceCreateInfo-queueFamilyIndex-02802): merge the later into the earlier.
+	for (size_t i = 0; i < queue_infos_.size(); ++i) {
+		for (size_t j = i + 1; j < queue_infos_.size();) {
+			if (queue_infos_[i].queueFamilyIndex == queue_infos_[j].queueFamilyIndex && queue_infos_[i].flags == queue_infos_[j].flags) {
+				materialize(i);
+				materialize(j);
+				priorities_[i].insert(priorities_[i].end(), priorities_[j].begin(), priorities_[j].end());
+				queue_infos_[i].queueCount += queue_infos_[j].queueCount;
+				queue_infos_.erase(queue_infos_.begin() + static_cast<std::ptrdiff_t>(j));
+				priorities_.erase(priorities_.begin() + static_cast<std::ptrdiff_t>(j));
+				changed_ = true;
+			} else {
+				++j;
+			}
+		}
+	}
+	// (2) Never more queues than the family supports (VUID-VkDeviceCreateInfo-pQueueCreateInfos-06755):
+	// cap each entry's queueCount to VkQueueFamilyProperties::queueCount.
+	for (size_t i = 0; i < queue_infos_.size(); ++i) {
+		const uint32_t family = queue_infos_[i].queueFamilyIndex;
+		if (family < families.size() && queue_infos_[i].queueCount > families[family].queueCount) {
+			materialize(i);
+			queue_infos_[i].queueCount = families[family].queueCount;
+			priorities_[i].resize(families[family].queueCount, 1.0f);
+			changed_ = true;
+		}
+	}
+
 	// Point every rewritten or added entry at the patch's own priorities (all vectors are final now).
 	for (size_t i = 0; i < queue_infos_.size(); ++i) {
 		if (!priorities_[i].empty()) {

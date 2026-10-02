@@ -124,6 +124,28 @@ TEST(fg_check_explains_every_refusal) {
 	CHECK(check_frame_generation(os_unknown).empty());
 }
 
+TEST(fg_runtime_max_multiplier_overrides_the_architecture_guess) {
+	// numFramesToGenerateMax maps to one real frame plus the generated ones.
+	CHECK_EQ(fg_multiplier_from_frames_to_generate(0), 1); // no Frame Generation
+	CHECK_EQ(fg_multiplier_from_frames_to_generate(1), 2); // 2x (Ada)
+	CHECK_EQ(fg_multiplier_from_frames_to_generate(3), 4); // 4x
+	CHECK_EQ(fg_multiplier_from_frames_to_generate(5), 6); // 6x (the RTX 50 series value)
+
+	FgFeature feature;
+	feature.configure(caps_for(NV, "NVIDIA GeForce RTX 5090")); // Blackwell: guess 4
+	CHECK_EQ(feature.status().max_multiplier, 4);
+	feature.set_runtime_max_multiplier(6); // the runtime reports a higher ceiling (6x)
+	CHECK_EQ(feature.status().max_multiplier, 6);
+	feature.set_runtime_max_multiplier(0); // cleared (e.g. at shutdown) -> back to the guess
+	CHECK_EQ(feature.status().max_multiplier, 4);
+
+	// On an unsupported GPU the runtime value never applies: the dev-box behaviour (1) is unchanged.
+	feature.configure(caps_for(NV, "NVIDIA GeForce GTX 1080"));
+	feature.set_runtime_max_multiplier(6);
+	CHECK(!feature.status().supported);
+	CHECK_EQ(feature.status().max_multiplier, 1);
+}
+
 TEST(fg_feature_reports_the_configured_caps) {
 	// Not probed (milestone H1 / the editor): unavailable everywhere, max multiplier 1.
 	FgFeature feature;

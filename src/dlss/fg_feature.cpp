@@ -88,6 +88,12 @@ int max_multiplier_for(NvArchitecture architecture) {
 	return 1; // no Frame Generation
 }
 
+int fg_multiplier_from_frames_to_generate(uint32_t num_frames_to_generate_max) {
+	// One real frame plus the generated ones: numFramesToGenerateMax 5 -> 6x. 0 means no Frame
+	// Generation (multiplier 1).
+	return static_cast<int>(num_frames_to_generate_max) + 1;
+}
+
 std::string check_frame_generation(const FgCaps &caps) {
 	// Not probed (e.g. the editor, where Frame Generation is moot): the honest, player-actionable
 	// default, as in milestone H1.
@@ -135,6 +141,11 @@ void FgFeature::configure(const FgCaps &caps) {
 	caps_ = caps;
 }
 
+void FgFeature::set_runtime_max_multiplier(int multiplier) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	runtime_max_multiplier_ = multiplier > 0 ? multiplier : 0;
+}
+
 FgStatus FgFeature::status() const {
 	std::lock_guard<std::mutex> lock(mutex_);
 	FgStatus s;
@@ -142,7 +153,13 @@ FgStatus FgFeature::status() const {
 	s.supported = reason.empty();
 	s.active = false; // no Frame Generation runtime is loaded before milestone H5 / the RTX milestones
 	s.reason = s.supported ? std::string("Frame Generation is not yet available in this version") : reason;
-	s.max_multiplier = s.supported ? max_multiplier_for(caps_.architecture) : 1;
+	if (!s.supported) {
+		s.max_multiplier = 1; // no Frame Generation (unchanged on the dev box: unavailable -> 1)
+	} else if (runtime_max_multiplier_ > 0) {
+		s.max_multiplier = runtime_max_multiplier_; // the runtime's real ceiling (slDLSSGGetState)
+	} else {
+		s.max_multiplier = max_multiplier_for(caps_.architecture); // the architecture guess until then
+	}
 	return s;
 }
 

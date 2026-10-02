@@ -323,6 +323,113 @@ TEST(device_patch_leaves_queue_requests_it_cannot_serve_unassigned) {
 	CHECK(!blind.queue_assignments()[0].assigned);
 }
 
+// --- Frame Generation optical-flow device setup (the RTX 5080 bring-up crash) -------------------
+
+namespace {
+
+bool has_extension(const DeviceCreatePatch &patch, const char *name) {
+	for (const std::string &e : patch.enabled_extensions()) {
+		if (e == name) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// True when no two VkDeviceQueueCreateInfo share (queueFamilyIndex, flags)
+// (VUID-VkDeviceCreateInfo-queueFamilyIndex-02802).
+bool no_duplicate_queue_entries(const VkDeviceCreateInfo *info) {
+	for (uint32_t i = 0; i < info->queueCreateInfoCount; ++i) {
+		for (uint32_t j = i + 1; j < info->queueCreateInfoCount; ++j) {
+			if (info->pQueueCreateInfos[i].queueFamilyIndex == info->pQueueCreateInfos[j].queueFamilyIndex &&
+					info->pQueueCreateInfos[i].flags == info->pQueueCreateInfos[j].flags) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// A host create info with arbitrary queue entries (priorities and arrays kept alive by the struct).
+struct CustomHost {
+	GodotLikeChain chain;
+	std::vector<VkDeviceQueueCreateInfo> queues;
+	std::vector<std::vector<float>> priorities;
+	void add(uint32_t family, uint32_t count, VkDeviceQueueCreateFlags flags = 0) {
+		priorities.emplace_back(count, 1.0f);
+		VkDeviceQueueCreateInfo q{};
+		q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+		q.queueFamilyIndex = family;
+		q.queueCount = count;
+		q.flags = flags;
+		queues.push_back(q);
+	}
+	void finish() { // call after all add()s: the vectors are final, so the pointers stay valid
+		for (size_t i = 0; i < queues.size(); ++i) {
+			queues[i].pQueuePriorities = priorities[i].data();
+		}
+		chain.info.queueCreateInfoCount = static_cast<uint32_t>(queues.size());
+		chain.info.pQueueCreateInfos = queues.data();
+	}
+	CustomHost(const CustomHost &) = delete;
+	CustomHost() = default;
+};
+
+} // namespace
+
+TEST(device_patch_adds_the_optical_flow_extension_dependencies_for_the_fg_queue) {
+	GodotQueues godot; // one graphics queue on family 0; the host already enables VK_KHR_synchronization2
+	DeviceRequest request;
+	request.queues.push_back({ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 1 });
+	DeviceCreatePatch patch(godot.chain.info, request, nvidia_like_families());
+	// VK_NV_optical_flow and both its <1.3 dependencies must be enabled (VUID-...-01387).
+	CHECK(has_extension(patch, VK_NV_OPTICAL_FLOW_EXTENSION_NAME));
+	CHECK(has_extension(patch, VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME));
+	CHECK(has_extension(patch, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME));
+	// VK_KHR_synchronization2 was already enabled by the host: it is not added twice.
+	int sync2 = 0;
+	for (const std::string &e : patch.enabled_extensions()) {
+		sync2 += e == VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ? 1 : 0;
+	}
+	CHECK_EQ(sync2, 1);
+	// The optical-flow queue is placed on its dedicated family (4), one queue, no duplicates.
+	const QueueAssignment &a = patch.queue_assignments()[0];
+	CHECK(a.assigned && a.family == 4u && a.count == 1u);
+	CHECK(no_duplicate_queue_entries(patch.get()));
+	// Without the FG queue the dependencies are not added (the default path is untouched).
+	DeviceCreatePatch plain(godot.chain.info, reflex_request(), nvidia_like_families());
+	CHECK(!has_extension(plain, VK_NV_OPTICAL_FLOW_EXTENSION_NAME));
+	CHECK(!has_extension(plain, VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME));
+}
+
+TEST(device_patch_dedupes_queue_entries_and_caps_to_the_family_limit) {
+	// A host that (invalidly) passes two entries for family 0 and an over-count on family 1, plus the
+	// FG optical-flow queue request. The patch must repair it into a valid create.
+	CustomHost host;
+	host.add(0, 1); // family 0 (graphics), flags 0
+	host.add(0, 1); // duplicate (family 0, flags 0) -> must merge (VUID-...-02802)
+	host.add(1, 100); // over family 1's limit of 8 -> must cap (VUID-...-06755)
+	host.finish();
+	DeviceRequest request;
+	request.queues.push_back({ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 1 });
+	DeviceCreatePatch patch(host.chain.info, request, nvidia_like_families());
+	const VkDeviceCreateInfo *out = patch.get();
+	CHECK(no_duplicate_queue_entries(out));
+	const VkDeviceQueueCreateInfo *family0 = entry_for(out, 0);
+	CHECK(family0 != nullptr && family0->queueCount == 2u); // the two duplicates merged into one entry of 2
+	const VkDeviceQueueCreateInfo *family1 = entry_for(out, 1);
+	CHECK(family1 != nullptr && family1->queueCount == 8u); // capped to the family's queueCount
+	const VkDeviceQueueCreateInfo *flow = entry_for(out, 4);
+	CHECK(flow != nullptr && flow->queueCount == 1u);
+	// Every entry is within its family's limit.
+	const std::vector<VkQueueFamilyProperties> families = nvidia_like_families();
+	for (uint32_t i = 0; i < out->queueCreateInfoCount; ++i) {
+		const VkDeviceQueueCreateInfo &q = out->pQueueCreateInfos[i];
+		CHECK(q.queueCount <= families[q.queueFamilyIndex].queueCount);
+	}
+	CHECK(has_extension(patch, VK_NV_OPTICAL_FLOW_EXTENSION_NAME));
+}
+
 TEST(device_patch_enables_private_data_where_the_host_chains_it_or_prepends_it) {
 	GodotLikeChain godot;
 	DeviceRequest request;
