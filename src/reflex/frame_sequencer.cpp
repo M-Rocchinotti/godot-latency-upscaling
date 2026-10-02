@@ -132,4 +132,9 @@ uint64_t FrameSequencer::last_presented_id() const {
 	return last_presented_;
 }
 
+uint64_t FrameSequencer::peek_next_id() const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return next_id_;
+}
+
 } // namespace lu::reflex

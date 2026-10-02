@@ -4,10 +4,31 @@ All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased] - Phase 3 (in progress)
 
-Phase 3: DLSS Frame Generation, **all guarded off**. The Reflex backend is not switched and nothing
-drives Frame Generation, so it reports "unavailable" on every non-Ada GPU and the Reflex, DLSS and
-pass-through behaviour is byte-identical to 0.2.0. Hardware-independent (builds and tests on the GTX
-1080 dev box). The version is not bumped yet. See `docs/PHASE3_FG.md`.
+Phase 3: DLSS Frame Generation, **all guarded off**. Nothing drives Frame Generation yet; with it
+off (the default) the Reflex, DLSS and pass-through behaviour is byte-identical to 0.2.0.
+Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
+`docs/PHASE3_FG.md`.
+
+### Milestone H4 — Reflex through Streamline's sl.reflex (for Frame Generation)
+
+- `reflex::ReflexDevice` is now an interface the Godot singleton drives, with two implementations:
+  `Ll2Device` (VK_NV_low_latency2, unchanged, used whenever Frame Generation is off) and the new
+  `reflex::SlReflexDevice` (`src/reflex/sl_reflex_device.*`), which drives Reflex through Streamline's
+  sl.reflex / sl.pcl. `SlReflexDevice` reuses `reflex::FrameSequencer` for the six-marker ordering
+  (each marker → `slPCLSetMarker`, INPUT_SAMPLE dropped as PCL has no equivalent), does one
+  `slReflexSleep` per frame, maps the mode + FPS cap to `slReflexSetOptions`, reads the 64-frame
+  statistics from `slReflexGetState`, and threads one Streamline frame token per frame through that
+  frame's sleep and markers.
+- When Frame Generation is permitted, bootstrap keeps VK_NV_low_latency2 out of the device
+  (`ReflexFeature::request_device` declines) and the LL2 submit/present hooks off, so the present
+  path falls straight through to Streamline's interposer — what Frame Generation needs. Streamline,
+  once it has resolved sl.reflex / sl.pcl on the device (RTX only), hands the functions to
+  `ReflexFeature::enable_streamline_reflex`, which creates the `SlReflexDevice`; it is released at
+  shutdown. With Frame Generation off the whole path is inert and the LL2 behaviour is unchanged.
+- Tests: `SlReflexDevice` against a fake Streamline Reflex/PCL API — mode mapping, one sleep per
+  frame with the upcoming frame's token, the six markers in order (INPUT_SAMPLE dropped), the frame
+  token threaded through each frame, and the statistics mapping; the existing `Ll2Device` fake-driver
+  tests are unchanged.
 
 ### Milestone H3 — load the Streamline Frame Generation plugins, ship them with exports
 

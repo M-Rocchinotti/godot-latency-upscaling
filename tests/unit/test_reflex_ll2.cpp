@@ -222,7 +222,7 @@ TEST(ll2_swapchain_retry_does_not_pass_the_retired_old_swapchain) {
 		CHECK(g_creates[1].old_swapchain == VK_NULL_HANDLE); // VUID-VkSwapchainCreateInfoKHR-oldSwapchain-01933
 		CHECK(!g_creates[1].latency_mode);
 	}
-	const Ll2Device::State state = device.state();
+	const DeviceState state = device.state();
 	CHECK(!state.latency_mode_enabled);
 	CHECK(state.swapchain_note.find("created without it") != std::string::npos);
 }
@@ -233,7 +233,7 @@ TEST(ll2_other_windows_swapchains_pass_through) {
 	VkSwapchainKHR other_swapchain = VK_NULL_HANDLE;
 	CHECK(window.device.create_swapchain(fake_device(), &other, nullptr, &other_swapchain, &fake_create_swapchain) == VK_SUCCESS);
 	CHECK(!g_creates.back().latency_mode); // created exactly as the host asked
-	const Ll2Device::State state = window.device.state();
+	const DeviceState state = window.device.state();
 	CHECK_EQ(state.counters.other_swapchains, uint64_t(1));
 	CHECK_EQ(state.counters.swapchains_with_latency_mode, uint64_t(1));
 	// The main window keeps its latency-mode swapchain; destroying the other one changes nothing.

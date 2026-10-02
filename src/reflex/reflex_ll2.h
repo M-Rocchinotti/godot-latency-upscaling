@@ -12,6 +12,7 @@
 #include "core/settings.h"
 #include "reflex/frame_sequencer.h"
 #include "reflex/latency_stats.h"
+#include "reflex/reflex_device.h"
 #include "vk/queue_hooks.h"
 #include "vk/vk_feature.h"
 
@@ -36,30 +37,10 @@ inline constexpr int SLEEP_TIMEOUTS_BEFORE_SUSPENDING = 3;
 // vkGetLatencyTimingsNV changed its signature in revision 2; revision 1 would be called wrongly.
 inline constexpr uint32_t MIN_LL2_SPEC_VERSION = 2;
 
-struct SleepMode {
-	ReflexMode mode = ReflexMode::On;
-	uint32_t minimum_interval_us = 0;
-};
+// SleepMode, Counters and DeviceState are defined in reflex/reflex_device.h (shared with the
+// Streamline Reflex backend).
 
-struct Counters {
-	std::array<uint64_t, MARKER_COUNT> markers{};
-	uint64_t sleeps = 0;
-	uint64_t sleeps_skipped = 0; // no present since the previous sleep (minimised window, no draw)
-	uint64_t sleep_timeouts = 0;
-	uint64_t presents_stamped = 0;
-	uint64_t submits_tagged = 0;
-	uint64_t swapchains_with_latency_mode = 0;
-	uint64_t other_swapchains = 0; // swapchains of other windows, passed through untouched
-	// The present hook's wait for the swapchain lock. With the shared lock it never waits behind
-	// the main thread's vkLatencySleepNV; only swapchain creation/destruction (exclusive) can block it.
-	uint64_t present_lock_waits_over_1ms = 0;
-	uint64_t present_lock_wait_max_us = 0;
-	uint64_t latency_sleep_call_max_us = 0; // how long vkLatencySleepNV itself blocked, at most
-	double last_sleep_ms = 0.0;
-	double average_sleep_ms = 0.0; // exponential moving average
-};
-
-class Ll2Device final : public MarkerSink {
+class Ll2Device final : public MarkerSink, public ReflexDevice {
 public:
 	Ll2Device(const vk::DeviceContext &context, const SleepMode &mode);
 	~Ll2Device() override;
@@ -69,13 +50,13 @@ public:
 	bool valid() const { return valid_; }
 	const std::string &init_error() const { return init_error_; }
 	vk::DispatchKey key() const { return key_; }
-	FrameSequencer &sequencer() { return sequencer_; }
+	FrameSequencer &sequencer() override { return sequencer_; }
 
 	// Main thread.
-	bool sleep(); // vkLatencySleepNV + wait; false when skipped, suspended or disabled
+	bool sleep() override; // vkLatencySleepNV + wait; false when skipped, suspended or disabled
 	// Stores the mode and applies it to the window swapchain (now, or when it is created).
-	void set_sleep_mode(const SleepMode &mode);
-	std::vector<FrameReport> latency_reports();
+	void set_sleep_mode(const SleepMode &mode) override;
+	std::vector<FrameReport> latency_reports() override;
 
 	// Vulkan hooks.
 	VkResult create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
@@ -88,16 +69,7 @@ public:
 	// Called before vkDestroyDevice; afterwards every call is a no-op.
 	void shutdown();
 
-	struct State {
-		bool has_swapchain = false;
-		bool latency_mode_enabled = false;
-		bool sleep_enabled = true;
-		std::string sleep_disabled_reason;
-		std::string swapchain_note;
-		std::string sleep_mode_error;
-		Counters counters;
-	};
-	State state();
+	DeviceState state() override;
 
 	void emit_marker(uint64_t frame_id, Marker marker) override;
 
@@ -154,13 +126,19 @@ private:
 	FrameSequencer sequencer_{ *this };
 };
 
+class SlReflexDevice; // reflex/sl_reflex_device.h (Phase 3 Frame Generation)
+struct SlReflexApi;
+
 class ReflexFeature final : public vk::VulkanFeature, public vk::QueueHooks {
 public:
 	static ReflexFeature &get();
 
 	// CORE initialisation, before any Vulkan call. `enabled` = false keeps the extension out of
-	// the device (the editor by default); `reason` says why.
-	void configure(bool enabled, const std::string &reason, const Settings &settings, const std::vector<std::string> &hidden_extensions);
+	// the device (the editor by default); `reason` says why. `fg_permitted` (Phase 3): Frame
+	// Generation is on, so Reflex is driven through Streamline's sl.reflex instead and the
+	// VK_NV_low_latency2 path is kept out of the device entirely (request_device declines).
+	void configure(bool enabled, const std::string &reason, const Settings &settings,
+			const std::vector<std::string> &hidden_extensions, bool fg_permitted = false);
 
 	// --- VulkanFeature ---
 	const char *name() const override { return "Reflex (VK_NV_low_latency2)"; }
@@ -181,8 +159,14 @@ public:
 
 	// --- Godot side (see godot/latency_upscaling.cpp for the frame-loop placement) ---
 	void set_sleep_mode(const SleepMode &mode);
-	// The device driving the window, once its swapchain exists.
-	std::shared_ptr<Ll2Device> active_device();
+	// The device driving Reflex now: the Ll2Device holding the window swapchain, or, with Frame
+	// Generation on, the SlReflexDevice (once Streamline has resolved sl.reflex). Null until ready.
+	std::shared_ptr<ReflexDevice> active_device();
+
+	// Phase 3: Streamline calls this once it has loaded and resolved sl.reflex / sl.pcl (RTX only),
+	// handing over the resolved functions so a SlReflexDevice can drive Reflex; released at shutdown.
+	void enable_streamline_reflex(const SlReflexApi &api);
+	void disable_streamline_reflex();
 
 	struct Status {
 		bool requested = false; // the feature asked for the extension at all
@@ -201,11 +185,13 @@ private:
 	bool enabled_ = false;
 	std::string disabled_reason_ = "the Vulkan hook was not installed";
 	std::vector<std::string> hidden_extensions_; // test knob (debug builds)
+	bool fg_permitted_ = false; // Phase 3: Reflex runs through Streamline's sl.reflex, not LL2
 	SleepMode mode_;
 	bool any_device_ = false;
 	std::string decline_reason_; // why the first device could not use Reflex
 	std::map<vk::DispatchKey, std::shared_ptr<Ll2Device>> devices_;
-	std::shared_ptr<Ll2Device> active_;
+	std::shared_ptr<Ll2Device> active_; // the LL2 device driving the window (Frame Generation off)
+	std::shared_ptr<SlReflexDevice> sl_device_; // the Streamline Reflex device (Frame Generation on)
 	// Lock-free lookup for the per-submit/present hooks. The key is compared before the device
 	// pointer is touched, so a queue of another device never dereferences it; the active device
 	// itself cannot be destroyed while its own queues are in use (Vulkan external sync).

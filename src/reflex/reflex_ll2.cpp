@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/testing.h"
 #include "reflex/ll2_patches.h"
+#include "reflex/sl_reflex_device.h"
 
 #include <algorithm>
 #include <chrono>
@@ -450,8 +451,8 @@ VkResult Ll2Device::submit(VkQueue queue, uint32_t count, const VkSubmitInfo *su
 	return next(queue, count, patch.get(), fence);
 }
 
-Ll2Device::State Ll2Device::state() {
-	State s;
+DeviceState Ll2Device::state() {
+	DeviceState s;
 	{
 		std::shared_lock lock(swapchain_mutex_);
 		s.has_swapchain = swapchain_ != VK_NULL_HANDLE;
@@ -478,11 +479,12 @@ ReflexFeature &ReflexFeature::get() {
 }
 
 void ReflexFeature::configure(bool enabled, const std::string &reason, const Settings &settings,
-		const std::vector<std::string> &hidden_extensions) {
+		const std::vector<std::string> &hidden_extensions, bool fg_permitted) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	enabled_ = enabled;
 	disabled_reason_ = enabled ? "" : reason;
 	hidden_extensions_ = hidden_extensions;
+	fg_permitted_ = fg_permitted;
 	mode_.mode = settings.reflex_mode;
 	mode_.minimum_interval_us = fps_limit_to_interval_us(settings.reflex_fps_limit);
 }
@@ -496,6 +498,13 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!enabled_) {
 		reason = disabled_reason_;
+		return false;
+	}
+	if (fg_permitted_) {
+		// Frame Generation drives Reflex through Streamline's sl.reflex; VK_NV_low_latency2 is kept
+		// out of the device so the swapchain and present path stay untouched (what Frame Generation
+		// needs). The SlReflexDevice takes over once Streamline has resolved its plugins.
+		reason = "Frame Generation drives Reflex through NVIDIA Streamline (sl.reflex); VK_NV_low_latency2 is not used";
 		return false;
 	}
 	auto version = [&](const char *name) -> uint32_t {
@@ -652,28 +661,53 @@ VkResult ReflexFeature::queue_present(VkQueue queue, const VkPresentInfoKHR *inf
 }
 
 void ReflexFeature::set_sleep_mode(const SleepMode &mode) {
-	std::vector<std::shared_ptr<Ll2Device>> devices;
+	std::vector<std::shared_ptr<ReflexDevice>> devices;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		mode_ = mode;
 		for (const auto &entry : devices_) {
 			devices.push_back(entry.second);
 		}
+		if (sl_device_) { // Frame Generation: the Streamline Reflex device, if it is up
+			devices.push_back(sl_device_);
+		}
 	}
 	// Stored per device even without a swapchain, so a swapchain being re-created on the render
 	// thread right now picks up this mode instead of the previous one.
-	for (const std::shared_ptr<Ll2Device> &device : devices) {
+	for (const std::shared_ptr<ReflexDevice> &device : devices) {
 		device->set_sleep_mode(mode);
 	}
 }
 
-std::shared_ptr<Ll2Device> ReflexFeature::active_device() {
+std::shared_ptr<ReflexDevice> ReflexFeature::active_device() {
 	std::lock_guard<std::mutex> lock(mutex_);
+	if (sl_device_) { // Frame Generation on: Streamline's sl.reflex drives Reflex
+		return sl_device_;
+	}
 	return active_;
+}
+
+void ReflexFeature::enable_streamline_reflex(const SlReflexApi &api) {
+	SleepMode mode;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		mode = mode_;
+	}
+	std::shared_ptr<SlReflexDevice> device = std::make_shared<SlReflexDevice>(api, mode); // the ctor applies the mode
+	std::lock_guard<std::mutex> lock(mutex_);
+	sl_device_ = device;
+	log::info("Reflex now runs through NVIDIA Streamline (sl.reflex) for Frame Generation");
+}
+
+void ReflexFeature::disable_streamline_reflex() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	sl_device_.reset();
 }
 
 ReflexFeature::Status ReflexFeature::status() {
 	std::shared_ptr<Ll2Device> device;
+	std::shared_ptr<SlReflexDevice> sl;
+	bool fg_permitted = false;
 	Status s;
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
@@ -682,22 +716,41 @@ ReflexFeature::Status ReflexFeature::status() {
 			s.reason = disabled_reason_;
 			return s;
 		}
-		if (!any_device_) {
-			s.reason = "no Vulkan device has been created through the hook";
-			return s;
+		fg_permitted = fg_permitted_;
+		sl = sl_device_;
+		if (!fg_permitted) {
+			if (!any_device_) {
+				s.reason = "no Vulkan device has been created through the hook";
+				return s;
+			}
+			if (devices_.empty()) {
+				s.reason = decline_reason_.empty() ? "no device could enable VK_NV_low_latency2" : decline_reason_;
+				return s;
+			}
+			s.supported = true;
+			device = active_;
 		}
-		if (devices_.empty()) {
-			s.reason = decline_reason_.empty() ? "no device could enable VK_NV_low_latency2" : decline_reason_;
+	}
+	if (fg_permitted) {
+		// Frame Generation drives Reflex through Streamline's sl.reflex (RTX only).
+		if (!sl) {
+			s.reason = "Frame Generation is on, but Streamline's sl.reflex is not active (needs a GeForce RTX 40 series GPU "
+					   "or newer and the NVIDIA runtime)";
 			return s;
 		}
 		s.supported = true;
-		device = active_;
+		const DeviceState st = sl->state();
+		s.active = st.latency_mode_enabled;
+		if (!s.active) {
+			s.reason = "Reflex (sl.reflex) is loaded for Frame Generation but off";
+		}
+		return s;
 	}
 	if (!device) {
 		s.reason = "waiting for the window swapchain";
 		return s;
 	}
-	const Ll2Device::State st = device->state();
+	const DeviceState st = device->state();
 	if (!st.has_swapchain) {
 		s.reason = "the window swapchain is being re-created";
 		return s;

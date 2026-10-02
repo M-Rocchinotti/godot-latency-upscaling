@@ -3,6 +3,8 @@
 #include "core/log.h"
 #include "dlss/sl_signature.h"
 #include "dlss/runtime_files.h"
+#include "reflex/reflex_ll2.h"
+#include "reflex/sl_reflex_device.h"
 
 #include <sl.h>
 #include <sl_dlss.h>
@@ -345,6 +347,18 @@ bool Streamline::initialize(const vk::DeviceContext &, std::string &reason) {
 	// slGetFeatureFunction). Guarded off: this never fails DLSS and nothing drives rendering with them.
 	if (fg_permitted_) {
 		resolve_frame_generation_functions();
+		if (fg_runtime_ready_) {
+			// Hand the resolved sl.reflex / sl.pcl functions to the Reflex feature so it drives Reflex
+			// through Streamline (Frame Generation needs that). The VK_NV_low_latency2 path was kept out
+			// of the device (ReflexFeature::request_device declined it when fg was permitted).
+			reflex::SlReflexApi reflex_api;
+			reflex_api.get_new_frame_token = a.GetNewFrameToken;
+			reflex_api.set_options = a.ReflexSetOptions;
+			reflex_api.sleep = a.ReflexSleep;
+			reflex_api.get_state = a.ReflexGetState;
+			reflex_api.set_marker = a.PCLSetMarker;
+			reflex::ReflexFeature::get().enable_streamline_reflex(reflex_api);
+		}
 	}
 	return true;
 }
@@ -384,10 +398,14 @@ void Streamline::shutdown() {
 	}
 	// Before the device goes away (Streamline's rule). The module stays loaded: Vulkan calls of the
 	// teardown still go through it.
+	const bool had_fg_reflex = fg_runtime_ready_;
 	api().Shutdown();
 	initialized_ = false;
 	device_ready_ = false;
 	fg_runtime_ready_ = false;
+	if (had_fg_reflex) {
+		reflex::ReflexFeature::get().disable_streamline_reflex(); // the Reflex functions are gone now
+	}
 }
 
 bool Streamline::frame_generation_ready() const {

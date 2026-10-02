@@ -329,10 +329,14 @@ void bootstrap_core() {
 	} else {
 		g_state.reflex_enabled = true;
 	}
-	reflex.configure(g_state.reflex_enabled, g_state.reflex_reason, settings, g_state.hidden_extensions);
+	reflex.configure(g_state.reflex_enabled, g_state.reflex_reason, settings, g_state.hidden_extensions, g_state.fg_permitted);
 	if (g_state.hook_installed) {
 		vk::register_feature(&reflex);
-		if (g_state.reflex_enabled) {
+		// The LL2 submit/present hooks stamp present IDs and tag submissions for VK_NV_low_latency2.
+		// With Frame Generation on, Reflex runs through Streamline and the present path must fall
+		// straight through to the interposer, so these hooks stay off (ReflexFeature also declines the
+		// device, keeping VK_NV_low_latency2 out of it).
+		if (g_state.reflex_enabled && !g_state.fg_permitted) {
 			vk::set_queue_hooks(&reflex);
 		}
 	}

@@ -5,11 +5,13 @@ godot-latency-upscaling. Phase 3 builds on the same in-process Vulkan dispatch l
 (Phase 1) and DLSS Super Resolution (Phase 2); it adds no engine fork.
 
 > Status: **Phase 3 in progress.** Milestones **H1** (settings, public API, stubbed detection),
-> **H2** (real capability detection of the GPU the plugin sees) and **H3** (the Streamline Frame
-> Generation plugins are loaded when permitted and ship with exports) are landed, **all guarded
-> off**. The Reflex backend is not switched and nothing drives Frame Generation, so FG reports
-> "unavailable" on every non-Ada GPU and the Reflex / DLSS / pass-through behaviour is unchanged.
-> Everything is hardware-independent and builds and tests on the GTX 1080 dev box.
+> **H2** (real capability detection), **H3** (the Streamline Frame Generation plugins are loaded
+> when permitted and ship with exports) and **H4** (the Reflex backend switch to Streamline's
+> sl.reflex) are landed, **all guarded off**. Nothing drives Frame Generation yet, so it reports
+> "unavailable" on every non-Ada GPU. With Frame Generation off (the default) the VK_NV_low_latency2
+> path is used exactly as before and the Reflex / DLSS / pass-through behaviour is unchanged; the
+> sl.reflex path runs only on an RTX 40 series+ (verified in the R-series). Everything is
+> hardware-independent and builds and tests on the GTX 1080 dev box.
 
 ## What Frame Generation is
 
@@ -112,7 +114,7 @@ Hardware-independent milestones (**H**) build and test on the GTX 1080 dev box; 
 | **H1** | Settings, public API surface, stubbed support detection, status dict, docs. All guarded off; behaviour byte-identical to Phase 2. **Landed.** | — |
 | **H2** | Real capability detection of the GPU the plugin sees (vendor / architecture / driver via the gpu_precheck probe), still guarded off; OS / HAGS deferred. **Landed.** | H1 |
 | **H3** | Load the Streamline Frame Generation plugins (`sl.dlss_g`, `sl.reflex`, `sl.pcl`) into slInit when FG is permitted and resolve their functions on the device; ship the FG DLLs with Windows exports. Guarded off: no rendering uses them and the Reflex backend is not switched. **Landed.** | H2 |
-| **H4** | The Reflex -> `sl.reflex` / `sl.pcl` switch plumbing behind a flag, off by default; direct Reflex path unchanged when FG off. | H3 |
+| **H4** | The Reflex backend switch: `SlReflexDevice` drives Reflex through sl.reflex / sl.pcl (same contract as `Ll2Device`, reusing `FrameSequencer`), chosen over VK_NV_low_latency2 when FG is permitted. LL2 kept out of the device; LL2 path byte-identical when FG off. **Landed.** | H3 |
 | **H5** | Present-path scheduling and the VSync-off / Reflex-on guards; the degraded present-only FG path (interpolating the final image including the HUD), guarded. | H4 |
 | **H6** | HUD-less-colour input contract and a game-side UI-layer hook for a clean FG image. | H5 |
 | **R1-R6** | The RTX-only counterparts: load `sl.dlss_g`, activate FG, verify the Reflex switch, measure latency/throughput, MFG multipliers, image quality. | H1-H6 |

@@ -53,7 +53,7 @@ String driver_version_string(uint32_t vendor_id, uint32_t v) {
 	return vformat("0x%08x", static_cast<int64_t>(v));
 }
 
-std::shared_ptr<reflex::Ll2Device> active_reflex_device() {
+std::shared_ptr<reflex::ReflexDevice> active_reflex_device() {
 	return reflex::ReflexFeature::get().active_device();
 }
 
@@ -277,7 +277,7 @@ void LatencyUpscaling::on_frame() {
 		// before the next frame renders (research 2.2; see godot/upscaler.h).
 		RenderingServer::get_singleton()->call_on_render_thread(callable_mp(this, &LatencyUpscaling::run_upscaler_takeovers));
 	}
-	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
+	std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device();
 	if (!device) {
 		return;
 	}
@@ -296,7 +296,7 @@ void LatencyUpscaling::on_frame() {
 }
 
 void LatencyUpscaling::on_frame_pre_draw() {
-	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
+	std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device();
 	if (!device) {
 		return;
 	}
@@ -321,7 +321,7 @@ void LatencyUpscaling::on_frame_pre_draw() {
 }
 
 void LatencyUpscaling::on_render_frame_begin(int64_t frame_id) {
-	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
+	std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device();
 	if (!device) {
 		return;
 	}
@@ -329,7 +329,7 @@ void LatencyUpscaling::on_render_frame_begin(int64_t frame_id) {
 }
 
 void LatencyUpscaling::on_render_frame_end(int64_t frame_id) {
-	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
+	std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device();
 	if (!device) {
 		return;
 	}
@@ -570,7 +570,7 @@ String LatencyUpscaling::get_reflex_status() const {
 }
 
 void LatencyUpscaling::trigger_flash() {
-	if (std::shared_ptr<reflex::Ll2Device> device = active_reflex_device()) {
+	if (std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device()) {
 		device->sequencer().request_flash();
 	}
 }
@@ -640,8 +640,8 @@ Dictionary LatencyUpscaling::get_status() const {
 	reflex_info["reason"] = String::utf8(rs_status.reason.c_str());
 	reflex_info["mode"] = static_cast<int>(mode_);
 	reflex_info["fps_limit"] = fps_limit_;
-	if (std::shared_ptr<reflex::Ll2Device> device = active_reflex_device()) {
-		const reflex::Ll2Device::State st = device->state();
+	if (std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device()) {
+		const reflex::DeviceState st = device->state();
 		reflex_info["sleep_enabled"] = st.sleep_enabled;
 		reflex_info["sleep_mode_error"] = String::utf8(st.sleep_mode_error.c_str());
 		Dictionary counters;
@@ -732,7 +732,7 @@ Dictionary LatencyUpscaling::get_status() const {
 
 Dictionary LatencyUpscaling::get_latency_stats() const {
 	Dictionary d;
-	std::shared_ptr<reflex::Ll2Device> device = active_reflex_device();
+	std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device();
 	const reflex::LatencyStats stats = reflex::compute_latency_stats(device ? device->latency_reports() : std::vector<reflex::FrameReport>());
 	d["frames"] = stats.frames;
 	d["latest_present_id"] = static_cast<int64_t>(stats.latest_present_id);
@@ -750,7 +750,7 @@ Dictionary LatencyUpscaling::get_latency_stats() const {
 	d["mode"] = static_cast<int>(mode_);
 	d["fps_limit"] = fps_limit_;
 	if (device) {
-		const reflex::Ll2Device::State st = device->state();
+		const reflex::DeviceState st = device->state();
 		d["reflex_sleep_ms"] = st.counters.average_sleep_ms;
 		d["reflex_sleep_enabled"] = st.sleep_enabled;
 	} else {
@@ -762,7 +762,7 @@ Dictionary LatencyUpscaling::get_latency_stats() const {
 
 Array LatencyUpscaling::get_latency_reports() const {
 	Array out;
-	if (std::shared_ptr<reflex::Ll2Device> device = active_reflex_device()) {
+	if (std::shared_ptr<reflex::ReflexDevice> device = active_reflex_device()) {
 		for (const reflex::FrameReport &r : device->latency_reports()) {
 			out.push_back(report_to_dictionary(r));
 		}

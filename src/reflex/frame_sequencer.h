@@ -79,6 +79,9 @@ public:
 
 	uint64_t current_simulation_id() const;
 	uint64_t last_presented_id() const;
+	// The ID the next begin_simulation() will open. The Streamline backend mints that frame's token
+	// before the sleep, so the sleep and the frame's markers share one token.
+	uint64_t peek_next_id() const;
 
 private:
 	void emit(uint64_t id, Marker marker) { sink_.emit_marker(id, marker); }
