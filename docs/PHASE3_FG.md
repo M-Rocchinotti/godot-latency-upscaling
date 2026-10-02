@@ -4,16 +4,17 @@ Design, milestones and risks for DLSS Frame Generation (FG) and Multi Frame Gene
 godot-latency-upscaling. Phase 3 builds on the same in-process Vulkan dispatch layer as Reflex
 (Phase 1) and DLSS Super Resolution (Phase 2); it adds no engine fork.
 
-> Status: **Phase 3 in progress.** Milestones **H1-H4** (settings, API, capability detection, the
-> Streamline FG plugins, the Reflex -> sl.reflex switch) and **H5** (actually driving Frame
-> Generation, present-only) are landed, **guarded off by default**. On the RTX 5080 the device
-> creates cleanly, sl.reflex is live and FG is supported (max 6x); H5 drives present-only FG when
-> `frame_generation` is On and a DLSS SR / DLAA upscaler is active with VSync off. With Frame
-> Generation off (the default) the Reflex / DLSS / pass-through behaviour is byte-identical. The real
-> generation runs only on an RTX 40 series+ (verified in the R-series). Present-only means the UI
-> ghosts on generated frames. **H6 (plugin side)** adds the HUD-less + UI recomposition tag path and
-> the `set_hudless_source` / `set_ui_layer` API that fix the ghosting; the matching **game-side** HUD
-> restructuring (crater-zombie-fps) is a separate, larger change and is **not done yet** (see H6).
+> Status: **Phase 3 shipped as 0.3.0.** Milestones **H1-H6 (plugin side)** are landed and **verified
+> on an RTX 5080** (driver 591.86): the device creates cleanly, Frame Generation is active (up to 6x),
+> Reflex runs through sl.reflex, DLSS Super Resolution is intact, and the HUD-less + UI recomposition
+> path **engages** (clean UI on real and generated frames), with no crash or device loss. Frame
+> Generation is **off by default and gated on real FG hardware**, so with it off — or permitted on a
+> non-FG GPU — the Reflex / DLSS / pass-through behaviour and the Vulkan device are byte-identical
+> (verified on the GTX 1080). Real generation runs only on an RTX 40 series+. Without the game-side
+> HUD-less input the fallback is present-only (the UI ghosts). The matching **game-side** HUD
+> restructuring (render the HUD on a transparent SubViewport, call the two setters) is a separate,
+> larger, per-game change and is **still deferred** in crater-zombie-fps (see H6). A few low-severity
+> validation-layer messages under FG remain (`docs/ISSUES.md` #3).
 
 ## What Frame Generation is
 
@@ -226,6 +227,7 @@ Hardware-independent milestones (**H**) build and test on the GTX 1080 dev box; 
 
 ## Versioning
 
-Phase 3 ships as **0.3.0** once the FG path works end to end on RTX hardware. **1.0.0** follows after
-RTX verification of the whole addon (Reflex + DLSS SR + FG) on the supported GPUs. Milestone H1 does
-**not** bump the version (it adds only guarded-off surface); `src/core/version.h` stays `0.2.0`.
+Phase 3 ships as **0.3.0**: the Frame Generation path works end to end and is verified on RTX 5080
+hardware (`src/core/version.h` is `0.3.0`). **1.0.0** follows once the remaining Frame Generation
+validation-layer polish (`docs/ISSUES.md` #3) and the open Reflex-latency question on the RTX 5080
+(#1) are resolved across the whole addon (Reflex + DLSS SR + FG) on the supported GPUs.

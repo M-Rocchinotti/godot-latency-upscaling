@@ -1,7 +1,7 @@
-# Latency & Upscaling for Godot 4.7 (NVIDIA Reflex, DLSS Super Resolution / DLAA)
+# Latency & Upscaling for Godot 4.7 (NVIDIA Reflex, DLSS Super Resolution / DLAA, Frame Generation)
 
-Adds NVIDIA Reflex and DLSS Super Resolution / DLAA to Godot 4.7 Vulkan projects on Windows, with no
-project setup. Frame Generation is planned. Version 0.2.0.
+Adds NVIDIA Reflex, DLSS Super Resolution / DLAA and DLSS Frame Generation / Multi Frame Generation
+to Godot 4.7 Vulkan projects on Windows, with no project setup. Version 0.3.0.
 
 ## Install
 
@@ -50,6 +50,16 @@ export without it warns). The addon resets DLSS's history on camera cuts by itse
 `reset_dlss_history()` on cuts it cannot see (a short teleport). NVIDIA's licence has conditions for
 any game given to others (end-user terms, the NVIDIA Marks with NVIDIA's prior approval) and a
 notification before a commercial release: see `THIRD_PARTY_NOTICES.md`.
+
+## Frame Generation
+
+DLSS Frame Generation (RTX 40 series, 2x) and Multi Frame Generation (RTX 50 series, up to 6x) run
+on the same DLSS path and the same NVIDIA runtime. Permit it in Project Settings with **both**
+`latency_upscaling/fg/enabled = true` and `fg/mode = On`; it needs HAGS on and VSync off, and is
+gated on real FG hardware, so a non-FG GPU is byte-identical to FG off. For a clean UI on generated
+frames the game renders its HUD on a transparent `SubViewport` and hands the addon the HUD-less scene
+and the UI layer (`set_hudless_source()` / `set_ui_layer()`); otherwise FG is present-only and the
+HUD ghosts. Full details and the status API are in the repository README and `docs/PHASE3_FG.md`.
 
 ## Platforms
 

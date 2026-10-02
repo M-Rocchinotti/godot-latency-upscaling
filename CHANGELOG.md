@@ -2,12 +2,41 @@
 
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] - Phase 3 (in progress)
+## [0.3.0] - 2026-10-03
 
-Phase 3: DLSS Frame Generation, **all guarded off**. Nothing drives Frame Generation yet; with it
-off (the default) the Reflex, DLSS and pass-through behaviour is byte-identical to 0.2.0.
-Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
+Phase 3: DLSS Frame Generation and Multi Frame Generation. Verified on an RTX 5080 (driver 591.86):
+Frame Generation active up to 6x, driving Reflex through `sl.reflex` with DLSS Super Resolution
+intact and the UI recomposed cleanly onto generated frames, with no crash or device loss. Frame
+Generation is **gated on real FG hardware and off by default**, so on a non-FG GPU (the GTX 1080 dev
+box, RTX 20/30, AMD, Intel) permitting it is byte-identical to Frame Generation off — a non-FG player
+is never regressed. Not 1.0: a few low-severity validation-layer messages under FG remain
+(`docs/ISSUES.md` #3) and the Reflex-latency question on the 5080 is open (#1). See
 `docs/PHASE3_FG.md`.
+
+### Frame Generation hardware-gated startup permit, UI-recomposition status, RTX 5080 verification
+
+- The startup Frame Generation permit is now gated on the **real first-adapter capability**:
+  `bootstrap_core()` resolves `resolve_fg_caps()` and `fg_permitted(fg/enabled, fg/mode,
+  hardware_supported)` (pure, unit-tested in `src/core/settings.*`) **before** the Reflex backend,
+  the Streamline load and the optical-flow queue remap read it. On any non-FG adapter the hardware
+  term is false, so the permit is false and the Reflex / DLSS / pass-through path — and the Vulkan
+  device — are byte-identical to Frame Generation off. Permitting FG in `project.godot` therefore
+  never regresses a non-FG player.
+- The in-engine Frame Generation status surface gains the authoritative UI-recomposition signal (no
+  desktop or swapchain grab needed to verify it): `is_frame_generation_recomposing()` and four
+  booleans in `get_status()["upscaling"]["frame_generation"]` — `recomposition_engaged` (DLSS-G is
+  recomposing a clean UI this frame), `ui_layers_provided`, `hudless_source_valid`, `ui_layer_valid`
+  (which pinpoint why not) — measured from the real evaluate state. `get_frame_generation_status()`
+  now ends with `UI recomposed` or `present-only`.
+- **Verified on the RTX 5080** (driver 591.86): the device creates cleanly, Frame Generation is
+  active (up to 6x), `sl.reflex` drives Reflex, DLSS Super Resolution is intact, UI recomposition
+  engages, and there is no crash or device loss; byte-identical pass-through on the non-FG GTX 1080.
+  The remaining Frame Generation validation-layer messages are tracked in `docs/ISSUES.md` #3 (low
+  severity, independent of the HUD path).
+- Tests: the `fg_permitted` gate (both settings terms required, plus the hardware term the API
+  reports — RTX 40 supported, GTX 1080 / AMD not), beside the existing Frame Generation unit tests.
+  Also widened the RTX run-log privacy test (`tests/test_rtx_remote.py`) to accept the fixed,
+  PII-free "the preflight gave no usable answer" state, with the privacy assertions unchanged.
 
 ### Milestone H6 (plugin side) — clean UI on generated frames (HUD-less + UI recomposition)
 

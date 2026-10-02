@@ -2,15 +2,22 @@
 
 A Godot 4.7 addon (GDExtension) that brings NVIDIA technologies to any Vulkan project without
 engine changes and without project setup: **NVIDIA Reflex** (low-latency mode, frame-rate limiter,
-latency markers and measurements) and **DLSS Super Resolution / DLAA**. Frame Generation is planned
-for the next phase on the same foundation: an in-process Vulkan dispatch layer the addon installs in
-front of Godot at start-up.
+latency markers and measurements), **DLSS Super Resolution / DLAA** and **DLSS Frame Generation /
+Multi Frame Generation**. All of it runs on the same foundation: an in-process Vulkan dispatch layer
+the addon installs in front of Godot at start-up.
 
-> Status: **Phase 2 of 3, version 0.2.0 (Reflex, DLSS Super Resolution / DLAA).** Reflex is tested
-> on a GTX 1080 and an RTX 5080, DLSS Super Resolution / DLAA on an RTX 5080. DLSS needs NVIDIA's
-> runtime, which the developer fetches after accepting NVIDIA's licences (see
-> [DLSS](#dlss-the-nvidia-runtime)); it is never part of this addon. The addon relies on Godot 4.7.x
-> internals; other versions are refused cleanly.
+> Status: **Phase 3, version 0.3.0 (Reflex, DLSS Super Resolution / DLAA, DLSS Frame Generation /
+> Multi Frame Generation).** Reflex is tested on a GTX 1080 and an RTX 5080, DLSS Super Resolution /
+> DLAA on an RTX 5080, and Frame Generation on an RTX 5080 (active up to 6x, driving Reflex through
+> `sl.reflex`, with DLSS Super Resolution intact and the UI recomposed cleanly onto generated frames;
+> no crash or device loss). Permitting Frame Generation on a non-FG GPU (this GTX 1080) is
+> byte-identical to leaving it off, so it never regresses a player who cannot run it. This is **not
+> 1.0**: Frame Generation runtime polish remains (a few low-severity validation-layer messages under
+> FG on the RTX 5080, see [`docs/ISSUES.md`](docs/ISSUES.md)), as does the open Reflex-latency
+> question on the RTX 5080 (same file). DLSS and Frame Generation need NVIDIA's runtime, which the
+> developer fetches after accepting NVIDIA's licences (see [DLSS](#dlss-the-nvidia-runtime)); it is
+> never part of this addon. The addon relies on Godot 4.7.x internals; other versions are refused
+> cleanly.
 
 ## Features
 
@@ -24,7 +31,7 @@ front of Godot at start-up.
 | Small latency overlay | done | optional, off by default |
 | Clean fallback with a readable reason | done | wrong Godot version, other GPUs, other renderers, missing driver support |
 | DLSS Super Resolution / DLAA | done (Phase 2) | modes DLAA, Quality, Balanced, Performance, Ultra Performance, Auto; presets J/K/L/M; history reset on camera cuts (automatic, and `reset_dlss_history()`); motion vectors for the sky; NVIDIA runtime fetched by the developer |
-| DLSS Frame Generation / Multi Frame Generation | planned (Phase 3) | |
+| DLSS Frame Generation / Multi Frame Generation | done (Phase 3) | FG on an RTX 40 series (2x), Multi Frame Generation on an RTX 50 series (up to 6x on the 5080); clean UI on generated frames when the game hands the addon a HUD-less source and a UI layer, otherwise present-only (the UI ghosts); gated on real FG hardware, so non-FG GPUs are byte-identical to FG off; needs HAGS and VSync off; NVIDIA runtime fetched by the developer |
 | DLSS Ray Reconstruction | not planned | Godot 4.7 has no ray-traced signals to denoise |
 | D3D12 renderer, Compatibility renderer | not supported | the addon stays idle and says why |
 | Linux, macOS, Android, iOS, Web, Windows on ARM | not supported | no library: exclude the addon from those exports (see [Platforms](#platforms)) |
@@ -35,8 +42,8 @@ front of Godot at start-up.
 |---|---|---|---|
 | Reflex (this version) | NVIDIA GPU whose driver exposes `VK_NV_low_latency2`: NVIDIA lists Reflex for GeForce 900 series and newer; tested on GTX 1080 (Pascal) | `VK_NV_low_latency2` first shipped in 551.70; tested with 582.28 | Windows 10/11 x64, Godot 4.7.x, Vulkan renderer (Forward+ or Mobile) |
 | DLSS Super Resolution / DLAA | GeForce RTX 20 series (Turing) or newer; tested on RTX 5080 | 512.15 or newer (DLSS guide 2.1, Streamline); tested with 591.86 | Windows 10 1709+, Vulkan renderer; the NVIDIA runtime (fetched, see below) |
-| DLSS Frame Generation (planned) | GeForce RTX 40 series (Ada) or newer | 520 or newer (527.64+ for native Vulkan optical flow) | Windows 10 20H1+, hardware-accelerated GPU scheduling on |
-| Multi Frame Generation (planned) | GeForce RTX 50 series | | as Frame Generation |
+| DLSS Frame Generation | GeForce RTX 40 series (Ada) or newer; tested on RTX 5080 | 520 or newer (527.64+ for native Vulkan optical flow); tested with 591.86 | Windows 10 20H1+, hardware-accelerated GPU scheduling (HAGS) on, VSync off on Vulkan; the NVIDIA runtime (fetched, see below) |
+| Multi Frame Generation | GeForce RTX 50 series; tested on RTX 5080 (up to 6x) | as Frame Generation | as Frame Generation |
 
 Other GPUs, older drivers and unsupported configurations do not break anything: Godot runs
 exactly as without the addon, and `get_reflex_status()` / `get_dlss_status()` say why a feature is
@@ -166,6 +173,9 @@ Settings are resolved in this order (later wins):
 | `dlss/cut_angle_degrees` | `60` | a camera turn larger than this in one frame is a cut: the upscaler's history is reset (0: never) |
 | `dlss/cut_distance` | `10` | a camera move larger than this (world units) in one frame is a cut (0: never) |
 | `dlss/project_id` | empty | the project ID NVIDIA's runtime gets, GUID-like (`a0f57b54-1daf-4934-90ae-c4035c19df04`); empty: derived from `application/config/name`, so give projects that share a name their own (restart needed) |
+| `fg/enabled` | `false` | permit Frame Generation at startup (restart needed; the FG plugins are only loaded when this is on at startup). Both this **and** `fg/mode` must be set to use FG; gated on real FG hardware, so a non-FG GPU is unaffected |
+| `fg/mode` | `0` (Off) | 0 Off, 1 On. The `frame_generation` property / `set_frame_generation_mode()` at run time |
+| `fg/multiplier` | `0` (Auto) | 0 Auto (the hardware ceiling), else 2 / 3 / 4 for Multi Frame Generation (RTX 50 series). The `mfg_multiplier` property at run time |
 
 Other environment variables: `GODOT_LATENCY_UPSCALING_VERBOSE=1` prints informational lines (also
 enabled by `--verbose`). Debug builds read three test knobs used by the fallback tests:
@@ -290,7 +300,16 @@ func _ready() -> void:
 | `is_dlss_active() -> bool` | DLSS is upscaling the main viewport now |
 | `get_dlss_status() -> String` | "active (mode, render -> output)", "off: ..." or "unavailable: ..." with the reason |
 | `reset_dlss_history()` | throw the upscaler's history away on the next frame (a camera cut the detection cannot see) |
-| `get_status() -> Dictionary` | everything the addon knows: hook, Vulkan device, Reflex, upscaling and DLSS, settings and their sources |
+| `frame_generation` (`FRAME_GENERATION_OFF`, `_ON`) | Frame Generation mode (property; `fg/mode`). On a non-FG GPU it stays inert |
+| `mfg_multiplier` (`0` Auto, `2` / `3` / `4`) | Multi Frame Generation multiplier (property; `fg/multiplier`) |
+| `is_frame_generation_supported() -> bool` | a GeForce RTX 40 series GPU or newer that can run Frame Generation |
+| `is_frame_generation_active() -> bool` | Frame Generation is generating frames now |
+| `is_frame_generation_recomposing() -> bool` | DLSS-G is recomposing the clean UI onto presented frames this frame (HUD-less source + UI layer engaged). Poll it to keep your own HUD composite out of the HUD-less source while true (see [Frame Generation](#frame-generation-phase-3)) |
+| `get_frame_generation_status() -> String` | "active (Nx, render -> M presented, UI recomposed/present-only)", "off: ..." or "unavailable: ..." with the reason |
+| `get_max_frame_generation_multiplier() -> int` | the hardware's ceiling (1 none, 2 Ada, up to 6 Blackwell at run time) |
+| `set_hudless_source(texture: RID)` | the 3D scene without the HUD (root viewport, post-tonemap), for clean-UI FG; empty RID clears |
+| `set_ui_layer(texture: RID)` | the HUD on its own transparent SubViewport (colour + alpha), for clean-UI FG; empty RID clears |
+| `get_status() -> Dictionary` | everything the addon knows: hook, Vulkan device, Reflex, upscaling, DLSS and Frame Generation, settings and their sources |
 | `get_version() -> String` | addon version |
 
 `get_latency_stats()` keys: `frames`, `sim_start_to_gpu_end_ms` (NVIDIA's "total game-to-render
@@ -488,6 +507,98 @@ In the light scene DLSS adds about 0.4 to 0.5 ms over native rendering at 1080p 
 is higher than that, as with the load: every DLSS mode is then faster than native (Quality by about
 25 %), and DLAA costs about 0.5 ms more than native for its anti-aliasing.
 
+## Frame Generation (Phase 3)
+
+DLSS **Frame Generation (FG)** inserts AI-generated frames between rendered ones: one per rendered
+frame (2x) on a GeForce RTX 40 series (Ada), and **Multi Frame Generation (MFG)** up to three
+(3x / 4x) on an RTX 50 series (Blackwell) — up to **6x** on the RTX 5080 tested here. It raises the
+displayed frame rate but **not** input responsiveness, so NVIDIA requires Reflex to stay on while FG
+is on; with FG on the addon drives Reflex through Streamline's `sl.reflex` instead of its direct
+`VK_NV_low_latency2` path. FG runs on the same DLSS Super Resolution / DLAA path the addon already
+upscales, so a DLSS SR or DLAA upscaler must be active. It is most useful above a reasonable base
+frame rate (NVIDIA suggests roughly 60 fps before FG).
+
+**Requirements:** a GeForce **RTX 40 series or newer** (RTX 50 for the higher MFG multipliers),
+driver 520+ (527.64+ for native Vulkan optical flow), **hardware-accelerated GPU scheduling (HAGS)
+on**, and **VSync off** on Vulkan (FG schedules its own present timing; the addon refuses FG with a
+reason when VSync is on). It needs NVIDIA's runtime, the same one DLSS fetches
+([DLSS: the NVIDIA runtime](#dlss-the-nvidia-runtime)); the Frame Generation DLLs (`sl.dlss_g`,
+`sl.reflex`, `sl.pcl`) are fetched and exported with the rest of it, never shipped in this repository.
+
+**Permitting it.** FG is **off by default** and must be permitted in Project Settings — **both** of:
+
+- `latency_upscaling/fg/enabled = true` (loads the FG plugins at startup; restart needed), and
+- `latency_upscaling/fg/mode = On` (the `frame_generation` property at run time).
+
+The permit is **gated on real FG hardware**: at start-up the addon resolves the first adapter's FG
+capability and only permits FG when that adapter can actually run it. On any non-FG GPU (a GTX 1080,
+RTX 20/30, AMD, Intel) the permit resolves to false, so adding these settings to `project.godot`
+leaves that player **byte-identical to Frame Generation off** — the Reflex path, the DLSS load and
+the Vulkan device are unchanged. `fg/multiplier` (0 Auto, else 2 / 3 / 4) picks the MFG multiplier on
+an RTX 50 series.
+
+**Runtime API** (through `Engine`, as everywhere in [Usage](#usage)):
+
+| Call | Meaning |
+|---|---|
+| `set_frame_generation_mode(FRAME_GENERATION_ON)` / the `frame_generation` property | turn FG on / off at run time (only takes effect where FG was permitted) |
+| `mfg_multiplier` property (0 Auto, 2 / 3 / 4) | the Multi Frame Generation multiplier |
+| `is_frame_generation_supported()` / `is_frame_generation_active()` | the GPU can run FG / FG is generating now |
+| `is_frame_generation_recomposing()` | DLSS-G is recomposing the clean UI onto presented frames this frame |
+| `get_frame_generation_status()` | `"active (Nx, WxH -> M presented, UI recomposed\|present-only)"`, `"off: ..."`, `"unavailable: ..."` |
+| `get_max_frame_generation_multiplier()` | the hardware ceiling (1 none, 2 Ada, up to 6 at run time on Blackwell) |
+
+`get_status()["upscaling"]["frame_generation"]` carries `supported`, `active`, `mode`, `multiplier`,
+`max_multiplier`, `status`, `num_frames_to_generate`, `num_frames_presented`, and the four UI-layer
+booleans measured in-engine (always present; false wherever FG is not driving):
+
+- `recomposition_engaged` — DLSS-G is recomposing a clean UI this frame (not present-only);
+- `ui_layers_provided` — the game handed the addon **both** layers (non-empty RIDs) this frame;
+- `hudless_source_valid` — the HUD-less source resolved to a usable Vulkan image;
+- `ui_layer_valid` — the UI layer resolved to a usable Vulkan image.
+
+The last three pinpoint *why* recomposition is not engaged when it is not.
+
+**Clean UI on generated frames (UI recomposition).** FG interpolates the whole presented image, so a
+HUD drawn into it smears on generated frames. The clean result — verified engaging on the RTX 5080 —
+needs the **game** to render its HUD on a separate transparent `SubViewport` so the root viewport is
+HUD-less, and to hand the addon both layers each frame:
+
+- `set_hudless_source(texture)` — the 3D scene without the HUD (the root viewport, post-tonemap), as
+  a RenderingServer texture RID;
+- `set_ui_layer(texture)` — the HUD on its own transparent SubViewport (colour + alpha), as a
+  RenderingServer texture RID.
+
+When FG is driving **and** both resolve to Vulkan images, the addon tags the HUD-less colour and the
+UI layer for Streamline and turns on DLSS-G's UI recomposition, so the UI is drawn once, by
+Streamline, cleanly onto real **and** generated frames. While `is_frame_generation_recomposing()` is
+true the host must keep its own HUD composite **out** of the HUD-less source (hide the on-screen HUD
+composite, since Streamline is drawing the UI layer), so the UI is not drawn twice. If the game
+provides neither layer, or only one, FG stays on the **present-only** path (the UI ghosts) —
+**unchanged and never regressed**, and FG off is byte-identical.
+
+```gdscript
+# Hand the addon the HUD-less scene and the UI layer each frame, and hide the on-screen HUD
+# composite while DLSS-G is recomposing it (so it is drawn once, by Streamline).
+func _process(_dt: float) -> void:
+	if not Engine.has_singleton("LatencyUpscaling"):
+		return
+	var lu := Engine.get_singleton("LatencyUpscaling")
+	lu.set_hudless_source(scene_viewport.get_texture().get_rid()) # root 3D viewport, HUD-less
+	lu.set_ui_layer(hud_subviewport.get_texture().get_rid())      # the HUD's transparent SubViewport
+	hud_composite.visible = not lu.is_frame_generation_recomposing()
+```
+
+> **Note.** The plugin side of UI recomposition is complete and verified engaging on the RTX 5080.
+> The matching HUD-into-a-SubViewport restructuring is a per-game change the addon cannot make for
+> you; see `docs/PHASE3_FG.md`. A few low-severity validation-layer messages remain under FG on the
+> RTX 5080 (no crash, no device loss, no wrong output beyond the documented present-only ghosting);
+> they are tracked as FG-polish items in [`docs/ISSUES.md`](docs/ISSUES.md).
+
+Before you ship a game with FG, the NVIDIA terms in the
+[NVIDIA technologies](#nvidia-technologies-trademarks-and-attribution) section apply as they do for
+DLSS Super Resolution (the Frame Generation DLLs are NVIDIA's binaries under the same licence).
+
 ## Project structure
 
 | Path | Contents |
@@ -500,6 +611,8 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 | `stub/` | experimental cross-platform no-op library, **not shipped** (see `stub/README.md`) |
 | `thirdparty/` | `godot-cpp` 10.0.0 and `Vulkan-Headers` v1.4.357 (git submodules), `streamline/` (Streamline 2.14.1 public headers, MIT) |
 | `docs/ARCHITECTURE.md` | how it works, marker placement, safety net, DLSS (section 7) |
+| `docs/PHASE3_FG.md` | Frame Generation design, milestones (H1-H6), the UI-recomposition path and risks |
+| `docs/ISSUES.md` | known issues: the open Reflex-latency question and the remaining FG validation-layer polish |
 | `docs/RTX_WINDOWED_RUNS.md` | every test run that opened a window on the remote RTX PC |
 
 ## Troubleshooting
@@ -519,6 +632,9 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 | "unavailable: sl.interposer.dll ... does not carry NVIDIA's signature" (or in `get_status()["upscaling"]["dlss"]["runtime_reason"]`) | The runtime files were modified or are not NVIDIA's: fetch them again |
 | "unavailable: disabled ... at startup" | `dlss/enabled` was off when the game started; the runtime is only loaded when DLSS is on at startup |
 | "off: Auto: output below 1920x1080" | NVIDIA recommends DLSS off below 1080p; pick a mode explicitly (`dlss_quality`) to use it anyway |
+| `get_frame_generation_status()`: "unavailable: ... needs a GeForce RTX 40 series GPU" | Frame Generation needs an Ada (RTX 40) or newer GPU; on anything older it stays inert and the rest of the addon is unaffected |
+| Frame Generation stays off though `fg/enabled` is set | Both `fg/enabled=true` **and** `fg/mode=On` are needed, FG must be permitted on FG-capable hardware, a DLSS SR / DLAA upscaler must be active, VSync must be off, and HAGS must be on. `get_frame_generation_status()` says which is missing ("off: needs a DLSS or DLAA upscaler", "unavailable: Frame Generation needs VSync off", ...) |
+| The HUD smears / ghosts on generated frames | Present-only Frame Generation (the default without a UI layer). Render the HUD on a transparent `SubViewport` and hand both layers to `set_hudless_source()` / `set_ui_layer()` each frame; `is_frame_generation_recomposing()` then reports when the clean path engaged (see [Frame Generation](#frame-generation-phase-3)) |
 | Streaks of the previous view for a frame after a teleport or a scene change | The automatic detection only sees camera switches and turns / moves past `dlss/cut_angle_degrees` / `dlss/cut_distance` in one frame: call `reset_dlss_history()` on that frame, or lower the thresholds |
 | The log shows `Hook sl.common:Vulkan:CmdBindPipeline` (also `CmdBindDescriptorSets`, `BeginCommandBuffer`) `is NOT supported, plugin will not function properly` | Expected with Streamline 2.14.1 on Vulkan, harmless: `sl.common` asks for these command-state hooks, Streamline's Vulkan plugin manager does not provide them, and the addon does not use that tracking (it re-binds Godot's state itself). See `docs/ARCHITECTURE.md` 7.3 |
 | The export log says "the Latency & Upscaling editor plugin is disabled, so this Windows export does not carry the NVIDIA DLSS runtime" | Enable the plugin (Project Settings > Plugins) and export again; its export plugin puts the runtime into `nvidia/` |
@@ -527,8 +643,10 @@ is higher than that, as with the load: every DLSS mode is then faster than nativ
 
 ## Version
 
-0.2.0 (Phase 2: DLSS Super Resolution / DLAA), after 0.1.0 (Phase 1: hook layer and Reflex). See
-`CHANGELOG.md`. Semantic versioning.
+0.3.0 (Phase 3: DLSS Frame Generation / Multi Frame Generation), after 0.2.0 (Phase 2: DLSS Super
+Resolution / DLAA) and 0.1.0 (Phase 1: hook layer and Reflex). See `CHANGELOG.md`. Semantic
+versioning. Not 1.0 yet: see [`docs/ISSUES.md`](docs/ISSUES.md) for the remaining Frame Generation
+polish and the open Reflex-latency question on the RTX 5080.
 
 ## NVIDIA technologies, trademarks and attribution
 

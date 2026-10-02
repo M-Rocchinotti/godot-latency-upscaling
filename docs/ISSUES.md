@@ -48,7 +48,7 @@ fullscreen path, and ideally a run with V-Sync and VRR off confirmed on that mon
 RTX 5080 it is active and harmless. The game's settings expose it as NVIDIA asks and leave it On by
 default. This issue is about the addon's latency result, not the integration.
 
-## 2. Frame Generation crashed at vkCreateDevice on the RTX 5080 (fixed, pending RTX re-verify)
+## 2. Frame Generation crashed at vkCreateDevice on the RTX 5080 (fixed, verified on the RTX 5080)
 
 **Symptom.** Phase 3 RTX bring-up on an RTX 5080 (driver 591.86): with Frame Generation **off** the
 addon is validation-clean and R1 passed (DLSS_G supported, `numFramesToGenerateMax = 5`, i.e. up to
@@ -111,3 +111,58 @@ generic dedupe/cap hardening still holds. Build + full suite green on the GTX 10
 Generation off (pass-through byte-identical, validation clean). The fix's runtime path is RTX-only
 (the interposer must be present), so the RTX windowed Frame-Generation-on probe is to be re-run — this
 should finally let `vkCreateDevice` succeed with Frame Generation on.
+
+**Verified (RTX 5080, driver 591.86, v0.3.0 FG milestone).** The windowed Frame-Generation-on run
+succeeds: the device creates cleanly, Frame Generation is active (up to 6x), Reflex runs through
+`sl.reflex`, DLSS Super Resolution stays intact, UI recomposition engages, and there is **no crash
+and no device loss**. On the non-FG GTX 1080 the pass-through is byte-identical to Frame Generation
+off. The crash is fixed; what remains is the low-severity validation-layer polish in issue 3 below.
+
+## 3. Validation-layer messages under Frame Generation on the RTX 5080 (open, low severity)
+
+**Symptom.** With Frame Generation **on** on an RTX 5080 (driver 591.86), a validation-layer run
+reports a small, stable set of messages inside the Frame Generation path. They are **not** crash- or
+device-level: the device creates cleanly, Frame Generation generates, DLSS Super Resolution and the
+UI recomposition work, and there is no device loss (issue 2). They do **not** appear with Frame
+Generation off (that path is validation-clean), and they were present **before** the HUD-less / UI
+recomposition fix and are unchanged by it — so they are **independent of the HUD path**, not caused
+by the HUD-less / UI-layer tagging.
+
+The messages, and where each resource comes from:
+
+- **`vkCmdDispatch` `VUID-vkCmdDispatch-magFilter-04553`** — a sampler with `magFilter = LINEAR` is
+  used to sample an `R8G8_UINT` image (a motion / ID buffer) in a compute dispatch, and integer
+  formats are not linearly filterable; alongside it a **storage-image format mismatch** is flagged
+  (an image view as `R16G16B16A16_UNORM` over an `R16G16B16A16_SFLOAT` resource).
+  - *Attribution.* The addon's own tagged motion vectors are the filled velocity copy, created as
+    `R16G16B16A16_SFLOAT` (`src/godot/velocity_fill.cpp`, `src/godot/upscaler.cpp`), **not**
+    `R8G8_UINT`, and the addon runs no compute dispatch that samples an `R8G8_UINT` buffer with a
+    LINEAR sampler (its reference-upscaler dispatch samples the colour; DLSS-G replaces the marker
+    dispatch with its own evaluation). The `R8G8_UINT` buffer and the dispatch are therefore
+    **internal to NVIDIA's Streamline / DLSS-G** (`sl.dlss_g`) and **not fixable here**; the stated
+    fix (a NEAREST sampler, or a filterable format) would be inside NVIDIA's code.
+  - The storage-image format mismatch is the one item that **might** be touchable from the plugin
+    side: the addon reports each tagged resource's `nativeFormat` from Godot's data format
+    (`src/dlss/streamline.cpp`), so if DLSS-G builds its storage view from that, matching the format
+    the addon reports could resolve it. Whether the mismatched view is the addon's reported format or
+    a DLSS-G-internal view is **not established** from a static read; it needs a validation run that
+    captures the offending `VkImageView`'s object chain. Treated as uncertain, not yet actionable.
+- **`vkCmdCopyImage` `VUID-vkCmdCopyImage-aspect-06663`** paired with **`VkImageMemoryBarrier`
+  `VUID-VkImageMemoryBarrier-oldLayout-01213`** — a copy target was created without
+  `VK_IMAGE_USAGE_TRANSFER_DST_BIT` (so the copy region's aspect and the image's old layout do not
+  validate for a transfer destination).
+  - *Attribution.* The addon's **own** Super Resolution output already carries
+    `VK_IMAGE_USAGE_TRANSFER_DST_BIT` (created with `TEXTURE_USAGE_CAN_COPY_TO_BIT`,
+    `src/godot/upscaler.cpp`, added earlier to satisfy `VUID-vkCmdClearColorImage-image-00002`), so
+    the faulting copy target is **not** the addon's SR output. Because these messages are present
+    without the HUD path, the copy target is **internal to DLSS-G's Frame Generation present path**
+    (NVIDIA's `sl.dlss_g` / the interposer) rather than a game-provided HUD-less / UI layer, and is
+    therefore **not fixable here**. (Were it ever traced to a game-provided `SubViewport` texture, the
+    fix would be game-side — create that texture with copy-to usage — still not the addon's.)
+
+**Severity and status.** Low. No crash, no device loss, no wrong output beyond the documented
+present-only HUD ghosting; Frame Generation off is validation-clean. These are the remaining Frame
+Generation polish items on the road to **1.0**: the storage-image format mismatch is the only
+candidate plugin-side fix and is unconfirmed; the rest are internal to NVIDIA's Streamline / DLSS-G.
+A validation run that captures the offending object handles is the next step to confirm the
+attribution before 1.0.
