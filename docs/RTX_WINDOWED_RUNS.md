@@ -86,3 +86,71 @@ can come up live. Nothing of ours was left running.
 | 2026-10-02 10:31:53 | fg_on_2 | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 --script res://tests/upscaler_run.gd -- --frames=300` | 4 s | exit -1073741819 | GPU 0 %, no fullscreen app in front, a game running |
 | 2026-10-02 10:32:58 | fg_on_valid | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=300` | 4 s | exit -1073741819 | GPU 0 %, no fullscreen app in front, a game running |
 | 2026-10-02 10:33:55 | fg_off_valid | `GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=200` | 6 s | exit 0 | GPU 0 %, no fullscreen app in front, a game running |
+| 2026-10-02 11:07:30 | fg_on_fixed | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=300` | 4 s | exit -1073741819 | GPU 2 %, no fullscreen app in front, a game running |
+| 2026-10-02 11:09:54 | fg_off_fixed | `GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=200` | 6 s | exit 0 | GPU 3 %, no fullscreen app in front, a game running |
+
+## R2 re-verify after the FG device-creation fix (2026-10-02, fg_on_fixed / fg_off_fixed)
+
+The FG device-creation fix (optical-flow extension deps, queue de-dup by (family, flags), queueCount
+cap; `Streamline::request_device` requests the optical-flow queue only if the device offers it) was
+rebuilt and redeployed — the deployed `template_debug` DLL's SHA-256 matches the freshly built one, and
+the crash backtrace shows that same addon DLL, so the fixed binary is the one that ran. C++ unit tests:
+**123 passed / 0 failed** (incl. the new `device_patch_adds_the_optical_flow_extension_dependencies_for_the_fg_queue`,
+`device_patch_dedupes_queue_entries_and_caps_to_the_family_limit`, `fg_runtime_max_multiplier_overrides_the_architecture_guess`).
+
+**Result: the crash is NOT fixed.** FG on still exits `-1073741819` (0xC0000005) at `vkCreateDevice`,
+with the same three VUIDs. FG off is still exit 0 and validation-clean. So the addon's own device
+request is correct (unit-tested), but the *final* `VkDeviceCreateInfo` on the interposer-mode path is
+still invalid, because Streamline's interposer appends to it downstream:
+
+- `VUID-VkDeviceCreateInfo-queueFamilyIndex-02802` + `-pQueueCreateInfos-06755`: `pQueueCreateInfos[6]`
+  duplicates `[5]` — **both ask for queue family 5 (the optical-flow family, which has only 1 queue)**,
+  so 2 queues are requested from a 1-queue family. The addon now requests that optical-flow queue (the
+  fix) and the interposer adds its own as well; the addon cannot de-dup an entry appended after it.
+- `VUID-vkCreateDevice-ppEnabledExtensionNames-01387`: `VK_NV_low_latency2` (added by the interposer for
+  sl.reflex in FG mode — the addon declines LL2 there) is missing its required `VK_KHR_present_id`.
+
+Because the engine crashes at device creation, the R2 integration targets still could **not** be
+observed live: `enable_streamline_reflex` firing, `get_reflex_status()` active via sl.reflex, the live
+FG `get_status()`, and `get_max_frame_generation_multiplier()` reporting the runtime 6x all require the
+device to be created first. (`get_max_frame_generation_multiplier()` reads 4 in the FG-off runs — the
+architecture guess — because the runtime query `slDLSSGGetState().numFramesToGenerateMax` only runs
+once FG initialises, which never happens.) The probe already proved the SDK-level 6x
+(`numFramesToGenerateMax = 5`).
+
+Direction for the next fix: in interposer mode with FG permitted, do not have the addon request the
+optical-flow queue (let the interposer own the FG device setup, removing the duplicate), and ensure
+`VK_KHR_present_id` accompanies the interposer's `VK_NV_low_latency2`. Then re-verify on the 5080. FG
+stays guarded off by default, so shipped users are unaffected. Nothing of ours was left running.
+| 2026-10-02 11:27:54 | fg_on_fixed2 | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=300` | 4 s | exit -1073741819 | GPU 2 %, no fullscreen app in front, a game running |
+
+## R2 re-verify #2 — present_id fix lands, optical-flow queue duplicate remains (2026-10-02, fg_on_fixed2)
+
+Rebuilt from the working tree (addon no longer requests the optical-flow queue; in FG mode it enables
+`VK_KHR_present_id` + chains `VkPhysicalDevicePresentIdFeaturesKHR` for the interposer's
+`VK_NV_low_latency2`, without adding `VK_NV_low_latency2` itself; optical-flow left to the interposer).
+Deployed DLL SHA matches the freshly built one. C++ unit tests **124 passed / 0 failed**, incl. the new
+`device_patch_does_not_add_optical_flow_extensions_itself` and
+`reflex_feature_in_frame_generation_mode_enables_present_id_not_low_latency2`.
+
+**Partial progress, still crashes.** FG on exits `-1073741819` (0xC0000005) at `vkCreateDevice` again.
+
+- **FIXED:** `VUID-vkCreateDevice-ppEnabledExtensionNames-01387` (the `VK_NV_low_latency2` → missing
+  `VK_KHR_present_id`) is **gone** — the present_id change worked.
+- **REMAINS:** `VUID-VkDeviceCreateInfo-queueFamilyIndex-02802` and `-pQueueCreateInfos-06755`:
+  `pQueueCreateInfos[6]` still uses the same queueFamilyIndex (5) + flags (0) as `[5]`, and family 5
+  (the optical-flow family) has only 1 queue while 2 are requested.
+
+The addon now adds no optical-flow queue (confirmed in `Streamline::request_device` and the unit test),
+so **both family-5 entries are introduced downstream of the addon's vkCreateDevice hook by Streamline's
+interposer** — which the addon cannot de-dup, because the interposer appends its copy after the addon
+runs and the addon's hook sits above the interposer (Godot → addon → interposer → driver). FG off stays
+exit 0 and validation-clean. Because device creation still fails, the R2 integration targets
+(`enable_streamline_reflex`, `get_reflex_status()` via sl.reflex, live FG `get_status()`, 6x from
+`numFramesToGenerateMax`, any "common constants for frame N") still could not be observed.
+
+Next lever (addon cannot fix it by omitting the queue — it already does): establish who emits the two
+family-5 entries (the interposer requesting the optical-flow queue twice, or the interposer's request
+colliding with a base/Godot family-5 queue) and address it at that layer — a Streamline config/version
+matter, or stopping the optical-flow family from being requested upstream of the interposer. Nothing of
+ours was left running.

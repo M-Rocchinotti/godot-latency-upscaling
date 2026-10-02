@@ -306,3 +306,42 @@ TEST(ll2_sleep_time_includes_the_blocking_vkLatencySleepNV_call) {
 	CHECK(counters.last_sleep_ms >= 35.0);
 	CHECK(counters.latency_sleep_call_max_us >= 35000);
 }
+
+TEST(reflex_feature_in_frame_generation_mode_enables_present_id_not_low_latency2) {
+	// Frame Generation drives Reflex through Streamline's sl.reflex. In interposer mode Streamline adds
+	// VK_NV_low_latency2 downstream (for sl.reflex), which depends on VK_KHR_present_id; the interposer
+	// does not add present_id itself. So the addon enables present_id (and its feature) but neither
+	// VK_NV_low_latency2 nor any queue — the interposer owns those.
+	ReflexFeature &feature = ReflexFeature::get();
+	const Settings settings; // defaults
+	vk::PhysicalDeviceCaps caps; // a device that supports present_id, like the RTX 5080
+	caps.vendor_id = 0x10DE;
+	caps.effective_api_version = VK_API_VERSION_1_2;
+	caps.extensions[VK_KHR_PRESENT_ID_EXTENSION_NAME] = 1;
+	caps.present_id_feature = true;
+
+	feature.configure(true, "", settings, {}, /*fg_permitted=*/true);
+	vk::DeviceRequest request;
+	std::string reason;
+	CHECK(feature.request_device(caps, request, reason));
+	bool present_id = false;
+	bool low_latency2 = false;
+	for (const std::string &e : request.extensions) {
+		present_id = present_id || e == VK_KHR_PRESENT_ID_EXTENSION_NAME;
+		low_latency2 = low_latency2 || e == VK_NV_LOW_LATENCY_2_EXTENSION_NAME;
+	}
+	CHECK(present_id);
+	CHECK(!low_latency2); // the interposer adds VK_NV_low_latency2, not the addon
+	CHECK(request.features.present_id);
+	CHECK(request.queues.empty()); // the optical-flow queue is the interposer's, not the addon's
+
+	// Without present_id support, Frame Generation's Reflex cannot be set up: it declines cleanly.
+	vk::PhysicalDeviceCaps no_present_id;
+	no_present_id.vendor_id = 0x10DE;
+	no_present_id.effective_api_version = VK_API_VERSION_1_2;
+	vk::DeviceRequest request2;
+	CHECK(!feature.request_device(no_present_id, request2, reason));
+	CHECK(request2.empty());
+
+	feature.configure(false, "the Vulkan hook was not installed", settings, {}, false); // leave it benign
+}

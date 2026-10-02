@@ -14,15 +14,6 @@ T *mutable_in_chain(const void *next, VkStructureType type) {
 	return reinterpret_cast<T *>(const_cast<VkBaseInStructure *>(find_in_chain(next, type)));
 }
 
-bool requests_optical_flow_queue(const DeviceRequest &request) {
-	for (const QueueRequest &q : request.queues) {
-		if ((q.required & VK_QUEUE_OPTICAL_FLOW_BIT_NV) != 0) {
-			return true;
-		}
-	}
-	return false;
-}
-
 } // namespace
 
 void DeviceFeatureRequest::merge(const DeviceFeatureRequest &other) {
@@ -44,27 +35,8 @@ void DeviceRequest::add_extension(const char *name) {
 DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const DeviceRequest &request,
 		const std::vector<VkQueueFamilyProperties> &families) :
 		info_(original) {
-	// DLSS Frame Generation: requesting an optical-flow queue means VK_NV_optical_flow runs, which on
-	// a device below Vulkan 1.3 pulls in VK_KHR_format_feature_flags2 and VK_KHR_synchronization2 as
-	// device-extension dependencies (vk.xml: VK_NV_optical_flow `depends`). All three must be in
-	// ppEnabledExtensionNames or vkCreateDevice is spec-invalid (VUID-vkCreateDevice-...-01387). Godot
-	// 4.7 creates a Vulkan 1.2 device, so none are core; they are added here when the FG queue is
-	// requested. The requester adds the FG queue only after checking the device offers all three.
-	std::vector<std::string> requested = request.extensions;
-	if (requests_optical_flow_queue(request)) {
-		for (const char *dependency : { VK_NV_OPTICAL_FLOW_EXTENSION_NAME, VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,
-					 VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME }) {
-			bool already = false;
-			for (const std::string &name : requested) {
-				already = already || name == dependency;
-			}
-			if (!already) {
-				requested.emplace_back(dependency);
-			}
-		}
-	}
 	names_.assign(original.ppEnabledExtensionNames, original.ppEnabledExtensionNames + original.enabledExtensionCount);
-	for (const std::string &wanted : requested) {
+	for (const std::string &wanted : request.extensions) {
 		bool present = false;
 		for (const char *name : names_) {
 			present = present || std::strcmp(name, wanted.c_str()) == 0;
@@ -231,7 +203,8 @@ void DeviceCreatePatch::add_queues(const VkDeviceCreateInfo &original, const std
 
 	// Harden the result so it is always a valid VkDeviceCreateInfo, even if the host (or the merge
 	// with a feature's queues) produced a duplicate or an over-count. Correct placements above never
-	// trigger either pass; this repairs the Frame Generation optical-flow path the RTX bring-up hit.
+	// trigger either pass; this is a defensive safety net for the device create the addon forwards
+	// (it cannot see what an interposer adds downstream of it).
 	auto materialize = [&](size_t i) {
 		if (priorities_[i].empty() && queue_infos_[i].queueCount > 0 && queue_infos_[i].pQueuePriorities != nullptr) {
 			priorities_[i].assign(queue_infos_[i].pQueuePriorities, queue_infos_[i].pQueuePriorities + queue_infos_[i].queueCount);

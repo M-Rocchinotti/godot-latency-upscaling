@@ -118,28 +118,6 @@ std::string result_text(const char *what, sl::Result r) {
 	return std::string(what) + " failed: " + sl::getResultAsStr(r);
 }
 
-// Whether the device can satisfy DLSS Frame Generation's optical-flow needs: an optical-flow queue
-// family and, below Vulkan 1.3, VK_NV_optical_flow with its dependency extensions. Only then is the
-// optical-flow queue requested; otherwise Frame Generation is skipped and DLSS Super Resolution is
-// unaffected (no invalid device create).
-bool device_offers_optical_flow(const vk::PhysicalDeviceCaps &caps) {
-	bool has_queue = false;
-	for (const VkQueueFamilyProperties &family : caps.queue_families) {
-		if ((family.queueFlags & VK_QUEUE_OPTICAL_FLOW_BIT_NV) != 0 && family.queueCount > 0) {
-			has_queue = true;
-			break;
-		}
-	}
-	if (!has_queue || !caps.has_extension(VK_NV_OPTICAL_FLOW_EXTENSION_NAME)) {
-		return false;
-	}
-	if (caps.effective_api_version < VK_API_VERSION_1_3) {
-		return caps.has_extension(VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME) &&
-				caps.has_extension(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
-	}
-	return true;
-}
-
 // Why Streamline says a GPU cannot run DLSS, in the addon's words.
 std::string unsupported_reason(sl::Result r) {
 	switch (r) {
@@ -333,31 +311,15 @@ bool Streamline::request_instance_extensions(std::vector<std::string> &, std::st
 	return true;
 }
 
-bool Streamline::request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &request, std::string &reason) {
-	// Streamline's vkCreateDevice adds DLSS Super Resolution's own extensions, features and queues.
-	if (!adapter_supported(caps.handle, reason)) {
-		return false;
-	}
-	// DLSS Frame Generation (Phase 3): request the optical-flow queue it needs so the device is
-	// created ready for it; device_patch then adds VK_NV_optical_flow and its dependency extensions.
-	// Only when the device actually offers the optical-flow queue and extensions — otherwise Frame
-	// Generation is skipped (unavailable) and DLSS Super Resolution still works, never an invalid
-	// device create (the RTX bring-up crash).
-	bool fg_permitted = false;
-	{
-		std::lock_guard<std::mutex> lock(mutex_);
-		fg_permitted = fg_permitted_;
-	}
-	if (fg_permitted) {
-		if (device_offers_optical_flow(caps)) {
-			request.queues.push_back(vk::QueueRequest{ VK_QUEUE_OPTICAL_FLOW_BIT_NV, 1 });
-		} else {
-			log::warning("Frame Generation is on, but %s does not offer the optical-flow queue / VK_NV_optical_flow it "
-						 "needs; Frame Generation stays off (DLSS Super Resolution is unaffected)",
-					caps.name.c_str());
-		}
-	}
-	return true;
+bool Streamline::request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &, std::string &reason) {
+	// In interposer mode Streamline's own vkCreateDevice adds everything its features need downstream
+	// of the addon: DLSS Super Resolution's and, when sl.dlss_g is loaded, Frame Generation's device
+	// extensions, features and queues (the optical-flow queue and VK_NV_optical_flow among them). The
+	// addon must NOT add the optical-flow queue itself — a second one is a duplicate the addon cannot
+	// de-dup, because the interposer appends its copy after the addon has run (the RTX 5080 crash).
+	// The one device setup the interposer needs from the app, VK_KHR_present_id for sl.reflex's
+	// VK_NV_low_latency2, is added by ReflexFeature when Frame Generation is permitted.
+	return adapter_supported(caps.handle, reason);
 }
 
 bool Streamline::initialize(const vk::DeviceContext &, std::string &reason) {

@@ -12,15 +12,17 @@ Hardware-independent (builds and tests on the GTX 1080 dev box). The version is 
 ### Fixed — Frame Generation device-creation crash (RTX 5080 bring-up)
 
 - With Frame Generation on, the engine crashed at `vkCreateDevice` before Streamline init: a
-  spec-invalid `VkDeviceCreateInfo` on the optical-flow-queue path (VUID-...-01387 missing
-  `VK_NV_optical_flow` dependency; VUID-...-02802 duplicate `(queueFamilyIndex, flags)`;
-  VUID-...-06755 `queueCount` over the family limit). `src/vk/device_patch.cpp` now, when an
-  optical-flow queue is requested, adds `VK_NV_optical_flow` with its <1.3 dependencies
-  (`VK_KHR_format_feature_flags2`, `VK_KHR_synchronization2`), merges queue entries that share
-  `(queueFamilyIndex, flags)`, and caps each family's `queueCount` to its limit. The addon requests
-  the optical-flow queue itself (`Streamline::request_device`, when `fg_permitted` and the device
-  offers the queue + extensions), skipping Frame Generation gracefully otherwise. The
-  Frame-Generation-off path is byte-identical. See `docs/ISSUES.md` #2.
+  spec-invalid `VkDeviceCreateInfo`. Streamline runs as an interposer and adds Frame Generation's
+  optical-flow queue and `VK_NV_optical_flow`, plus `VK_NV_low_latency2` for sl.reflex, **downstream**
+  of the addon. The fix: the addon does **not** request the optical-flow queue (removed from
+  `Streamline::request_device`) and `device_patch` does not add `VK_NV_optical_flow` — the interposer
+  owns the whole optical-flow setup, so there is no duplicate queue (fixes VUID-...-02802 /
+  VUID-...-06755). When Frame Generation is permitted, `ReflexFeature::request_device` enables
+  `VK_KHR_present_id` and chains its feature (but not `VK_NV_low_latency2`, and creates no
+  `Ll2Device`), so the interposer's `VK_NV_low_latency2` has its present_id dependency present (fixes
+  VUID-vkCreateDevice-ppEnabledExtensionNames-01387). `device_patch::add_queues` keeps a defensive
+  dedupe-by-`(queueFamilyIndex, flags)` and `queueCount`-cap pass. The Frame-Generation-off path is
+  byte-identical. See `docs/ISSUES.md` #2.
 - `get_max_frame_generation_multiplier()` now derives from `slDLSSGGetState().numFramesToGenerateMax`
   (`+1`, so 5 -> 6x) when Frame Generation is available at runtime, falling back to the architecture
   guess otherwise; the dev-box value (unavailable -> 1) is unchanged.

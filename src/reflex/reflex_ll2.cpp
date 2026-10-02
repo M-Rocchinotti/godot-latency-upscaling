@@ -500,13 +500,6 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 		reason = disabled_reason_;
 		return false;
 	}
-	if (fg_permitted_) {
-		// Frame Generation drives Reflex through Streamline's sl.reflex; VK_NV_low_latency2 is kept
-		// out of the device so the swapchain and present path stay untouched (what Frame Generation
-		// needs). The SlReflexDevice takes over once Streamline has resolved its plugins.
-		reason = "Frame Generation drives Reflex through NVIDIA Streamline (sl.reflex); VK_NV_low_latency2 is not used";
-		return false;
-	}
 	auto version = [&](const char *name) -> uint32_t {
 		for (const std::string &hidden : hidden_extensions_) {
 			if (hidden == name) {
@@ -515,6 +508,21 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 		}
 		return caps.extension_version(name);
 	};
+	if (fg_permitted_) {
+		// Frame Generation drives Reflex through Streamline's sl.reflex. In interposer mode Streamline
+		// adds VK_NV_low_latency2 downstream (for sl.reflex), and that extension depends on
+		// VK_KHR_present_id, which the interposer does not add itself. So the addon enables present_id
+		// (and chains VkPhysicalDevicePresentIdFeaturesKHR, reusing the LL2 plumbing) but NOT
+		// VK_NV_low_latency2 — no Ll2Device, no queues, no submit/present hooks; the interposer owns the
+		// rest. This satisfies VK_NV_low_latency2's VUID-vkCreateDevice-ppEnabledExtensionNames-01387.
+		if (version(VK_KHR_PRESENT_ID_EXTENSION_NAME) == 0 || !caps.present_id_feature) {
+			reason = "Frame Generation needs VK_KHR_present_id for Streamline's Reflex, which this device does not expose";
+			return false;
+		}
+		request.add_extension(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+		request.features.present_id = true;
+		return true;
+	}
 	const uint32_t ll2 = version(VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 	if (ll2 == 0) {
 		if (caps.vendor_id != NVIDIA_VENDOR_ID) {
@@ -549,6 +557,16 @@ bool ReflexFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::Devic
 }
 
 void ReflexFeature::on_device_created(const vk::DeviceContext &context, bool accepted, const std::string &reason) {
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		if (fg_permitted_) {
+			// Frame Generation mode: no Ll2Device. present_id was enabled above only so the interposer's
+			// sl.reflex VK_NV_low_latency2 is valid; Reflex itself is driven by the SlReflexDevice, which
+			// Streamline hands over once it has resolved sl.reflex (enable_streamline_reflex).
+			any_device_ = true;
+			return;
+		}
+	}
 	std::shared_ptr<Ll2Device> device;
 	if (accepted) {
 		SleepMode mode;
