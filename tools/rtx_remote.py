@@ -482,7 +482,7 @@ def exe_in_root(r: Remote, exe_rel: str) -> str:
 
 
 def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout: int, env: dict[str, str] | None = None,
-                medium: bool = False, validation: bool = False, exe_rel: str = "") -> int:
+                medium: bool = False, validation: bool = False, exe_rel: str = "", force_window: bool = False) -> int:
     godot_args_ok(args, window_ok)
     env = dict(env or {})
     if validation:
@@ -497,9 +497,15 @@ def cmd_session(r: Remote, name: str, args: list[str], window_ok: bool, timeout:
     preflight = ""
     if windowed:
         ok, preflight = cmd_preflight(r)
-        if not ok:
+        if not ok and not force_window:
             print("rtx_remote: not opening a window now: the PC looks busy. Try again later.")
             return 4
+        if not ok:
+            # --force-window: the user granted a durable OK to run a short window alongside other
+            # programs. The preflight still ran (its GPU load + yes/no answers are logged as always);
+            # the only change is that a non-idle result no longer aborts. Every other guard stays:
+            # a short run (capped below), a non-focus-stealing window (SW_SHOWNOACTIVATE), and the log.
+            print("rtx_remote: preflight not idle (" + preflight + "); proceeding anyway (--force-window).")
         timeout = min(timeout, WINDOW_MAX_SECONDS)
     d = run_dir(r, name)
     exe = f"{r.root}\\godot\\{GODOT_EXES[0]}"  # GUI subsystem: no console window
@@ -694,7 +700,7 @@ def main(argv: list[str]) -> int:
         return 0 if cmd_preflight(r)[0] else 4
     if command == "session" and rest:
         return cmd_session(r, rest[0], godot_args, window_ok, timeout, env, "--medium-integrity" in rest, "--validation" in rest,
-                           exe_rel)
+                           exe_rel, "--force-window" in rest)
     if command == "push" and len(rest) == 2:
         return cmd_push(r, Path(rest[0]), rest[1])
     if command == "run" and rest:

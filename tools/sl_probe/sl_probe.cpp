@@ -28,6 +28,9 @@
 
 #include <sl.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
+#include <sl_pcl.h>
+#include <sl_reflex.h>
 #include <sl_helpers.h>
 #include <sl_helpers_vk.h>
 #include <sl_security.h>
@@ -185,7 +188,9 @@ int wmain(int argc, wchar_t **argv) {
 		return fail("sl.interposer.dll lacks an expected export");
 	}
 
-	const sl::Feature features[] = { sl::kFeatureDLSS };
+	// Phase 3 bring-up: the same feature set the addon loads with Frame Generation permitted, so the
+	// probe verifies DLSS_G / Reflex / PCL on the adapter outside Godot, as the addon does inside it.
+	const sl::Feature features[] = { sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL };
 	const wchar_t *paths[] = { dir.c_str() };
 	sl::Preferences pref{};
 	pref.showConsole = false;
@@ -198,7 +203,7 @@ int wmain(int argc, wchar_t **argv) {
 	// re-binds Godot's state), and no over-the-air updates: only the pinned, verified files run.
 	pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseManualHooking;
 	pref.featuresToLoad = features;
-	pref.numFeaturesToLoad = 1;
+	pref.numFeaturesToLoad = static_cast<uint32_t>(sizeof(features) / sizeof(features[0]));
 	pref.engine = sl::EngineType::eCustom;
 	pref.engineVersion = "Godot 4.7.2";
 	pref.projectId = "5f8e0c9a-7b1d-4c62-9a43-2d6e8b1f0c57"; // godot-latency-upscaling
@@ -275,8 +280,15 @@ int wmain(int argc, wchar_t **argv) {
 		adapter.vkPhysicalDevice = gpus[g];
 		stage("slIsFeatureSupported");
 		const sl::Result supported = slIsFeatureSupported(sl::kFeatureDLSS, adapter);
-		std::printf("%s{\"name\": \"%s\", \"dlss_supported\": \"%s\"}", g ? ", " : "", json_escape(props.deviceName).c_str(),
-				sl::getResultAsStr(supported));
+		// Frame Generation needs DLSS_G plus the Reflex and PC-latency plugins (adapter-only checks, no
+		// device created): exactly the features the addon gates behind fg_permitted.
+		const sl::Result dlss_g = slIsFeatureSupported(sl::kFeatureDLSS_G, adapter);
+		const sl::Result reflex = slIsFeatureSupported(sl::kFeatureReflex, adapter);
+		const sl::Result pcl = slIsFeatureSupported(sl::kFeaturePCL, adapter);
+		std::printf("%s{\"name\": \"%s\", \"dlss_supported\": \"%s\", \"dlss_g_supported\": \"%s\", \"reflex_supported\": \"%s\", "
+					"\"pcl_supported\": \"%s\"}",
+				g ? ", " : "", json_escape(props.deviceName).c_str(), sl::getResultAsStr(supported), sl::getResultAsStr(dlss_g),
+				sl::getResultAsStr(reflex), sl::getResultAsStr(pcl));
 		if (supported == sl::Result::eOk && supported_index < 0) {
 			supported_index = static_cast<int>(g);
 		}
@@ -363,6 +375,31 @@ int wmain(int argc, wchar_t **argv) {
 				std::printf("]");
 			} else {
 				std::printf(", \"optimal_settings\": \"slDLSSGetOptimalSettings not available\"");
+			}
+			// Phase 3 bring-up: read the Frame Generation ceiling (numFramesToGenerateMax) on the first
+			// supported GPU. Best-effort: this probe's device is built from DLSS's requirements only (not
+			// DLSS_G's optical-flow queue), so the call may report an error on some setups; we print the
+			// raw result either way and never let it disturb the DLSS output above.
+			void *fg_set = nullptr;
+			void *fg_get = nullptr;
+			stage("slDLSSGGetState");
+			if (slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGSetOptions", fg_set) == sl::Result::eOk && fg_set &&
+					slGetFeatureFunction(sl::kFeatureDLSS_G, "slDLSSGGetState", fg_get) == sl::Result::eOk && fg_get) {
+				auto set_options = reinterpret_cast<PFun_slDLSSGSetOptions *>(fg_set);
+				auto get_state = reinterpret_cast<PFun_slDLSSGGetState *>(fg_get);
+				sl::ViewportHandle viewport{ 0 };
+				sl::DLSSGOptions options{};
+				options.mode = sl::DLSSGMode::eOn;
+				options.numFramesToGenerate = 1;
+				const sl::Result sr = set_options(viewport, options);
+				sl::DLSSGState state{};
+				const sl::Result gr = get_state(viewport, state, &options);
+				std::printf(", \"frame_generation\": {\"set_options\": \"%s\", \"get_state\": \"%s\", \"num_frames_to_generate_max\": %u, "
+							"\"dlssg_status\": %u}",
+						sl::getResultAsStr(sr), sl::getResultAsStr(gr), state.numFramesToGenerateMax,
+						static_cast<uint32_t>(state.status));
+			} else {
+				std::printf(", \"frame_generation\": \"slDLSSG functions not available\"");
 			}
 		}
 		// The result is out before the teardown, whatever the teardown does.
