@@ -203,6 +203,16 @@ std::string Upscaler::reason() const {
 	return inactive_reason_;
 }
 
+void Upscaler::set_frame_generation(bool on, uint32_t num_frames_to_generate) {
+	if (dlss_provider_ != nullptr) { // set once at SCENE init; the backend guards its own threading
+		dlss_provider_->set_frame_generation_request(on, num_frames_to_generate);
+	}
+}
+
+bool Upscaler::frame_generation_runtime(dlss::UpscalerProvider::FrameGenerationRuntime &out) const {
+	return dlss_provider_ != nullptr && dlss_provider_->frame_generation_runtime(out);
+}
+
 void Upscaler::update() {
 	SceneTree *tree = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop());
 	Window *root = tree != nullptr ? tree->get_root() : nullptr;

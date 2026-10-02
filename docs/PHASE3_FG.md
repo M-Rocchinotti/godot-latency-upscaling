@@ -4,14 +4,14 @@ Design, milestones and risks for DLSS Frame Generation (FG) and Multi Frame Gene
 godot-latency-upscaling. Phase 3 builds on the same in-process Vulkan dispatch layer as Reflex
 (Phase 1) and DLSS Super Resolution (Phase 2); it adds no engine fork.
 
-> Status: **Phase 3 in progress.** Milestones **H1** (settings, public API, stubbed detection),
-> **H2** (real capability detection), **H3** (the Streamline Frame Generation plugins are loaded
-> when permitted and ship with exports) and **H4** (the Reflex backend switch to Streamline's
-> sl.reflex) are landed, **all guarded off**. Nothing drives Frame Generation yet, so it reports
-> "unavailable" on every non-Ada GPU. With Frame Generation off (the default) the VK_NV_low_latency2
-> path is used exactly as before and the Reflex / DLSS / pass-through behaviour is unchanged; the
-> sl.reflex path runs only on an RTX 40 series+ (verified in the R-series). Everything is
-> hardware-independent and builds and tests on the GTX 1080 dev box.
+> Status: **Phase 3 in progress.** Milestones **H1-H4** (settings, API, capability detection, the
+> Streamline FG plugins, the Reflex -> sl.reflex switch) and **H5** (actually driving Frame
+> Generation, present-only) are landed, **guarded off by default**. On the RTX 5080 the device
+> creates cleanly, sl.reflex is live and FG is supported (max 6x); H5 drives present-only FG when
+> `frame_generation` is On and a DLSS SR / DLAA upscaler is active with VSync off. With Frame
+> Generation off (the default) the Reflex / DLSS / pass-through behaviour is byte-identical. The real
+> generation runs only on an RTX 40 series+ (verified in the R-series). Present-only means the UI
+> ghosts on generated frames; the HUD-less input (H6) fixes that.
 
 ## What Frame Generation is
 
@@ -97,6 +97,50 @@ backend is untouched. On the GTX 1080 dev box the probe classifies Pascal, so FG
 `"NVIDIA GeForce GTX 1080 does not support Frame Generation (needs a GeForce RTX 40 series GPU or
 newer)"`.
 
+## Driving Frame Generation (H5, present-only / Option A)
+
+Frame Generation is driven only when the hardware supports it, `frame_generation` is On, a DLSS
+Super Resolution / DLAA upscaler is active, and VSync is off (`fg_availability()`, pure and
+unit-tested; `LatencyUpscaling::update_frame_generation_request()` evaluates it each frame and pushes
+the request to the backend only when it changed). The backend (`dlss::Streamline`) drives it inside
+its SR `evaluate()` on the viewport it already upscales: `slDLSSGSetOptions(viewport, {mode eOn,
+numFramesToGenerate, flags eRetainResourcesWhenOff})`, where `numFramesToGenerate` comes from the MFG
+multiplier (`fg_num_frames_to_generate`: 2x->1, 3x->2, 4x->3, Auto->`numFramesToGenerateMax`). The
+depth and motion vectors SR tagged that frame are the mandatory pair; the backbuffer is intercepted
+in interposer mode — no extra tagging. `slDLSSGGetState` feeds the live status.
+
+Status strings (`get_frame_generation_status()`): `"unavailable: <reason>"` (non-RTX etc.),
+`"off: Frame Generation is off (set frame_generation to On)"`, `"off: needs a DLSS or DLAA upscaler
+(Frame Generation runs on the Super Resolution path)"`, `"unavailable: Frame Generation needs VSync
+off"`, and `"active (Nx, WxH -> M presented)"` once generating (N = multiplier, WxH = render size,
+M = `numFramesActuallyPresented`).
+
+**One frame token per frame (the coupling the plan flagged).** Streamline's commonInterface keys a
+frame's constants on the frame token, so every subsystem that touches a frame must use the *same*
+token: the sl.reflex markers / slReflexSleep, the SR `slSetConstants` / `slEvaluateFeature`, and the
+FG present. The first H5 attempt let each mint its own, so SR set the constants under one id and the
+FG present looked them up under another — Streamline logged `Unable to find 'common' constants for
+frame N` every frame, disabled FG per-frame, skipped the out-of-order present, and the pacer's
+semaphore wait timed out into `VK_ERROR_DEVICE_LOST`. The fix is one `reflex::FrameTokenSource`
+(owned by `dlss::Streamline` when the FG plugins load): `advance()` mints the next monotonic token at
+the Reflex sleep (frame start), and `current()` returns it for the rest of the frame — the reflex
+markers/sleep (via `SlReflexApi::token_source`), the SR `evaluate()`, and FG all use it. This targets
+Godot's default thread model (render on the main thread), where a frame's SL calls are sequential;
+Frame Generation under the experimental separate render thread is not supported. (If the out-of-order
+present / semaphore timeout persists once the token is unified and FG is actually generating, it is a
+present-path issue for the HUD-less restructuring, not the token.)
+
+**Present-only means the UI ghosts on generated frames.** H5 does not tag a HUD-less colour buffer
+or a separate UI layer, so Streamline interpolates the final image including the HUD. That is the
+documented Option-A trade-off; H6 adds the HUD-less input for a clean image.
+
+**Validation nits deferred to H6 / inherent to present-only** (seen on the 5080 with FG on): the
+`vkCmdDraw-09600` / `vkCmdCopyImage-06663` / `VkImageMemoryBarrier-01213` / `vkQueueSubmit2-03868`
+messages arise inside Streamline's own Frame Generation present path and from interpolating an image
+whose UI was not tagged HUD-less. They are not from the addon's SR tagging or options; a clean
+HUD-less tag path (H6) is expected to resolve the UI-related ones, and the Streamline-internal ones
+are NVIDIA's. FG off is validation-clean.
+
 ## Requirements (target)
 
 | Feature | GPU | Driver | Other |
@@ -115,7 +159,7 @@ Hardware-independent milestones (**H**) build and test on the GTX 1080 dev box; 
 | **H2** | Real capability detection of the GPU the plugin sees (vendor / architecture / driver via the gpu_precheck probe), still guarded off; OS / HAGS deferred. **Landed.** | H1 |
 | **H3** | Load the Streamline Frame Generation plugins (`sl.dlss_g`, `sl.reflex`, `sl.pcl`) into slInit when FG is permitted and resolve their functions on the device; ship the FG DLLs with Windows exports. Guarded off: no rendering uses them and the Reflex backend is not switched. **Landed.** | H2 |
 | **H4** | The Reflex backend switch: `SlReflexDevice` drives Reflex through sl.reflex / sl.pcl (same contract as `Ll2Device`, reusing `FrameSequencer`), chosen over VK_NV_low_latency2 when FG is permitted. LL2 kept out of the device; LL2 path byte-identical when FG off. **Landed.** | H3 |
-| **H5** | Present-path scheduling and the VSync-off / Reflex-on guards; the degraded present-only FG path (interpolating the final image including the HUD), guarded. | H4 |
+| **H5** | Drive present-only Frame Generation: `slDLSSGSetOptions(eOn, numFramesToGenerate)` on the SR viewport (reusing SR's depth + motion-vector tags, backbuffer auto-intercepted), the VSync-off / SR-active guards, and the live `slDLSSGGetState` status. UI ghosts on generated frames (no HUD-less tagging yet). **Landed.** | H4 |
 | **H6** | HUD-less-colour input contract and a game-side UI-layer hook for a clean FG image. | H5 |
 | **R1-R6** | The RTX-only counterparts: load `sl.dlss_g`, activate FG, verify the Reflex switch, measure latency/throughput, MFG multipliers, image quality. | H1-H6 |
 

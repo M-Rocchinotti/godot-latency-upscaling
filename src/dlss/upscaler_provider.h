@@ -96,6 +96,27 @@ public:
 
 	// E.g. "DLSS 310.9.1 through Streamline 2.14.1", once initialised.
 	virtual std::string version() const { return std::string(); }
+
+	// DLSS Frame Generation (Phase 3, present-only). The upscaler controller sets the request from the
+	// addon's settings; the backend drives Frame Generation on its own viewport inside evaluate() (the
+	// Super Resolution tags provide depth + motion vectors, the backbuffer is intercepted). A backend
+	// that cannot do Frame Generation leaves these as no-ops.
+	struct FrameGenerationRuntime {
+		bool active = false; // Frame Generation is generating frames now
+		uint32_t num_frames_to_generate = 0; // generated frames per real frame (multiplier - 1)
+		uint32_t num_frames_presented = 0; // slDLSSGGetState().numFramesActuallyPresented
+		uint32_t render_width = 0; // the Super Resolution render size
+		uint32_t render_height = 0;
+		std::string status; // why not active (when a runtime status bit is set), e.g. "Reflex not active"
+	};
+	virtual void set_frame_generation_request(bool on, uint32_t num_frames_to_generate) {
+		(void)on;
+		(void)num_frames_to_generate;
+	}
+	virtual bool frame_generation_runtime(FrameGenerationRuntime &out) const {
+		(void)out;
+		return false;
+	}
 };
 
 } // namespace lu::dlss

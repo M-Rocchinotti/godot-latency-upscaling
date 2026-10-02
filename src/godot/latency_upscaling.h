@@ -111,6 +111,8 @@ protected:
 
 private:
 	void connect_frame_signals();
+	bool frame_generation_vsync_on() const; // Frame Generation needs VSync off on Vulkan
+	void update_frame_generation_request(); // recompute + push the Frame Generation request to the backend
 	void on_frame_pre_draw(); // Reflex
 	void on_upscaler_pre_draw(); // the upscaler's camera tracking
 	void on_render_frame_begin(int64_t frame_id);
@@ -129,6 +131,8 @@ private:
 	// in this version they only feed get_status() and the public getters (no runtime effect).
 	FrameGenerationMode fg_mode_ = FRAME_GENERATION_OFF;
 	int mfg_multiplier_ = 0; // 0 = Auto, else 2 / 3 / 4
+	bool fg_request_on_ = false; // the last Frame Generation request pushed to the backend
+	uint32_t fg_request_frames_ = 0; // ... and its numFramesToGenerate (so it is pushed only on change)
 	bool left_button_was_down_ = false;
 	int64_t drawn_frame_id_ = 0; // main thread: frame whose draw this iteration queued
 	uint64_t overlay_id_ = 0; // ObjectID of the overlay node

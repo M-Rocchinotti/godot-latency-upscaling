@@ -27,17 +27,43 @@
 
 namespace lu::reflex {
 
-// The Streamline functions SlReflexDevice needs: the core frame-token source plus the sl.reflex and
-// sl.pcl plugin functions. dlss::Streamline fills these once the plugins are resolved on the device;
-// unit tests pass fakes.
+// One Streamline frame token per frame, shared by every subsystem that touches a frame: the
+// sl.reflex markers / slReflexSleep, the Super Resolution slSetConstants / slEvaluateFeature, and
+// the Frame Generation present. Streamline's commonInterface keys a frame's constants on this token,
+// so if different subsystems minted their own, the FG present would look the constants up under the
+// wrong id ("Unable to find 'common' constants for frame N") and disable per-frame. advance() at
+// frame start mints the next monotonic token; current() returns it for the rest of that frame.
+//
+// dlss::Streamline owns one instance (when the Frame Generation plugins are loaded) and threads it
+// into evaluate() and into SlReflexDevice via SlReflexApi. Thread-safe; targets Godot's default
+// thread model (render on the main thread), where a frame's calls are sequential.
+class FrameTokenSource {
+public:
+	explicit FrameTokenSource(PFun_slGetNewFrameToken *mint) :
+			mint_(mint) {}
+
+	sl::FrameToken *advance(); // frame start: mint the next frame's token and make it current
+	sl::FrameToken *current(); // this frame's token (mints the first lazily)
+
+private:
+	sl::FrameToken *advance_locked(); // mutex_ held
+	std::mutex mutex_;
+	PFun_slGetNewFrameToken *mint_ = nullptr;
+	uint32_t next_index_ = 0;
+	sl::FrameToken *current_ = nullptr;
+};
+
+// The Streamline functions SlReflexDevice needs: the shared per-frame token source plus the
+// sl.reflex and sl.pcl plugin functions. dlss::Streamline fills these once the plugins are resolved
+// on the device; unit tests pass fakes.
 struct SlReflexApi {
-	PFun_slGetNewFrameToken *get_new_frame_token = nullptr;
+	FrameTokenSource *token_source = nullptr; // the one token per frame (shared with SR + FG)
 	PFun_slReflexSetOptions *set_options = nullptr;
 	PFun_slReflexSleep *sleep = nullptr;
 	PFun_slReflexGetState *get_state = nullptr;
 	PFun_slPCLSetMarker *set_marker = nullptr;
 
-	bool complete() const { return get_new_frame_token && set_options && sleep && get_state && set_marker; }
+	bool complete() const { return token_source && set_options && sleep && get_state && set_marker; }
 };
 
 // Maps a reflex::Marker to Streamline's PCLMarker. Returns false for markers PCL has no equivalent
@@ -59,10 +85,9 @@ public:
 	DeviceState state() override;
 
 	// --- MarkerSink ---
-	void emit_marker(uint64_t frame_id, Marker marker) override; // slPCLSetMarker with that frame's token
+	void emit_marker(uint64_t frame_id, Marker marker) override; // slPCLSetMarker with the frame's shared token
 
 private:
-	sl::FrameToken *token_for_locked(uint64_t frame_id); // slGetNewFrameToken(index = frame_id)
 	void apply_options_locked();
 
 	SlReflexApi api_;

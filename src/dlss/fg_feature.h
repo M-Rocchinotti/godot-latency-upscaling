@@ -63,6 +63,23 @@ int max_multiplier_for(NvArchitecture architecture);
 // generated frames) maps to 1 (no Frame Generation).
 int fg_multiplier_from_frames_to_generate(uint32_t num_frames_to_generate_max);
 
+// numFramesToGenerate for slDLSSGSetOptions from the MFG multiplier setting (0 Auto, 2, 3, 4) and the
+// runtime's ceiling (DLSSGState::numFramesToGenerateMax). 2x->1, 3x->2, 4x->3 (multiplier - 1); Auto
+// -> the ceiling; the result is capped to the ceiling and never below 1 (Frame Generation generates
+// at least one frame when on). num_frames_to_generate_max 0 (unknown) leaves Auto at 1.
+uint32_t fg_num_frames_to_generate(int mfg_multiplier, uint32_t num_frames_to_generate_max);
+
+// Whether and why Frame Generation runs, given the capability and the live state. Pure, unit-tested;
+// the public API maps it to the status string (and drives Frame Generation only for Driving).
+enum class FgAvailability {
+	Unavailable, // the hardware / driver / OS cannot run Frame Generation (non-RTX, etc.)
+	Off, // supported, but frame_generation is Off
+	NeedsUpscaler, // on, but no DLSS Super Resolution / DLAA upscaler is active (Frame Generation rides on it)
+	NeedsVSyncOff, // on and upscaling, but VSync is on (Frame Generation needs VSync off on Vulkan)
+	Driving, // on, upscaling, VSync off: Frame Generation is driven
+};
+FgAvailability fg_availability(bool supported, bool fg_mode_on, bool sr_active, bool vsync_on);
+
 // "" when Frame Generation could run on these caps, otherwise a player-actionable reason (without a
 // leading "unavailable: "; the public API adds that, mirroring get_dlss_status()).
 std::string check_frame_generation(const FgCaps &caps);

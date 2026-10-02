@@ -66,9 +66,9 @@ sl::Result fake_set_marker(sl::PCLMarker marker, const sl::FrameToken &frame) {
 	return sl::Result::eOk;
 }
 
-SlReflexApi fake_api() {
+SlReflexApi fake_api(FrameTokenSource &source) {
 	SlReflexApi api;
-	api.get_new_frame_token = &fake_get_new_frame_token;
+	api.token_source = &source; // the one shared per-frame token
 	api.set_options = &fake_set_options;
 	api.sleep = &fake_sleep;
 	api.get_state = &fake_get_state;
@@ -78,9 +78,24 @@ SlReflexApi fake_api() {
 
 } // namespace
 
+TEST(fg_frame_token_source_mints_one_token_per_frame) {
+	reset_fake();
+	FrameTokenSource source(&fake_get_new_frame_token);
+	// current() mints the first lazily; repeated current() returns the same token (shared within a
+	// frame by the markers, the SR evaluate and the FG present).
+	sl::FrameToken *first = source.current();
+	CHECK(first != nullptr && static_cast<uint32_t>(*first) == 0u);
+	CHECK(source.current() == first);
+	// advance() moves to the next frame's token.
+	sl::FrameToken *second = source.advance();
+	CHECK(second != nullptr && static_cast<uint32_t>(*second) == 1u && second != first);
+	CHECK(source.current() == second);
+}
+
 TEST(sl_reflex_mode_maps_to_streamline_and_carries_the_fps_cap) {
 	reset_fake();
-	SlReflexDevice device(fake_api(), SleepMode{ ReflexMode::On, 0 }); // ctor applies the options once
+	FrameTokenSource source(&fake_get_new_frame_token);
+	SlReflexDevice device(fake_api(source), SleepMode{ ReflexMode::On, 0 }); // ctor applies the options once
 	CHECK_EQ(g_options.size(), size_t(1));
 	CHECK(g_options[0].mode == sl::ReflexMode::eLowLatency);
 	CHECK_EQ(g_options[0].frame_limit_us, 0u);
@@ -96,25 +111,27 @@ TEST(sl_reflex_mode_maps_to_streamline_and_carries_the_fps_cap) {
 	CHECK(to_sl_reflex_mode(ReflexMode::OnBoost) == sl::ReflexMode::eLowLatencyWithBoost);
 }
 
-TEST(sl_reflex_sleeps_once_per_frame_with_the_upcoming_frames_token) {
+TEST(sl_reflex_sleeps_once_per_frame_and_advances_the_shared_token) {
 	reset_fake();
-	SlReflexDevice device(fake_api(), SleepMode{ ReflexMode::On, 0 });
-	FrameSequencer &seq = device.sequencer();
-	// Before the first begin_simulation() the upcoming frame is 1: the sleep uses token 1.
+	FrameTokenSource source(&fake_get_new_frame_token);
+	SlReflexDevice device(fake_api(source), SleepMode{ ReflexMode::On, 0 });
+	// The sleep mints this frame's token (index 0) and is exactly one slReflexSleep call.
 	CHECK(device.sleep());
 	CHECK_EQ(g_sleeps.size(), size_t(1));
-	CHECK_EQ(g_sleeps[0], 1u);
-	// begin_simulation() opens frame 1; the next sleep is for frame 2.
-	CHECK_EQ(seq.begin_simulation(), uint64_t(1));
+	CHECK_EQ(g_sleeps[0], 0u);
+	CHECK_EQ(static_cast<uint32_t>(*source.current()), 0u); // the SR evaluate / FG would use this same token
+	// The next sleep advances to the next frame's token (index 1).
 	CHECK(device.sleep());
 	CHECK_EQ(g_sleeps.size(), size_t(2)); // exactly one sleep per call
-	CHECK_EQ(g_sleeps[1], 2u);
+	CHECK_EQ(g_sleeps[1], 1u);
+	CHECK_EQ(static_cast<uint32_t>(*source.current()), 1u);
 	CHECK_EQ(device.state().counters.sleeps, uint64_t(2));
 }
 
 TEST(sl_reflex_emits_the_six_markers_in_order_and_drops_input_sample) {
 	reset_fake();
-	SlReflexDevice device(fake_api(), SleepMode{ ReflexMode::On, 0 });
+	FrameTokenSource source(&fake_get_new_frame_token);
+	SlReflexDevice device(fake_api(source), SleepMode{ ReflexMode::On, 0 });
 	FrameSequencer &seq = device.sequencer();
 	// One full frame through the shared sequencer.
 	const uint64_t id = seq.begin_simulation(); // SIMULATION_START, INPUT_SAMPLE
@@ -128,10 +145,14 @@ TEST(sl_reflex_emits_the_six_markers_in_order_and_drops_input_sample) {
 		sl::PCLMarker::eRenderSubmitStart, sl::PCLMarker::eRenderSubmitEnd, sl::PCLMarker::ePresentStart,
 		sl::PCLMarker::ePresentEnd };
 	CHECK_EQ(g_markers.size(), size_t(6));
+	// Every marker carries the one frame token current() returns — the same one the SR evaluate and
+	// the FG present use. (No sleep ran, so current() minted the first token, index 0.)
+	const uint32_t frame_token = static_cast<uint32_t>(*source.current());
+	CHECK_EQ(frame_token, 0u);
 	if (g_markers.size() == 6) {
 		for (size_t i = 0; i < 6; ++i) {
 			CHECK(g_markers[i].first == expected[i]);
-			CHECK_EQ(g_markers[i].second, 1u); // every marker of frame 1 carries frame 1's token
+			CHECK_EQ(g_markers[i].second, frame_token);
 		}
 	}
 	const DeviceState st = device.state();
@@ -140,26 +161,28 @@ TEST(sl_reflex_emits_the_six_markers_in_order_and_drops_input_sample) {
 	CHECK_EQ(st.counters.markers[static_cast<size_t>(Marker::InputSample)], uint64_t(0)); // dropped, not counted
 }
 
-TEST(sl_reflex_threads_a_distinct_token_through_each_frame) {
+TEST(sl_reflex_one_token_per_frame_shared_by_markers_sleep_and_the_rest) {
 	reset_fake();
-	SlReflexDevice device(fake_api(), SleepMode{ ReflexMode::On, 0 });
+	FrameTokenSource source(&fake_get_new_frame_token);
+	SlReflexDevice device(fake_api(source), SleepMode{ ReflexMode::On, 0 });
 	FrameSequencer &seq = device.sequencer();
-	for (uint32_t expected_frame = 1; expected_frame <= 2; ++expected_frame) {
-		device.sleep(); // token for the upcoming frame
-		const uint64_t id = seq.begin_simulation();
-		seq.end_simulation();
-		CHECK_EQ(id, uint64_t(expected_frame));
+	// Two frames: each sleep advances the shared token (frame start); the frame's markers and what the
+	// SR evaluate / FG would use (source.current()) all carry that one token.
+	for (uint32_t frame = 0; frame <= 1; ++frame) {
+		device.sleep(); // advance -> this frame's token (index == frame)
+		seq.begin_simulation(); // SIMULATION_START, INPUT_SAMPLE
+		seq.end_simulation(); // SIMULATION_END
+		CHECK_EQ(g_sleeps.back(), frame); // the sleep used this frame's token
+		CHECK_EQ(static_cast<uint32_t>(*source.current()), frame); // the SR evaluate / FG see the same
 	}
 	CHECK_EQ(g_sleeps.size(), size_t(2));
-	CHECK_EQ(g_sleeps[0], 1u);
-	CHECK_EQ(g_sleeps[1], 2u);
-	// Markers: SIMULATION_START + SIMULATION_END per frame, token 1 for frame 1, token 2 for frame 2.
+	// Markers: SIMULATION_START + SIMULATION_END per frame, token 0 for frame 0, token 1 for frame 1.
 	CHECK_EQ(g_markers.size(), size_t(4));
 	if (g_markers.size() == 4) {
-		CHECK_EQ(g_markers[0].second, 1u);
-		CHECK_EQ(g_markers[1].second, 1u);
-		CHECK_EQ(g_markers[2].second, 2u);
-		CHECK_EQ(g_markers[3].second, 2u);
+		CHECK_EQ(g_markers[0].second, 0u);
+		CHECK_EQ(g_markers[1].second, 0u);
+		CHECK_EQ(g_markers[2].second, 1u);
+		CHECK_EQ(g_markers[3].second, 1u);
 	}
 }
 
@@ -181,7 +204,8 @@ TEST(sl_reflex_maps_statistics_from_streamline) {
 	r.gpuRenderStartTime = 2000;
 	r.gpuRenderEndTime = 5000;
 	// frameReport[1] stays empty (frameID 0) and must be skipped.
-	SlReflexDevice device(fake_api(), SleepMode{ ReflexMode::On, 0 });
+	FrameTokenSource source(&fake_get_new_frame_token);
+	SlReflexDevice device(fake_api(source), SleepMode{ ReflexMode::On, 0 });
 	const std::vector<FrameReport> reports = device.latency_reports();
 	CHECK_EQ(reports.size(), size_t(1));
 	if (!reports.empty()) {
@@ -203,6 +227,7 @@ TEST(sl_reflex_maps_statistics_from_streamline) {
 	// A failed query yields no reports.
 	reset_fake();
 	g_get_state_result = sl::Result::eErrorFeatureMissing;
-	SlReflexDevice device2(fake_api(), SleepMode{ ReflexMode::On, 0 });
+	FrameTokenSource source2(&fake_get_new_frame_token);
+	SlReflexDevice device2(fake_api(source2), SleepMode{ ReflexMode::On, 0 });
 	CHECK(device2.latency_reports().empty());
 }

@@ -258,3 +258,105 @@ validation) is **0 VUIDs**, so the FG-on run's 35 are FG-path-specific, not ambi
 runtime rendering/present-sync nits in the FG path (FG is not yet driving frames), to resolve in a later
 milestone — not regressions from the collision fix, which is clean at device creation. Box cleaned, nothing
 left running. No commit.
+| 2026-10-02 12:47:53 | fg_drive2x | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/fg_probe.gd -- --fg=1 --mfg=2 --quality=1 --size=1920x1080 --frames=150` | 10 s | exit -1073741819 | GPU 1 %, no fullscreen app in front, a game running |
+| 2026-10-02 12:48:30 | fg_drive2x_nv | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/fg_probe.gd -- --fg=1 --mfg=2 --quality=1 --size=1920x1080 --frames=150` | 18 s | exit -1073741819 | GPU 1 %, no fullscreen app in front, a game running |
+| 2026-10-02 12:49:57 | fg_off_base | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=0 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/fg_probe.gd -- --fg=0 --quality=1 --size=1920x1080 --frames=150` | 8 s | exit 0 | GPU 0 %, no fullscreen app in front, a game running |
+
+## H5 present-only FG driving re-verify — FG does NOT generate frames; it crashes (device lost) (2026-10-02)
+
+H5 is in the working tree (drive FG when supported + frame_generation On + a DLSS/DLAA upscaler active +
+VSync off). Rebuilt debug+release from it; unit tests **129 passed / 0 failed** (incl.
+`fg_availability_decides_when_to_drive`, `fg_num_frames_to_generate_maps_the_multiplier`). Probed with a
+temporary `tests/fg_probe.gd` (since removed) that set VSync off + a 1920x1080 window, turned on DLAA
+(so the SR path FG rides on is active), set frame_generation On, then measured DLSS-G's
+`numFramesActuallyPresented` against rendered frames.
+
+**Verdict: Frame Generation does NOT generate frames on the 5080 — it crashes (`exit -1073741819`,
+VK_ERROR_DEVICE_LOST) within ~5 s of driving.** Present rate could not be measured; neither FG-on run
+reached a stable `active (Nx … presented)` state (no `FG_PROBE` line printed).
+
+- **FG-off baseline (`fg_off_base`) is clean (exit 0)** and proves the setup is correct: DLAA SR active,
+  `render_size (1920,1080)`, `vsync_mode 0` (off), `reflex_active:true` (240 sleeps), ~980 render fps,
+  `fg_status "off…"`. So VSync-off + DLSS-active + 1080p all hold; the only variable that breaks it is FG
+  actually driving.
+- **FG-on (`fg_drive2x_nv`, no gpu-validation) crashes.** Streamline's FG present path fails in sequence
+  (verbatim): `dlfgPresent.cpp Warning: missing common constants - Frame Generation will be disabled for
+  the frame` → `dlfgPresent presentFrame "Out of order frame - will skip the present"` →
+  `commonInterface.h:622 Unable to find 'common' constants for frame 0 - id 1 - using last set for frame 3
+  - this needs to be fixed if occurring every frame` → the `nv.sl.dlss_g.thread.pacer` thread's
+  `WaitSemaphores` **times out** repeatedly → `CPU pacer is skipping the frame … because of timeout` →
+  `Couldn't wait for Vulkan fence (VkResult error -4)` (VK_ERROR_DEVICE_LOST) → `CrashHandlerException:
+  Program crashed with signal 11` in the BLIT/UI pass. So the "common constants for frame N" error the
+  CEO flagged is real and is the proximate cause: the common constants are set under one frame token but
+  FG's present path looks them up under a different present-frame id (set for frame 3, wanted for frame
+  0/id 1), FG disables per frame and presents out of order, and the present-only pacer then deadlocks on
+  its semaphores and loses the device.
+- **FG-on WITH `--validation` (`fg_drive2x`) also crashes**, adding **new, crash-level** semaphore-sync
+  VUIDs beyond the deferred present-only set: `vkQueueSubmit2-semaphore-03873` ×10,
+  `vkQueueSubmit-pWaitSemaphores-03238` ×10, `vkQueueSubmit2-semaphore-03868` ×4, plus
+  `vkDestroySwapchainKHR-swapchain-01282` and `VkImageViewHandleInfoNVX-imageView-parameter` — consistent
+  with the pacer/present path mishandling present/wait semaphores. These are NOT the benign deferred
+  present-only/HUD-less VUIDs; they accompany the device loss.
+- sl.reflex is active (reflex sleeps run) and DLSS SR/DLAA activates before the crash, so Reflex and the
+  SR path are not the problem; the failure is specific to the FG present-only driving path.
+
+Reflex counters / DLSSGStatus / a presented-frame count were not obtainable because the process dies
+before the probe reads them. Device recovered after the process exited; box cleaned, nothing left
+running. No commit.
+
+**Actionable for the next iteration (not a one-liner):** (1) key the common constants to the frame token
+FG presents (thread one frame token through evaluate→present, or set `slSetConstants` per present frame),
+so `commonInterface` finds 'common' constants for the current frame; (2) fix the present-only pacer
+semaphore handshake (the out-of-order present + `WaitSemaphores` timeouts → device loss), which the
+`vkQueueSubmit2-semaphore-03868/03873` + `pWaitSemaphores-03238` VUIDs point at. Until both are resolved,
+FG driving loses the device rather than doubling the present rate.
+| 2026-10-02 13:08:49 | fg_tok2x | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/fg_probe.gd -- --fg=1 --mfg=2 --quality=1 --size=1920x1080 --frames=150` | 6 s | exit 0 | GPU 6 %, no fullscreen app in front, a game running |
+| 2026-10-02 13:11:01 | fg_tok6x | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/fg_probe.gd -- --fg=1 --mfg=0 --quality=1 --size=1920x1080 --frames=150` | 6 s | exit 0 | GPU 1 %, no fullscreen app in front, a game running |
+| 2026-10-02 13:11:17 | fg_tokoff | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=0 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/fg_probe.gd -- --fg=0 --quality=1 --size=1920x1080 --frames=150` | 6 s | exit 0 | GPU 2 %, no fullscreen app in front, a game running |
+| 2026-10-02 13:12:14 | fg_tok2x_val | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/fg_probe.gd -- --fg=1 --mfg=2 --quality=1 --size=1920x1080 --frames=120` | 6 s | exit 0 | GPU 0 %, no fullscreen app in front, a game running |
+
+## Frame-token unification re-verify — FG now GENERATES frames, no device loss (2026-10-02)
+
+The working-tree fix threads one Streamline frame token per frame (`FrameTokenSource`) through the
+sl.reflex markers/sleep, the SR `slSetConstants`/`slEvaluateFeature`, and the FG present. Rebuilt
+debug+release from it; unit tests **130 passed / 0 failed** (incl. `fg_frame_token_source_mints_one_token_per_frame`,
+`sl_reflex_one_token_per_frame_shared_by_markers_sleep_and_the_rest`). Probed with a temporary
+`tests/fg_probe.gd` (since removed): VSync off, 1920x1080, DLAA active, frame_generation On.
+
+**Verdict: Frame Generation now runs and generates frames — no device loss.** All FG-on runs exit 0
+(2x, 6x, and under `--gpu-validation`). FG-off baseline on the same config also exit 0.
+
+- **No device loss.** `exit 0` everywhere; 0 occurrences of "device lost", "out of order present",
+  "WaitSemaphores timed out", pacer timeout, VkResult -4, or signal 11 — the cascade from last round is
+  gone.
+- **`get_frame_generation_status()` reaches "active (Nx, WxH -> M presented)"**:
+  - 2x (`mfg=2`): `active (2x, 1920x1080 -> 1 presented)`, `fg_active:true`, `num_frames_to_generate:1`.
+  - Auto (`mfg=0`): `active (6x, 1920x1080 -> 1 presented)`, `fg_active:true`, `num_frames_to_generate:5`,
+    `max_multiplier:6`. The multiplier scales 2x↔6x with the request (1↔5 generated frames per real frame).
+  - DLSSGStatus = eOk (fg_active requires it); no fail-status (ReflexNotDetected / ResolutionTooLow /
+    HDRFormatNotSupported) seen.
+- **Present multiplier.** `numFramesActuallyPresented` is defined as "frames presented since the last
+  slDLSSGGetState call" and the addon queries it every rendered frame, so it reads 1 each frame = one
+  interpolated frame presented per rendered frame (2x); at Auto the request rises to 5 generated/real
+  (6x). It is a per-call snapshot, not a cumulative counter, so a cumulative "~2x over the window" number
+  cannot be derived from GDScript. Render rate (VSync off, uncapped): FG-off 963 fps, FG-on 2x 843 fps,
+  FG-on 6x 899 fps; effective present rate ≈ N × render (≈1686/s at 2x, ≈5394/s at 6x) vs 963/s at 1:1 —
+  i.e. the present cadence is N× the render cadence (frame-to-display interval ≈ 1/N of the render
+  interval); absolute values are uncapped-high, not display-meaningful.
+- **sl.reflex stays active while FG generates** (`reflex_active:true`, ~210–240 sleeps per run).
+- **"Unable to find 'common' constants for frame N" — the fatal every-frame mismatch is GONE.** It now
+  appears exactly 3 times, all within ~6 ms at the first FG frame (frame 0 / id 1, "using last set for
+  frame 3"), in every FG-on run; FG is disabled for ~2 startup frames, then aligns and runs clean for the
+  rest of the window with no recurrence and no device loss. A one-time startup transient, not the
+  per-frame failure.
+- **Validation VUIDs under FG-on (`fg_tok2x_val`, exit 0): the crash-level ones are gone.** Last round's
+  `vkQueueSubmit2-semaphore-03873` ×10 and `vkQueueSubmit-pWaitSemaphores-03238` ×10 and
+  `VkImageViewHandleInfoNVX-imageView-parameter` are absent; `vkQueueSubmit2-semaphore-03868` dropped
+  ×4→×1. Remaining: the expected benign deferred present-only / HUD-less set — `vkCmdDraw-None-09600` ×10,
+  `vkCmdCopyImage-aspect-06663` ×10, `VkImageMemoryBarrier-oldLayout-01213` ×10 — plus 1× `03868` (a lone
+  present-semaphore reuse) and 1× `vkDestroySwapchainKHR-swapchain-01282` (teardown). None are
+  device/crash-level.
+- **The game keeps rendering** (120–150-frame windows complete, ~770–900 render fps). UI ghosting on
+  generated frames is expected for present-only (HUD-less milestone pending).
+
+Box cleaned, device healthy, nothing left running. No commit.

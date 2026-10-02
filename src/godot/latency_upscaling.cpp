@@ -272,6 +272,9 @@ void LatencyUpscaling::on_startup() {
 void LatencyUpscaling::on_frame() {
 	Upscaler &upscaler = Upscaler::get();
 	upscaler.update();
+	// Phase 3: push the Frame Generation request after the upscaler's state is current for this frame
+	// (it only forwards to the backend when the request actually changed). Runs regardless of Reflex.
+	update_frame_generation_request();
 	if (upscaler.takeover_pending()) {
 		// Behind this iteration's _draw(): the buffers Godot configured for it are taken over
 		// before the next frame renders (research 2.2; see godot/upscaler.h).
@@ -447,35 +450,85 @@ void LatencyUpscaling::reset_dlss_history() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Frame Generation (Phase 3; guarded off). The capability is reported by dlss::FgFeature (stubbed
-// in milestone H1, so unavailable on every GPU); the mode and multiplier are stored here but have
-// no runtime effect yet. A later, RTX-only milestone loads the Streamline Frame Generation feature,
-// switches Reflex to sl.reflex and makes these take effect.
+// Frame Generation (Phase 3, present-only / Option A). dlss::FgFeature reports the hardware
+// capability; Frame Generation is driven only on a GeForce RTX 40 series+ with the NVIDIA runtime,
+// when frame_generation is On, a DLSS Super Resolution / DLAA upscaler is active (Frame Generation
+// rides on its compositor + tagging path), and VSync is off. The request is pushed to the DLSS
+// backend (Streamline), which drives it on its viewport; nothing of this runs with Frame Generation
+// off (the default). UI ghosts on generated frames until the HUD-less milestone (docs/PHASE3_FG.md).
 // ---------------------------------------------------------------------------------------------
 
 bool LatencyUpscaling::is_frame_generation_supported() const {
 	return dlss::FgFeature::get().status().supported;
 }
 
+bool LatencyUpscaling::frame_generation_vsync_on() const {
+	Object *ds = Engine::get_singleton()->get_singleton("DisplayServer");
+	if (ds == nullptr) {
+		return false; // headless: Frame Generation is ruled out by the other gates, not VSync
+	}
+	// VSYNC_DISABLED is 0; Frame Generation on Vulkan needs the present not to block (VSync off).
+	return static_cast<int>(ds->call("window_get_vsync_mode", 0)) != 0;
+}
+
 bool LatencyUpscaling::is_frame_generation_active() const {
-	return dlss::FgFeature::get().status().active;
+	dlss::UpscalerProvider::FrameGenerationRuntime runtime;
+	return Upscaler::get().frame_generation_runtime(runtime) && runtime.active;
 }
 
 String LatencyUpscaling::get_frame_generation_status() const {
 	const dlss::FgStatus s = dlss::FgFeature::get().status();
-	if (!s.supported) {
-		return String("unavailable: ") + String::utf8(s.reason.c_str());
+	const bool sr_active = Upscaler::get().backend() == UpscaleBackend::Dlss && Upscaler::get().is_active();
+	switch (dlss::fg_availability(s.supported, fg_mode_ == FRAME_GENERATION_ON, sr_active, frame_generation_vsync_on())) {
+		case dlss::FgAvailability::Unavailable:
+			return String("unavailable: ") + String::utf8(s.reason.c_str());
+		case dlss::FgAvailability::Off:
+			return "off: Frame Generation is off (set frame_generation to On)";
+		case dlss::FgAvailability::NeedsUpscaler:
+			return "off: needs a DLSS or DLAA upscaler (Frame Generation runs on the Super Resolution path)";
+		case dlss::FgAvailability::NeedsVSyncOff:
+			return "unavailable: Frame Generation needs VSync off";
+		case dlss::FgAvailability::Driving: {
+			dlss::UpscalerProvider::FrameGenerationRuntime rt;
+			const bool have = Upscaler::get().frame_generation_runtime(rt);
+			if (have && rt.active) {
+				return vformat("active (%dx, %dx%d -> %d presented)", static_cast<int>(rt.num_frames_to_generate) + 1,
+						static_cast<int>(rt.render_width), static_cast<int>(rt.render_height),
+						static_cast<int>(rt.num_frames_presented));
+			}
+			if (have && !rt.status.empty()) {
+				return String("off: ") + String::utf8(rt.status.c_str());
+			}
+			return "on (starting Frame Generation)";
+		}
 	}
-	if (!s.active) {
-		return String("off: ") + String::utf8(s.reason.c_str());
+	return "off";
+}
+
+// Recomputes whether Frame Generation should be driven (and with how many generated frames) and
+// pushes it to the DLSS backend, only when it changed. Called every frame and on a settings change.
+void LatencyUpscaling::update_frame_generation_request() {
+	if (fg_mode_ == FRAME_GENERATION_OFF && !fg_request_on_) {
+		return; // the common case (Frame Generation off, nothing driven): no per-frame work at all
 	}
-	return vformat("active (%dx)", s.max_multiplier);
+	const dlss::FgStatus s = dlss::FgFeature::get().status();
+	const bool sr_active = Upscaler::get().backend() == UpscaleBackend::Dlss && Upscaler::get().is_active();
+	const bool on = dlss::fg_availability(s.supported, fg_mode_ == FRAME_GENERATION_ON, sr_active,
+							frame_generation_vsync_on()) == dlss::FgAvailability::Driving;
+	const uint32_t max_frames = s.max_multiplier > 1 ? static_cast<uint32_t>(s.max_multiplier) - 1 : 0;
+	const uint32_t num_frames = dlss::fg_num_frames_to_generate(mfg_multiplier_, max_frames);
+	if (on != fg_request_on_ || num_frames != fg_request_frames_) {
+		fg_request_on_ = on;
+		fg_request_frames_ = num_frames;
+		Upscaler::get().set_frame_generation(on, num_frames);
+	}
 }
 
 void LatencyUpscaling::set_frame_generation_mode(FrameGenerationMode mode) {
 	ERR_FAIL_COND_MSG(mode < FRAME_GENERATION_OFF || mode > FRAME_GENERATION_ON,
 			"Frame Generation mode must be FRAME_GENERATION_OFF or FRAME_GENERATION_ON.");
 	fg_mode_ = mode;
+	update_frame_generation_request();
 }
 
 LatencyUpscaling::FrameGenerationMode LatencyUpscaling::get_frame_generation_mode() const {
@@ -485,6 +538,7 @@ LatencyUpscaling::FrameGenerationMode LatencyUpscaling::get_frame_generation_mod
 void LatencyUpscaling::set_mfg_multiplier(int multiplier) {
 	ERR_FAIL_COND_MSG(!is_valid_mfg_multiplier(multiplier), "Multi Frame Generation multiplier must be 0 (Auto), 2, 3 or 4.");
 	mfg_multiplier_ = multiplier;
+	update_frame_generation_request();
 }
 
 int LatencyUpscaling::get_mfg_multiplier() const {
@@ -719,11 +773,16 @@ Dictionary LatencyUpscaling::get_status() const {
 	Dictionary fg;
 	const dlss::FgStatus fg_status = dlss::FgFeature::get().status();
 	fg["supported"] = fg_status.supported;
-	fg["active"] = fg_status.active;
+	fg["active"] = is_frame_generation_active();
 	fg["mode"] = static_cast<int>(fg_mode_);
 	fg["multiplier"] = mfg_multiplier_;
 	fg["max_multiplier"] = fg_status.max_multiplier;
-	fg["reason"] = String::utf8(fg_status.reason.c_str());
+	fg["status"] = get_frame_generation_status();
+	dlss::UpscalerProvider::FrameGenerationRuntime fg_runtime;
+	if (Upscaler::get().frame_generation_runtime(fg_runtime)) {
+		fg["num_frames_to_generate"] = static_cast<int>(fg_runtime.num_frames_to_generate);
+		fg["num_frames_presented"] = static_cast<int>(fg_runtime.num_frames_presented);
+	}
 	upscaling["frame_generation"] = fg;
 	d["upscaling"] = upscaling;
 	d["warnings"] = to_packed(boot.resolved.warnings);

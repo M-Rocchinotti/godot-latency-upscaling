@@ -146,6 +146,24 @@ TEST(fg_runtime_max_multiplier_overrides_the_architecture_guess) {
 	CHECK_EQ(feature.status().max_multiplier, 1);
 }
 
+TEST(fg_num_frames_to_generate_maps_the_multiplier) {
+	CHECK_EQ(fg_num_frames_to_generate(2, 5), 1u); // 2x -> 1 generated frame
+	CHECK_EQ(fg_num_frames_to_generate(3, 5), 2u); // 3x -> 2
+	CHECK_EQ(fg_num_frames_to_generate(4, 5), 3u); // 4x -> 3
+	CHECK_EQ(fg_num_frames_to_generate(0, 5), 5u); // Auto -> the runtime ceiling (6x on an RTX 50)
+	CHECK_EQ(fg_num_frames_to_generate(4, 1), 1u); // capped to a 2x-only ceiling
+	CHECK_EQ(fg_num_frames_to_generate(0, 1), 1u); // Auto on a 2x-only GPU
+	CHECK_EQ(fg_num_frames_to_generate(0, 0), 1u); // ceiling unknown -> at least one when on
+}
+
+TEST(fg_availability_decides_when_to_drive) {
+	CHECK(fg_availability(false, true, true, false) == FgAvailability::Unavailable); // not RTX 40+
+	CHECK(fg_availability(true, false, true, false) == FgAvailability::Off); // supported but off
+	CHECK(fg_availability(true, true, false, false) == FgAvailability::NeedsUpscaler); // on, no DLSS/DLAA
+	CHECK(fg_availability(true, true, true, true) == FgAvailability::NeedsVSyncOff); // on, upscaling, VSync on
+	CHECK(fg_availability(true, true, true, false) == FgAvailability::Driving); // on, upscaling, VSync off
+}
+
 TEST(fg_feature_reports_the_configured_caps) {
 	// Not probed (milestone H1 / the editor): unavailable everywhere, max multiplier 1.
 	FgFeature feature;

@@ -20,9 +20,14 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+namespace lu::reflex {
+class FrameTokenSource; // reflex/sl_reflex_device.h: the one Streamline frame token per frame
+}
 
 namespace lu::dlss {
 
@@ -57,6 +62,8 @@ public:
 	void shutdown() override;
 	bool optimal_render_size(ImageSize target, upscale::Quality mode, ImageSize &render) const override;
 	bool evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &inputs, std::string &error) override;
+	void set_frame_generation_request(bool on, uint32_t num_frames_to_generate) override;
+	bool frame_generation_runtime(FrameGenerationRuntime &out) const override;
 
 	// "DLSS 310.9.1 through Streamline 2.14.1" once initialised, else "".
 	std::string version() const override;
@@ -75,6 +82,9 @@ private:
 	// (slGetFeatureFunction requires it). Graceful: on any failure it logs, leaves Frame Generation
 	// not ready, and returns without touching DLSS or the non-FG path. Caller holds mutex_.
 	void resolve_frame_generation_functions();
+	// Phase 3, present-only: drive Frame Generation on this viewport (slDLSSGSetOptions) and read back
+	// its state (slDLSSGGetState), from inside evaluate() on the render thread. Caller holds mutex_.
+	void drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height);
 
 	mutable std::mutex mutex_;
 	HMODULE module_ = nullptr;
@@ -82,8 +92,14 @@ private:
 	bool device_ready_ = false; // the DLSS functions are resolved for the device
 	bool fg_permitted_ = false; // Phase 3: Frame Generation plugins were requested at slInit
 	bool fg_runtime_ready_ = false; // Phase 3: their functions were resolved (not yet driving anything)
+	bool fg_request_on_ = false; // Phase 3: the addon asked for Frame Generation (present-only)
+	uint32_t fg_request_frames_ = 1; // numFramesToGenerate the addon asked for
+	FrameGenerationRuntime fg_runtime_; // the last slDLSSGGetState snapshot (for the status)
+	// Phase 3: the one frame token per frame, shared by sl.reflex, the SR evaluate and FG. Created
+	// when the Frame Generation plugins are loaded; the SR evaluate uses its current() token then.
+	std::unique_ptr<reflex::FrameTokenSource> fg_token_source_;
 	std::string version_;
-	uint64_t frame_ = 0;
+	uint64_t frame_ = 0; // the per-evaluate frame index for DLSS Super Resolution without Frame Generation
 };
 
 // What Streamline needs from the device merely by being in the call chain, whether or not DLSS

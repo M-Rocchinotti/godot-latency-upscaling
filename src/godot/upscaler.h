@@ -24,6 +24,7 @@
 #pragma once
 
 #include "dlss/dlss_recorder.h"
+#include "dlss/upscaler_provider.h"
 #include "godot/velocity_fill.h"
 #include "upscale/camera_cut.h"
 #include "upscale/quality.h"
@@ -90,6 +91,12 @@ public:
 	void set_cut_thresholds(const upscale::CutThresholds &thresholds);
 	// Throws the history away on the next upscaled frame (the public reset_dlss_history()).
 	void reset_history() { request_reset(ResetReason::Api, -1); }
+	// Phase 3 Frame Generation (present-only): the addon's request (on + numFramesToGenerate) is
+	// forwarded to the DLSS backend, which drives Frame Generation on its own viewport inside its
+	// evaluation; `frame_generation_runtime` returns the backend's live state for the status. No-ops
+	// when the backend is not DLSS.
+	void set_frame_generation(bool on, uint32_t num_frames_to_generate);
+	bool frame_generation_runtime(dlss::UpscalerProvider::FrameGenerationRuntime &out) const;
 	UpscaleBackend backend() const { return backend_; }
 	bool is_active() const; // upscaling the main viewport right now
 	std::string reason() const; // why it is not active ("" when active)

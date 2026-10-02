@@ -368,11 +368,15 @@ bool Streamline::initialize(const vk::DeviceContext &, std::string &reason) {
 	if (fg_permitted_) {
 		resolve_frame_generation_functions();
 		if (fg_runtime_ready_) {
+			// One frame token per frame, shared by sl.reflex, the SR evaluate and the FG present (so
+			// Streamline's commonInterface keys a frame's constants on one id). The SR evaluate uses its
+			// current() token; SlReflexDevice advances it at the sleep and reads current() for markers.
+			fg_token_source_ = std::make_unique<reflex::FrameTokenSource>(a.GetNewFrameToken);
 			// Hand the resolved sl.reflex / sl.pcl functions to the Reflex feature so it drives Reflex
 			// through Streamline (Frame Generation needs that). The VK_NV_low_latency2 path was kept out
 			// of the device (ReflexFeature::request_device declined it when fg was permitted).
 			reflex::SlReflexApi reflex_api;
-			reflex_api.get_new_frame_token = a.GetNewFrameToken;
+			reflex_api.token_source = fg_token_source_.get();
 			reflex_api.set_options = a.ReflexSetOptions;
 			reflex_api.sleep = a.ReflexSleep;
 			reflex_api.get_state = a.ReflexGetState;
@@ -434,6 +438,9 @@ void Streamline::shutdown() {
 	initialized_ = false;
 	device_ready_ = false;
 	fg_runtime_ready_ = false;
+	fg_request_on_ = false;
+	fg_runtime_ = FrameGenerationRuntime{};
+	fg_token_source_.reset();
 	if (had_fg_reflex) {
 		reflex::ReflexFeature::get().disable_streamline_reflex(); // the Reflex functions are gone now
 		FgFeature::get().set_runtime_max_multiplier(0); // back to the architecture guess
@@ -471,8 +478,16 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 	}
 	Api &a = api();
 	sl::FrameToken *token = nullptr;
-	uint32_t frame_index = static_cast<uint32_t>(frame_++);
-	sl::Result r = a.GetNewFrameToken(token, &frame_index);
+	sl::Result r = sl::Result::eOk;
+	if (fg_token_source_) {
+		// Frame Generation on: use the one token for this frame (minted at the Reflex sleep), so the
+		// constants set here are found by the FG present under the same id.
+		token = fg_token_source_->current();
+	} else {
+		// DLSS Super Resolution without Frame Generation: a per-evaluate token, as before.
+		uint32_t frame_index = static_cast<uint32_t>(frame_++);
+		r = a.GetNewFrameToken(token, &frame_index);
+	}
 	if (r != sl::Result::eOk || token == nullptr) {
 		error = result_text("slGetNewFrameToken", r);
 		return false;
@@ -553,6 +568,69 @@ bool Streamline::evaluate(VkCommandBuffer command_buffer, const EvaluateInputs &
 		error = result_text("slEvaluateFeature", r);
 		return false;
 	}
+	// Phase 3, present-only Frame Generation: drive it on this viewport. The depth and motion vectors
+	// were just tagged for Super Resolution (the mandatory pair), and the backbuffer is intercepted in
+	// interposer mode, so no extra tagging is needed. UI is not tagged yet (that is the HUD-less
+	// milestone), so the game's UI ghosts on generated frames (docs/PHASE3_FG.md).
+	drive_frame_generation(in.viewport, in.color.width, in.color.height);
+	return true;
+}
+
+void Streamline::set_frame_generation_request(bool on, uint32_t num_frames_to_generate) {
+	std::lock_guard<std::mutex> lock(mutex_);
+	fg_request_on_ = on;
+	fg_request_frames_ = num_frames_to_generate > 0 ? num_frames_to_generate : 1;
+	if (!fg_runtime_ready_) {
+		fg_runtime_ = FrameGenerationRuntime{}; // nothing to drive until the plugins are resolved
+	}
+}
+
+void Streamline::drive_frame_generation(uint32_t viewport_id, uint32_t render_width, uint32_t render_height) {
+	// Caller (evaluate) holds mutex_, on the render thread; slDLSSGSetOptions / slDLSSGGetState are not
+	// thread-safe, so they only ever run here.
+	Api &a = api();
+	if (!fg_runtime_ready_ || a.DLSSGSetOptions == nullptr) {
+		return;
+	}
+	const sl::ViewportHandle viewport(viewport_id);
+	sl::DLSSGOptions options{};
+	options.mode = fg_request_on_ ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
+	options.numFramesToGenerate = fg_request_frames_;
+	options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff; // keep resources allocated across off/on
+	a.DLSSGSetOptions(viewport, options);
+
+	FrameGenerationRuntime runtime;
+	runtime.num_frames_to_generate = options.numFramesToGenerate;
+	runtime.render_width = render_width;
+	runtime.render_height = render_height;
+	if (a.DLSSGGetState != nullptr) {
+		sl::DLSSGState state{};
+		if (a.DLSSGGetState(viewport, state, &options) == sl::Result::eOk) {
+			const uint32_t status = static_cast<uint32_t>(state.status);
+			runtime.active = fg_request_on_ && status == static_cast<uint32_t>(sl::DLSSGStatus::eOk);
+			runtime.num_frames_presented = state.numFramesActuallyPresented;
+			if (status != static_cast<uint32_t>(sl::DLSSGStatus::eOk)) {
+				if ((status & static_cast<uint32_t>(sl::DLSSGStatus::eFailReflexNotDetectedAtRuntime)) != 0) {
+					runtime.status = "Reflex is not active";
+				} else if ((status & static_cast<uint32_t>(sl::DLSSGStatus::eFailResolutionTooLow)) != 0) {
+					runtime.status = "the output resolution is too low";
+				} else if ((status & static_cast<uint32_t>(sl::DLSSGStatus::eFailHDRFormatNotSupported)) != 0) {
+					runtime.status = "the swap-chain format is not supported";
+				} else {
+					runtime.status = "Frame Generation reported a problem";
+				}
+			}
+		}
+	}
+	fg_runtime_ = runtime;
+}
+
+bool Streamline::frame_generation_runtime(FrameGenerationRuntime &out) const {
+	std::lock_guard<std::mutex> lock(mutex_);
+	if (!fg_runtime_ready_) {
+		return false;
+	}
+	out = fg_runtime_;
 	return true;
 }
 

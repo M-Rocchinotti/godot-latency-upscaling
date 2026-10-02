@@ -9,6 +9,44 @@ off (the default) the Reflex, DLSS and pass-through behaviour is byte-identical 
 Hardware-independent (builds and tests on the GTX 1080 dev box). The version is not bumped yet. See
 `docs/PHASE3_FG.md`.
 
+### Fixed — Frame Generation device-lost from per-frame token mismatch (RTX 5080)
+
+- Present-only FG crashed with `VK_ERROR_DEVICE_LOST`: each subsystem minted its own Streamline frame
+  token (sl.reflex markers/sleep, the SR `slSetConstants`/`slEvaluateFeature`, the FG present), so SR
+  set the "common" constants under one frame id and the FG present looked them up under another —
+  Streamline logged `Unable to find 'common' constants for frame N` every frame, disabled FG, skipped
+  the out-of-order present, and the pacer's semaphore wait timed out. Fix: a single
+  `reflex::FrameTokenSource` (owned by `dlss::Streamline` when the FG plugins load) mints **one token
+  per frame** — `advance()` at the Reflex sleep (frame start), `current()` for the rest — and it is
+  threaded through the sl.reflex markers/sleep (via `SlReflexApi::token_source`), the SR `evaluate()`
+  and the FG present. Targets Godot's default thread model; the separate render thread is not
+  supported for FG. FG off and the Reflex-only / DLSS-SR-only paths keep their previous token
+  behaviour (byte-identical). Tests: one token minted per frame, shared by the markers, the sleep and
+  what the SR evaluate / FG use.
+
+### Milestone H5 — drive present-only Frame Generation
+
+- Frame Generation is now actually driven (present-only / Option A), guarded off by default. When the
+  hardware supports it, `frame_generation` is On, a DLSS Super Resolution / DLAA upscaler is active,
+  and VSync is off, `dlss::Streamline` calls `slDLSSGSetOptions(viewport, {eOn, numFramesToGenerate,
+  eRetainResourcesWhenOff})` inside its SR `evaluate()` on the upscaled viewport — reusing the depth +
+  motion vectors SR already tagged (the backbuffer is intercepted in interposer mode). The decision is
+  the pure `dlss::fg_availability()`; `numFramesToGenerate` comes from `dlss::fg_num_frames_to_generate()`
+  (2x->1, 3x->2, 4x->3, Auto->the runtime ceiling). `LatencyUpscaling` pushes the request each frame
+  only when it changed, through `Upscaler::set_frame_generation()`.
+- `is_frame_generation_active()` / `get_frame_generation_status()` now reflect the live
+  `slDLSSGGetState`: `"active (Nx, WxH -> M presented)"` when generating; `"off: needs a DLSS or DLAA
+  upscaler"` when FG is on but SR isn't; `"unavailable: Frame Generation needs VSync off"`;
+  `"off: Frame Generation is off"`; `"unavailable: <reason>"` on non-RTX. `get_status()["upscaling"]
+  ["frame_generation"]` gains `status`, `num_frames_to_generate`, `num_frames_presented`.
+- Present-only: the UI ghosts on generated frames (no HUD-less tagging yet — H6). FG off is
+  byte-identical (the per-frame request update early-outs when FG is off). Validation nits from the
+  5080 FG-on run (vkCmdDraw-09600 / vkCmdCopyImage-06663 / VkImageMemoryBarrier-01213 /
+  vkQueueSubmit2-03868) are Streamline-internal or inherent to present-only without HUD-less tagging,
+  deferred to H6 (docs/PHASE3_FG.md).
+- Tests: `fg_availability()` (the drive decision), `fg_num_frames_to_generate()` (the multiplier
+  mapping), and the status categories.
+
 ### Fixed — Frame Generation device-creation crash (RTX 5080 bring-up)
 
 - With Frame Generation on, the engine crashed at `vkCreateDevice`. Root cause (5080 diagnostic): a

@@ -94,6 +94,35 @@ int fg_multiplier_from_frames_to_generate(uint32_t num_frames_to_generate_max) {
 	return static_cast<int>(num_frames_to_generate_max) + 1;
 }
 
+uint32_t fg_num_frames_to_generate(int mfg_multiplier, uint32_t num_frames_to_generate_max) {
+	uint32_t frames;
+	if (mfg_multiplier >= 2) {
+		frames = static_cast<uint32_t>(mfg_multiplier) - 1; // 2x -> 1, 3x -> 2, 4x -> 3
+	} else {
+		frames = num_frames_to_generate_max > 0 ? num_frames_to_generate_max : 1; // Auto -> the ceiling
+	}
+	if (num_frames_to_generate_max > 0 && frames > num_frames_to_generate_max) {
+		frames = num_frames_to_generate_max; // never exceed what the runtime reports it can do
+	}
+	return frames > 0 ? frames : 1; // at least one generated frame when Frame Generation is on
+}
+
+FgAvailability fg_availability(bool supported, bool fg_mode_on, bool sr_active, bool vsync_on) {
+	if (!supported) {
+		return FgAvailability::Unavailable;
+	}
+	if (!fg_mode_on) {
+		return FgAvailability::Off;
+	}
+	if (!sr_active) {
+		return FgAvailability::NeedsUpscaler;
+	}
+	if (vsync_on) {
+		return FgAvailability::NeedsVSyncOff;
+	}
+	return FgAvailability::Driving;
+}
+
 std::string check_frame_generation(const FgCaps &caps) {
 	// Not probed (e.g. the editor, where Frame Generation is moot): the honest, player-actionable
 	// default, as in milestone H1.

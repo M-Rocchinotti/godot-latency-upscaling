@@ -45,24 +45,33 @@ sl::ReflexMode to_sl_reflex_mode(ReflexMode mode) {
 	return sl::ReflexMode::eOff;
 }
 
+sl::FrameToken *FrameTokenSource::advance_locked() {
+	if (mint_ == nullptr) {
+		return current_;
+	}
+	sl::FrameToken *token = nullptr;
+	uint32_t index = next_index_;
+	if (mint_(token, &index) == sl::Result::eOk && token != nullptr) {
+		current_ = token;
+		++next_index_;
+	}
+	return current_;
+}
+
+sl::FrameToken *FrameTokenSource::advance() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return advance_locked();
+}
+
+sl::FrameToken *FrameTokenSource::current() {
+	std::lock_guard<std::mutex> lock(mutex_);
+	return current_ != nullptr ? current_ : advance_locked();
+}
+
 SlReflexDevice::SlReflexDevice(const SlReflexApi &api, const SleepMode &mode) :
 		api_(api), mode_(mode) {
 	std::lock_guard<std::mutex> lock(mutex_);
 	apply_options_locked();
-}
-
-sl::FrameToken *SlReflexDevice::token_for_locked(uint64_t frame_id) {
-	if (api_.get_new_frame_token == nullptr) {
-		return nullptr;
-	}
-	sl::FrameToken *token = nullptr;
-	// The Streamline frame index is the sequencer's per-frame ID; the same ID always maps to the
-	// same token, so this frame's sleep and markers share one token.
-	const uint32_t index = static_cast<uint32_t>(frame_id);
-	if (api_.get_new_frame_token(token, &index) != sl::Result::eOk) {
-		return nullptr;
-	}
-	return token;
 }
 
 void SlReflexDevice::apply_options_locked() {
@@ -91,9 +100,10 @@ bool SlReflexDevice::sleep() {
 	{
 		std::lock_guard<std::mutex> lock(mutex_);
 		sleep_fn = api_.sleep;
-		// The sleep belongs to the frame begin_simulation() is about to open, so it uses that
-		// frame's token — the same token its markers will use.
-		token = token_for_locked(sequencer_.peek_next_id());
+		// The sleep is the start of a new frame: mint that frame's one token here. Every other call of
+		// the frame (the markers below, the Super Resolution evaluate, the Frame Generation present)
+		// then uses current() — the same token — so Streamline's constants and present agree.
+		token = api_.token_source != nullptr ? api_.token_source->advance() : nullptr;
 		if (sleep_fn == nullptr || token == nullptr) {
 			counters_.sleeps_skipped++;
 			return false;
@@ -112,15 +122,16 @@ bool SlReflexDevice::sleep() {
 }
 
 void SlReflexDevice::emit_marker(uint64_t frame_id, Marker marker) {
+	(void)frame_id; // the sequencer still orders the markers; the token is the frame's shared one
 	sl::PCLMarker pcl;
 	if (!to_pcl_marker(marker, pcl)) {
 		return; // INPUT_SAMPLE: no PCL equivalent
 	}
 	std::lock_guard<std::mutex> lock(mutex_);
-	if (api_.set_marker == nullptr) {
+	if (api_.set_marker == nullptr || api_.token_source == nullptr) {
 		return;
 	}
-	sl::FrameToken *token = token_for_locked(frame_id);
+	sl::FrameToken *token = api_.token_source->current();
 	if (token == nullptr) {
 		return;
 	}
