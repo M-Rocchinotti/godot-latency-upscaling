@@ -392,6 +392,12 @@ void bootstrap_core() {
 		if (backend != nullptr) {
 			vk::register_feature(&dlss::StreamlineChainFeature::get());
 			vk::enable_command_interception(); // DLSS evaluates at the upscaler's marker dispatch
+			if (g_state.fg_permitted) {
+				// Frame Generation: the interposer adds its own optical-flow queue, so the patch drops
+				// Godot's colliding one (Streamline::request_device) and the layer remaps Godot's
+				// vkGetDeviceQueue for that family.
+				vk::enable_optical_flow_queue_remap();
+			}
 		}
 	}
 

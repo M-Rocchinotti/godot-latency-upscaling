@@ -96,6 +96,7 @@ bool DlssFeature::request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceR
 			}
 			request.features.merge(own.features);
 			request.queues.insert(request.queues.end(), own.queues.begin(), own.queues.end());
+			request.drop_optical_flow_queue = request.drop_optical_flow_queue || own.drop_optical_flow_queue;
 			return true;
 		}
 		device_reason_ = backend_reason.empty() ? std::string("the DLSS runtime does not support this GPU") : backend_reason;

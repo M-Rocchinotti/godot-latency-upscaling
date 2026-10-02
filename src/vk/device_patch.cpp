@@ -32,6 +32,13 @@ void DeviceRequest::add_extension(const char *name) {
 	extensions.emplace_back(name);
 }
 
+uint32_t remapped_optical_flow_queue_index(int optical_flow_family, uint32_t requested_family, uint32_t requested_index) {
+	if (optical_flow_family >= 0 && requested_family == static_cast<uint32_t>(optical_flow_family)) {
+		return 0; // the single optical-flow queue that exists (the interposer's)
+	}
+	return requested_index;
+}
+
 DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const DeviceRequest &request,
 		const std::vector<VkQueueFamilyProperties> &families) :
 		info_(original) {
@@ -134,15 +141,39 @@ DeviceCreatePatch::DeviceCreatePatch(const VkDeviceCreateInfo &original, const D
 	}
 	info_.pNext = head;
 
-	if (!request.queues.empty()) {
-		add_queues(original, request.queues, families);
+	if (!request.queues.empty() || request.drop_optical_flow_queue) {
+		add_queues(original, request.queues, families, request.drop_optical_flow_queue);
 	}
 }
 
 void DeviceCreatePatch::add_queues(const VkDeviceCreateInfo &original, const std::vector<QueueRequest> &requests,
-		const std::vector<VkQueueFamilyProperties> &families) {
+		const std::vector<VkQueueFamilyProperties> &families, bool drop_optical_flow_queue) {
 	queue_infos_.assign(original.pQueueCreateInfos, original.pQueueCreateInfos + original.queueCreateInfoCount);
 	priorities_.assign(queue_infos_.size(), {});
+
+	// DLSS Frame Generation: remove the host's queue for the optical-flow family. Godot 4.7
+	// blanket-creates one queue in every family (including this one, which it never submits to), and
+	// Streamline's interposer appends its own optical-flow queue there downstream; the family has one
+	// queue, so the two would collide (VUID-...-queueFamilyIndex-02802 / -pQueueCreateInfos-06755).
+	// Dropping the host entry leaves the interposer's as the only one. The dispatch layer remaps the
+	// host's vkGetDeviceQueue for this family so its held handle stays valid.
+	if (drop_optical_flow_queue) {
+		for (uint32_t family = 0; family < families.size(); ++family) {
+			if ((families[family].queueFlags & VK_QUEUE_OPTICAL_FLOW_BIT_NV) == 0) {
+				continue;
+			}
+			for (size_t i = 0; i < queue_infos_.size();) {
+				if (queue_infos_[i].queueFamilyIndex == family && queue_infos_[i].flags == 0) {
+					queue_infos_.erase(queue_infos_.begin() + static_cast<std::ptrdiff_t>(i));
+					priorities_.erase(priorities_.begin() + static_cast<std::ptrdiff_t>(i));
+					dropped_optical_flow_family_ = static_cast<int>(family);
+					changed_ = true;
+				} else {
+					++i;
+				}
+			}
+		}
+	}
 	// Queues in use per family: the host's (only entries without flags can be extended; a family
 	// the host created with flags, e.g. protected queues, is left alone) plus what was added.
 	std::vector<uint32_t> used(families.size(), 0);

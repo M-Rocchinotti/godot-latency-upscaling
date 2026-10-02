@@ -30,6 +30,7 @@ struct Next {
 	PFN_vkCreateDevice CreateDevice = nullptr;
 	PFN_vkDestroyDevice DestroyDevice = nullptr;
 	PFN_vkGetDeviceProcAddr GetDeviceProcAddr = nullptr;
+	PFN_vkGetDeviceQueue GetDeviceQueue = nullptr; // remapped for the dropped optical-flow family (FG)
 	PFN_vkQueueSubmit QueueSubmit = nullptr;
 	PFN_vkCreateSwapchainKHR CreateSwapchainKHR = nullptr;
 	PFN_vkDestroySwapchainKHR DestroySwapchainKHR = nullptr;
@@ -64,6 +65,10 @@ struct Layer {
 	std::atomic<bool> command_hooks_wanted{ false };
 	std::atomic<bool> command_hooks_usable{ false };
 	std::atomic<bool> command_hooks_resolved{ false }; // the host resolved at least one of them
+	// DLSS Frame Generation: when wanted (bootstrap, fg permitted), the layer remaps the host's
+	// vkGetDeviceQueue for the optical-flow family whose queue the device patch dropped.
+	std::atomic<bool> fg_queue_remap_wanted{ false };
+	std::atomic<int> optical_flow_family{ -1 }; // -1 = none dropped
 	MarkerInterceptor interceptor;
 	// Phase 2: a module exporting the Vulkan API in front of the real loader (Streamline's
 	// interposer), set at CORE initialisation. Held for the process lifetime.
@@ -99,6 +104,7 @@ bool fill_next(HMODULE module, Next &next, CommandFunctions &commands, bool &com
 	next.CreateDevice = loader_export<PFN_vkCreateDevice>(module, "vkCreateDevice");
 	next.DestroyDevice = loader_export<PFN_vkDestroyDevice>(module, "vkDestroyDevice");
 	next.GetDeviceProcAddr = loader_export<PFN_vkGetDeviceProcAddr>(module, "vkGetDeviceProcAddr");
+	next.GetDeviceQueue = loader_export<PFN_vkGetDeviceQueue>(module, "vkGetDeviceQueue");
 	next.QueueSubmit = loader_export<PFN_vkQueueSubmit>(module, "vkQueueSubmit");
 	next.CreateSwapchainKHR = loader_export<PFN_vkCreateSwapchainKHR>(module, "vkCreateSwapchainKHR");
 	next.DestroySwapchainKHR = loader_export<PFN_vkDestroySwapchainKHR>(module, "vkDestroySwapchainKHR");
@@ -323,6 +329,7 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 			}
 			request.features.merge(own.features);
 			request.queues.insert(request.queues.end(), own.queues.begin(), own.queues.end());
+			request.drop_optical_flow_queue = request.drop_optical_flow_queue || own.drop_optical_flow_queue;
 			d.queue_count = own.queues.size();
 		}
 		decisions.push_back(d);
@@ -351,6 +358,11 @@ VKAPI_ATTR VkResult VKAPI_CALL hook_CreateDevice(VkPhysicalDevice physical_devic
 			enabled = patch.enabled_extensions();
 			added = patch.added_extensions();
 			queues = patch.queue_assignments();
+			// Frame Generation: the patch dropped the host's optical-flow-family queue; remember the
+			// family so hook_GetDeviceQueue maps the host's later request there to the queue that exists.
+			if (patch.dropped_optical_flow_family() >= 0) {
+				L.optical_flow_family.store(patch.dropped_optical_flow_family(), std::memory_order_release);
+			}
 		} else {
 			patch_failed = true;
 			char buffer[200];
@@ -444,6 +456,17 @@ VKAPI_ATTR void VKAPI_CALL hook_DestroySurfaceKHR(VkInstance instance, VkSurface
 	}
 }
 
+VKAPI_ATTR void VKAPI_CALL hook_GetDeviceQueue(VkDevice device, uint32_t family, uint32_t index, VkQueue *queue) {
+	Layer &L = layer();
+	// Godot holds a handle to the optical-flow family's queue (it blanket-creates one per family) but
+	// never submits to it. In Frame Generation mode the patch removed the host's entry for that family
+	// so Streamline's interposer owns the one queue there; map the host's request to index 0 so its
+	// handle stays valid. For every other family (and Frame Generation off) this is a pass-through.
+	const uint32_t use_index =
+			remapped_optical_flow_queue_index(L.optical_flow_family.load(std::memory_order_acquire), family, index);
+	L.next.GetDeviceQueue(device, family, use_index, queue);
+}
+
 VKAPI_ATTR VkResult VKAPI_CALL hook_QueueSubmit(VkQueue queue, uint32_t count, const VkSubmitInfo *submits, VkFence fence) {
 	Layer &L = layer();
 	QueueHooks *hooks = L.queue_hooks.load(std::memory_order_acquire);
@@ -498,6 +521,7 @@ struct HookEntry {
 	bool device_level;
 	bool queue;
 	bool command;
+	bool optical_flow; // only handed out when the Frame Generation queue remap is wanted
 };
 
 PFN_vkVoidFunction find_hook(const char *name, bool device_scope);
@@ -540,6 +564,7 @@ PFN_vkVoidFunction find_hook(const char *name, bool device_scope) {
 		{ "vkCreateDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateDevice), false, false, false },
 		{ "vkGetDeviceProcAddr", reinterpret_cast<PFN_vkVoidFunction>(&hook_GetDeviceProcAddr), true, false, false },
 		{ "vkDestroyDevice", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroyDevice), true, false, false },
+		{ "vkGetDeviceQueue", reinterpret_cast<PFN_vkVoidFunction>(&hook_GetDeviceQueue), true, false, false, true },
 		{ "vkCreateSwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_CreateSwapchainKHR), true, true, false },
 		{ "vkDestroySwapchainKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySwapchainKHR), true, true, false },
 		{ "vkDestroySurfaceKHR", reinterpret_cast<PFN_vkVoidFunction>(&hook_DestroySurfaceKHR), false, true, false },
@@ -556,9 +581,14 @@ PFN_vkVoidFunction find_hook(const char *name, bool device_scope) {
 	const bool have_queue_hooks = L.queue_hooks.load(std::memory_order_acquire) != nullptr;
 	const bool have_command_hooks =
 			L.command_hooks_wanted.load(std::memory_order_acquire) && L.command_hooks_usable.load(std::memory_order_acquire);
+	// The optical-flow queue remap is handed out only when Frame Generation wants it and the loader
+	// provides vkGetDeviceQueue; otherwise vkGetDeviceQueue is the loader's own (Frame Generation off
+	// is byte-identical).
+	const bool have_optical_flow_remap =
+			L.fg_queue_remap_wanted.load(std::memory_order_acquire) && L.next.GetDeviceQueue != nullptr;
 	for (const HookEntry &entry : table) {
 		if ((device_scope && !entry.device_level) || (entry.queue && !have_queue_hooks) ||
-				(entry.command && !have_command_hooks)) {
+				(entry.command && !have_command_hooks) || (entry.optical_flow && !have_optical_flow_remap)) {
 			continue;
 		}
 		if (std::strcmp(entry.name, name) == 0) {
@@ -587,6 +617,10 @@ void register_feature(VulkanFeature *feature) {
 
 void set_queue_hooks(QueueHooks *hooks) {
 	layer().queue_hooks.store(hooks, std::memory_order_release);
+}
+
+void enable_optical_flow_queue_remap() {
+	layer().fg_queue_remap_wanted.store(true, std::memory_order_release);
 }
 
 void set_loader_override(HMODULE module, const char *name) {

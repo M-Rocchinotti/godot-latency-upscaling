@@ -38,6 +38,13 @@ void set_queue_hooks(QueueHooks *hooks);
 // lacks an entry point the layer needs, the real loader is used (snapshot().loader_override_problem).
 void set_loader_override(HMODULE module, const char *name);
 
+// DLSS Frame Generation (Phase 3): hand the host a wrapped vkGetDeviceQueue that remaps the
+// optical-flow family (whose queue the device patch drops so Streamline's interposer owns it).
+// Enabled at CORE initialisation when Frame Generation is permitted; a no-op passthrough until the
+// patch actually drops that family. Frame Generation off: never enabled, so vkGetDeviceQueue is the
+// loader's own.
+void enable_optical_flow_queue_remap();
+
 // Command-buffer interception (Phase 2). Must be enabled at CORE initialisation: the host resolves
 // its vkCmd* functions right after vkCreateInstance, and only then can they be hooked.
 void enable_command_interception();

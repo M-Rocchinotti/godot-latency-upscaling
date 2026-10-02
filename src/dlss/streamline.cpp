@@ -311,15 +311,28 @@ bool Streamline::request_instance_extensions(std::vector<std::string> &, std::st
 	return true;
 }
 
-bool Streamline::request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &, std::string &reason) {
+bool Streamline::request_device(const vk::PhysicalDeviceCaps &caps, vk::DeviceRequest &request, std::string &reason) {
 	// In interposer mode Streamline's own vkCreateDevice adds everything its features need downstream
 	// of the addon: DLSS Super Resolution's and, when sl.dlss_g is loaded, Frame Generation's device
-	// extensions, features and queues (the optical-flow queue and VK_NV_optical_flow among them). The
-	// addon must NOT add the optical-flow queue itself — a second one is a duplicate the addon cannot
-	// de-dup, because the interposer appends its copy after the addon has run (the RTX 5080 crash).
-	// The one device setup the interposer needs from the app, VK_KHR_present_id for sl.reflex's
-	// VK_NV_low_latency2, is added by ReflexFeature when Frame Generation is permitted.
-	return adapter_supported(caps.handle, reason);
+	// extensions, features and queues — including the optical-flow queue and VK_NV_optical_flow. The
+	// addon must NOT add the optical-flow queue itself.
+	if (!adapter_supported(caps.handle, reason)) {
+		return false;
+	}
+	// But Godot 4.7 blanket-creates one queue in every family, including the optical-flow family, and
+	// the interposer appends its own there in Frame Generation mode: the family has one queue, so they
+	// collide and vkCreateDevice is invalid (the RTX 5080 crash). Ask the patch to drop Godot's
+	// optical-flow-family queue so the interposer's is the only one. The device patch no-ops when no
+	// optical-flow family exists; the dispatch layer remaps Godot's vkGetDeviceQueue for it.
+	bool fg_permitted = false;
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		fg_permitted = fg_permitted_;
+	}
+	if (fg_permitted) {
+		request.drop_optical_flow_queue = true;
+	}
+	return true;
 }
 
 bool Streamline::initialize(const vk::DeviceContext &, std::string &reason) {

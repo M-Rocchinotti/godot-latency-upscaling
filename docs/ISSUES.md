@@ -62,37 +62,41 @@ the Frame Generation optical-flow-queue path:
   `(queueFamilyIndex, flags)`.
 - `VUID-VkDeviceCreateInfo-pQueueCreateInfos-06755` — a family's `queueCount` exceeded its limit.
 
-**Cause (corrected after the RTX re-verify).** Streamline runs as an **interposer**: its own
-`vkCreateDevice`, downstream of the addon, adds everything its loaded features need — including Frame
-Generation's optical-flow queue and `VK_NV_optical_flow`, and `VK_NV_low_latency2` for sl.reflex. The
-precise validation causes were:
+**True cause (5080 diagnostic).** It is a **collision**, not an interposer double-add:
 
-- **02802 + 06755:** `pQueueCreateInfos[6]` duplicated `[5]`, both queue family 5 (the optical-flow
-  family, which has one queue). The addon requested an optical-flow queue **and** the interposer
-  added its own downstream — a duplicate the addon cannot de-dup (the interposer appends its copy
-  after the addon has run). The first fix attempt (addon requests the optical-flow queue) went the
-  wrong direction and caused this.
-- **01387:** `VK_NV_low_latency2` (added by the interposer for sl.reflex, since the addon declines
-  LL2 in Frame Generation mode) was missing its required `VK_KHR_present_id` in
-  `ppEnabledExtensionNames` — the interposer does not add present_id itself.
+- Godot 4.7's `RenderingDeviceDriverVulkan` **blanket-creates one queue in every queue family 0-5**,
+  including the optical-flow family (family 5 = `TRANSFER | SPARSE | OPTICAL_FLOW_NV`, `queueCount`
+  1). It even calls `vkGetDeviceQueue(family 5)` and holds the handle, but never submits real work
+  there (it has no optical-flow rendering — it just creates one per family).
+- In Frame Generation mode Streamline's interposer (sl.dlss_g) appends **its own** optical-flow queue
+  for family 5 in its downstream `vkCreateDevice`. Now there are two family-5 entries — Godot's and
+  the interposer's — and 2 > 1 available → `VUID-...-queueFamilyIndex-02802` /
+  `VUID-...-pQueueCreateInfos-06755` → the invalid `VkDeviceCreateInfo` → 0xC0000005. NVIDIA's docs
+  say the optical-flow family is meant to be exclusive to Streamline's queue; Godot's blanket
+  creation violates that. Streamline config cannot fix it (`DLSSGQueueParallelismMode` is a runtime
+  `slDLSSGSetOptions` field, after device creation).
+- A separate `01387`: `VK_NV_low_latency2` (added by the interposer for sl.reflex, since the addon
+  declines LL2 in Frame Generation mode) was missing its required `VK_KHR_present_id`.
 
-**Fix (`src/dlss/streamline.cpp`, `src/reflex/reflex_ll2.cpp`, `src/vk/device_patch.cpp`).**
-- The addon does **not** request the optical-flow queue (`Streamline::request_device` reverted) and
-  `device_patch` does **not** add `VK_NV_optical_flow` — the interposer owns the whole optical-flow
-  setup (queue + extension + its deps). Reasoning: a `VK_QUEUE_OPTICAL_FLOW_BIT_NV` queue cannot be
-  requested without `VK_NV_optical_flow` enabled, so the interposer, which adds the queue, must enable
-  the extension; adding it in the addon only risks a conflict. (If the RTX re-verify shows a 01387 for
-  `VK_NV_optical_flow` itself, the extension — not the queue — would be re-added; not expected.)
-- When Frame Generation is permitted, `ReflexFeature::request_device` now enables `VK_KHR_present_id`
-  and chains `VkPhysicalDevicePresentIdFeaturesKHR` (reusing the LL2 plumbing) but **not**
-  `VK_NV_low_latency2`, and `on_device_created` creates **no** `Ll2Device` — so the interposer's
-  sl.reflex `VK_NV_low_latency2` has present_id present (fixes 01387) while the addon's LL2 path stays
-  inert. If the device lacks present_id, Frame Generation's Reflex is declined cleanly.
-- `DeviceCreatePatch::add_queues` keeps a defensive hardening pass: it **merges** entries that share
-  `(queueFamilyIndex, flags)` and **caps** each family's `queueCount` to its limit. It cannot see the
-  interposer's downstream additions, so it does not fix the interposer duplicate — removing the
-  addon's own optical-flow queue request does. Correct placements never trigger the pass; the
-  Frame-Generation-off path is byte-identical.
+**Fix (`src/vk/device_patch.cpp`, `src/vk/dispatch.cpp`, `src/dlss/streamline.cpp`, `src/reflex/reflex_ll2.cpp`).**
+- **Drop the collision.** When Frame Generation is permitted, `Streamline::request_device` sets
+  `DeviceRequest::drop_optical_flow_queue`, and `DeviceCreatePatch` **removes Godot's
+  `VkDeviceQueueCreateInfo` for the optical-flow family** from the forwarded `pQueueCreateInfos`
+  (found from the physical device's `VkQueueFamilyProperties`). After the interposer appends its own,
+  there is exactly one family-5 entry (count 1) → valid. Strictly guarded: only when
+  `fg_permitted`, Streamline is the backend, and the family exists; Frame Generation off → the
+  forwarded list is unchanged (byte-identical).
+- **Keep Godot's held handle valid.** The dispatch layer wraps `vkGetDeviceQueue`
+  (`enable_optical_flow_queue_remap`, handed out only when Frame Generation wants it): a request for
+  the dropped optical-flow family is remapped to index 0 — the one queue that exists there (the
+  interposer's). Godot does not submit to it, so this is purely defensive; every other family and
+  Frame Generation off is a pass-through.
+- **present_id for sl.reflex.** `ReflexFeature::request_device` enables `VK_KHR_present_id` and chains
+  `VkPhysicalDevicePresentIdFeaturesKHR` in Frame Generation mode (but not `VK_NV_low_latency2`, no
+  `Ll2Device`), so the interposer's `VK_NV_low_latency2` has its dependency (fixes 01387).
+- `DeviceCreatePatch::add_queues` keeps the defensive dedupe-by-`(queueFamilyIndex, flags)` and
+  `queueCount`-cap hardening. (The addon does not add `VK_NV_optical_flow`; the interposer enables it
+  itself for its queue.)
 
 **Also fixed alongside.** `get_max_frame_generation_multiplier()` was hardcoded to the
 architecture guess (Blackwell = 4). When Frame Generation is available at runtime it now derives
@@ -100,9 +104,10 @@ from `slDLSSGGetState().numFramesToGenerateMax` (`numFramesToGenerateMax + 1`, s
 back to the architecture guess when the runtime value is not available. The dev-box behaviour
 (unavailable -> 1) is unchanged.
 
-**Status.** Corrected fix in place and unit-tested: `ReflexFeature::request_device` in Frame
-Generation mode enables present_id and not `VK_NV_low_latency2` with no `Ll2Device`; `device_patch`
-adds no optical-flow extensions; the generic dedupe-by-`(family, flags)` and `queueCount`-cap
-hardening still holds. Build + full suite green on the GTX 1080 with Frame Generation off
-(pass-through byte-identical, validation clean). The fix's runtime path is RTX-only (interposer
-present), so the RTX windowed Frame-Generation-on probe is to be re-run to confirm the crash is gone.
+**Status.** Collision fix in place and unit-tested: `device_patch` drops Godot's optical-flow-family
+queue when `drop_optical_flow_queue` is set and reports the family; the dispatch layer remaps
+`vkGetDeviceQueue` for it; `ReflexFeature` enables present_id (not LL2) in Frame Generation mode. The
+generic dedupe/cap hardening still holds. Build + full suite green on the GTX 1080 with Frame
+Generation off (pass-through byte-identical, validation clean). The fix's runtime path is RTX-only
+(the interposer must be present), so the RTX windowed Frame-Generation-on probe is to be re-run — this
+should finally let `vkCreateDevice` succeed with Frame Generation on.

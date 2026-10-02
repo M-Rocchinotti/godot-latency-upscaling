@@ -53,10 +53,20 @@ struct DeviceRequest {
 	std::vector<std::string> extensions;
 	DeviceFeatureRequest features;
 	std::vector<QueueRequest> queues;
+	// DLSS Frame Generation: Godot 4.7 blanket-creates one queue in every family, including the
+	// optical-flow family, but Streamline's interposer appends its own optical-flow queue there in
+	// Frame Generation mode. The family has one queue, so the two collide. When set, the patch drops
+	// the host's optical-flow-family queue so the interposer's is the only one.
+	bool drop_optical_flow_queue = false;
 
 	void add_extension(const char *name); // ignores duplicates
-	bool empty() const { return extensions.empty() && !features.any() && queues.empty(); }
+	bool empty() const { return extensions.empty() && !features.any() && queues.empty() && !drop_optical_flow_queue; }
 };
+
+// The queue index to hand the host for a vkGetDeviceQueue request, after the optical-flow-family
+// queue was dropped: the host's held handle for that family maps to the one queue that exists there
+// (index 0, the interposer's). Any other family is returned unchanged. Pure, so it is unit-tested.
+uint32_t remapped_optical_flow_queue_index(int optical_flow_family, uint32_t requested_family, uint32_t requested_index);
 
 class DeviceCreatePatch {
 public:
@@ -77,6 +87,9 @@ public:
 	std::vector<std::string> enabled_extensions() const;
 	// One per request.queues entry, in order; unassigned when no family had room.
 	const std::vector<QueueAssignment> &queue_assignments() const { return queues_; }
+	// The optical-flow family whose host queue the patch dropped (DeviceRequest::drop_optical_flow_queue),
+	// or -1 when none was dropped. The dispatch layer remaps the host's vkGetDeviceQueue for it.
+	int dropped_optical_flow_family() const { return dropped_optical_flow_family_; }
 
 	// Undoes the in-place feature-bit edits. Idempotent.
 	void restore();
@@ -84,7 +97,7 @@ public:
 private:
 	void request_bit(VkBool32 *existing_field, bool *prepend_flag);
 	void add_queues(const VkDeviceCreateInfo &original, const std::vector<QueueRequest> &requests,
-			const std::vector<VkQueueFamilyProperties> &families);
+			const std::vector<VkQueueFamilyProperties> &families, bool drop_optical_flow_queue);
 
 	VkDeviceCreateInfo info_{};
 	std::vector<std::string> added_;
@@ -96,6 +109,7 @@ private:
 	std::vector<VkDeviceQueueCreateInfo> queue_infos_;
 	std::vector<std::vector<float>> priorities_; // per queue_infos_ entry the patch rewrote or added
 	std::vector<QueueAssignment> queues_;
+	int dropped_optical_flow_family_ = -1;
 
 	struct InPlaceEdit {
 		VkBool32 *field;

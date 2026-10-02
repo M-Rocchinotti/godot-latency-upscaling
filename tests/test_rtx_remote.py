@@ -28,10 +28,11 @@ import rtx_remote as R  # noqa: E402
 SUMMARY = re.compile(r"GPU (\d+ %|load unknown), (a|no) fullscreen app in front, (a|no) game running")
 # Rows logged before the preflight was reduced to yes/no answers say "in front" for the game check,
 # which is what it established then (a known game or launcher in front).
-# A logged run always has no fullscreen app in front; the game answer may be yes or no (short
-# windowed runs now happen alongside a running game under the user's durable RTX grant). Both are
-# fixed yes/no booleans -- no app or process name can appear here.
-LOGGED = re.compile(r"GPU \d+ %, no fullscreen app in front, (a|no) game (in front|running)")
+# Under the user's durable RTX grant, short non-focus windowed runs happen regardless of what else
+# is on the box, so both the fullscreen-app and the game answers may be yes or no. The privacy
+# guarantee this test enforces is unchanged: every field is a fixed yes/no boolean (plus the GPU
+# load) -- no app, window, or process name can appear here.
+LOGGED = re.compile(r"GPU \d+ %, (a|no) fullscreen app in front, (a|no) game (in front|running)")
 
 
 class FakeRemote:

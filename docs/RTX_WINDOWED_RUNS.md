@@ -154,3 +154,107 @@ family-5 entries (the interposer requesting the optical-flow queue twice, or the
 colliding with a base/Godot family-5 queue) and address it at that layer — a Streamline config/version
 matter, or stopping the optical-flow family from being requested upstream of the interposer. Nothing of
 ours was left running.
+| 2026-10-02 11:45:56 | fg_apidump | `VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump VK_LAYER_SETTINGS_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer\apidump_settings.txt GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/upscaler_run.gd -- --frames=5` | 4 s | exit -1073741819 | GPU 1 %, a fullscreen app in front, a game running |
+| 2026-10-02 11:48:09 | fg_apidump2 | `VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump VK_LAYER_SETTINGS_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer\apidump_settings.txt VK_APIDUMP_PRE_DUMP=true GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/upscaler_run.gd -- --frames=5` | 2 s | exit -1073741819 | GPU 1 %, a fullscreen app in front, a game running |
+| 2026-10-02 11:49:58 | fgoff_apidump | `VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer VK_INSTANCE_LAYERS=VK_LAYER_LUNARG_api_dump VK_LAYER_SETTINGS_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer\apidump_settings.txt GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=0 GODOT_LATENCY_UPSCALING_VERBOSE=1 (medium integrity) --script res://tests/upscaler_run.gd -- --frames=5` | 6 s | exit 0 | GPU 1 %, a fullscreen app in front, a game running |
+
+## R2 diagnostic round — the optical-flow queue duplicate is a Godot/interposer collision (2026-10-02)
+
+Goal: find the real source of the duplicate family-5 (optical-flow) queue and a fix lever. Method: a
+temporary (uncommitted, since reverted) `DIAG` log in `hook_CreateDevice` dumping Godot's original and
+the addon-forwarded `VkDeviceCreateInfo` (pre-interposer), plus the LunarG `VK_LAYER_LUNARG_api_dump`
+layer (temporarily deployed, since removed) capturing the FINAL post-interposer `vkCreateDevice`. Three
+short windowed runs above. Box cleaned, api_dump layer removed, clean DLLs redeployed.
+
+**Root cause — a collision, not a double-add.** The RTX 5080 exposes 6 queue families; family 5 =
+`TRANSFER | SPARSE_BINDING | OPTICAL_FLOW_NV`, **queueCount 1**. Godot 4.7 creates **one queue in every
+family 0–5**, so its base `VkDeviceCreateInfo` already contains a family-5 entry (count 1), and in FG-off
+it also calls `vkGetDeviceQueue(family=5)` — Godot retrieves and holds that queue. The addon forwards
+Godot's list unchanged in FG mode (it adds only the `VK_KHR_present_id` + `VK_EXT_private_data`
+extensions, no queue — confirmed by the DIAG dump). When Frame Generation is on, Streamline's interposer
+(sl.dlss_g) appends **its own** optical-flow queue for family 5 (and bumps family 2 from 1→3 queues).
+Result: two family-5 `VkDeviceQueueCreateInfo` with identical (familyIndex 5, flags 0), total count 2 >
+the 1 queue the family has → `VUID-02802` (duplicate family+flags) and `VUID-06755` (over-count), then
+the driver crashes (0xC0000005). So entry `[5]` is Godot's, entry `[6]` is the interposer's; the
+interposer requests the optical-flow queue **once** and it collides with Godot's pre-existing one.
+
+Final post-interposer `pQueueCreateInfos` (7 entries): fam0, fam1×1, **fam2×3**, fam3×1, fam4×1,
+**fam5×1 (Godot)**, **fam5×1 (interposer)**. The interposer also added `VK_NV_low_latency`,
+`VK_NV_low_latency2`, `VK_NV_optical_flow`, `VK_NVX_*`, `VK_KHR_push_descriptor`, external-memory/semaphore
+extensions, etc. NVIDIA's own docs state the optical-flow queue family must be **exclusive** to the
+client's other queues — Godot's blanket per-family queue creation violates that, which is the underlying
+incompatibility.
+
+**Q3 — does a Streamline config avoid it? No.** `DLSSGQueueParallelismMode`
+(`eBlockPresentingClientQueue` vs `eBlockNoClientQueues`) is a field of `slDLSSGSetOptions`, a **runtime**
+call made after the device exists; it cannot change the device-creation queue set. No documented
+Streamline preference makes the interposer reuse an existing optical-flow-family queue or suppress its
+own at device-create time.
+
+**Q4 — can the addon de-dup below the interposer? Feasible, but not with the current clean technique.**
+`sl.interposer.dll` imports no Vulkan library (only kernel32/user32/CRT); it holds the strings
+`"vulkan-1.dll"`/`"vkCreateDevice"`/`"vkGetDeviceProcAddr"` and resolves the real loader **dynamically**
+(LoadLibrary + GetProcAddress). So there is no static IAT thunk to patch below it. A below-interposer
+de-dup would need either (a) an inline/trampoline detour of the real loader's exported `vkCreateDevice`
+(new low-level, process-wide hooking the addon does not currently have), or (b) extending the addon's
+existing LoadLibrary-IAT hook onto `sl.interposer.dll` and returning a dedicated second shim for the
+interposer's dynamic `vulkan-1.dll` resolution (the addon loads the interposer itself, so it controls that
+timing). The de-dup logic itself already exists (`device_patch.cpp` merges same-(family,flags) entries and
+caps queueCount); only reaching the final list is missing. Merging `[5]`+`[6]` into one family-5 entry
+(count 1) is valid — both Godot and the interposer would retrieve the same single physical optical-flow
+queue.
+
+**Fix options, for the CEO to weigh:**
+1. Below-interposer de-dup hook (merge the two family-5 entries to the 1 physical queue). Robust; needs new
+   hooking machinery per Q4.
+2. Prevent Godot from creating the optical-flow-family queue: drop Godot's family-5 entry pre-interposer
+   AND remap Godot's `vkGetDeviceQueue(family=5)` (the addon owns that hook) to the shared queue. Simpler
+   reach, but Godot *does* retrieve family 5, so this needs confirmation that Godot never submits real work
+   there before it is safe (open question — not yet verified).
+3. Upstream: Streamline should merge its optical-flow queue request with an existing family-5 entry rather
+   than appending a duplicate; track as an NVIDIA Streamline limitation.
+
+Downstream R2 targets (sl.reflex status, live FG `get_status()`, 6x ceiling, common constants) remain
+unobservable until device creation succeeds. FG off stays exit 0 and clean. No commit; nothing left
+running.
+| 2026-10-02 12:14:10 | fg_collfix | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=120` | 4 s | exit -1073741819 | GPU 2 %, no fullscreen app in front, a game running |
+| 2026-10-02 12:18:29 | fg_collfix2 | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=1;fg/mode=1 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=120` | 6 s | exit 0 | GPU 0 %, no fullscreen app in front, a game running |
+| 2026-10-02 12:20:55 | fgoff_val | `GODOT_LATENCY_UPSCALING_SETTINGS=fg/enabled=0 GODOT_LATENCY_UPSCALING_VERBOSE=1 VK_ADD_LAYER_PATH=C:\Users\lol\claude-rtx-test\tools\vklayer (medium integrity) --gpu-validation --script res://tests/upscaler_run.gd -- --frames=120` | 6 s | exit 0 | GPU 0 %, no fullscreen app in front, a game running |
+
+## R2 collision-fix re-verify — crash gone, FG/Reflex live (2026-10-02)
+
+The working-tree collision fix (drop Godot's optical-flow-family queue in FG mode; remap the host's
+`vkGetDeviceQueue` for it; keep `VK_KHR_present_id`) was **incomplete as first submitted**: `fg_collfix`
+still crashed (`exit -1073741819`) with the same `VUID-02802` + `-06755` on the two family-5 entries.
+Cause: `DlssFeature::request_device` (dlss_feature.cpp) merged the Streamline backend's `DeviceRequest`
+into the layer's request but forwarded only extensions/features/queues — it **dropped
+`own.drop_optical_flow_queue` on the floor**, so the patch never removed Godot's family-5 queue. One line
+added there (`request.drop_optical_flow_queue = request.drop_optical_flow_queue || own.drop_optical_flow_queue;`,
+uncommitted, left in the working tree for the CEO to fold in) completes it.
+
+With that line, `fg_collfix2` **succeeds (exit 0)**:
+
+- **Crash gone.** Device creation passes; `device 'NVIDIA GeForce RTX 5080' created through the layer`.
+- **All three device-creation VUIDs gone** — `01387`, `02802`, `06755`: 0 occurrences. api-dump-confirmed
+  earlier that `[5]` was Godot's family-5 queue and `[6]` the interposer's; dropping `[5]` leaves one.
+- **Reflex live through Streamline** — `reflex.active:true`, `supported:true`, `sleep_enabled:true`,
+  119 sleeps over ~120 frames, markers stamped (RENDERSUBMIT/SIMULATION ~118); driven by sl.reflex, NOT
+  the addon's `VK_NV_low_latency2` path (`submits_tagged:0`, `presents_stamped:0`, by design). Log:
+  "Reflex now runs through NVIDIA Streamline (sl.reflex) for Frame Generation".
+- **Frame Generation detected** — `frame_generation.supported:true`, **`max_multiplier:6`** (from
+  `numFramesToGenerateMax` 5 → 6x), `mode:1`; `active:false`, reason "Frame Generation is not yet
+  available in this version" (Phase-3 guarded, not "unavailable"). "Frame Generation plugins loaded and
+  resolved (not yet driving rendering)".
+- **Interposer active** — `loader_override_active:true` (sl.interposer.dll), DLSS 310.9.1 through
+  Streamline 2.14.1, addon-added device extensions `VK_KHR_present_id` + `VK_EXT_private_data`.
+- **No "common constants" errors; rendering completed** 120 frames; the remapped optical-flow queue did
+  not break anything.
+
+**Validation not fully clean under FG, but no crash/device blockers.** `fgoff_val` (FG off, same
+validation) is **0 VUIDs**, so the FG-on run's 35 are FG-path-specific, not ambient: `vkCmdDraw-None-09600`
+×10, `vkCmdCopyImage-aspect-06663` ×10, `VkImageMemoryBarrier-oldLayout-01213` ×10, and
+`vkQueueSubmit2-semaphore-03868` ×2 (a swapchain present-semaphore reuse reported by Godot's own
+`rendering_context_driver_vulkan.cpp:680`, matching a known Streamline-FG present-sync issue). These are
+runtime rendering/present-sync nits in the FG path (FG is not yet driving frames), to resolve in a later
+milestone — not regressions from the collision fix, which is clean at device creation. Box cleaned, nothing
+left running. No commit.

@@ -417,6 +417,52 @@ TEST(device_patch_dedupes_queue_entries_and_caps_to_the_family_limit) {
 	}
 }
 
+TEST(device_patch_drops_the_optical_flow_family_queue_in_frame_generation_mode) {
+	// Godot 4.7 blanket-creates one queue in every family, including the optical-flow family (4 here).
+	CustomHost host;
+	for (uint32_t family = 0; family < 5; ++family) {
+		host.add(family, 1);
+	}
+	host.finish();
+	DeviceRequest request;
+	request.drop_optical_flow_queue = true; // set by Streamline::request_device when Frame Generation is on
+	CHECK(!request.empty()); // the flag alone makes the patch apply
+	DeviceCreatePatch patch(host.chain.info, request, nvidia_like_families());
+	const VkDeviceCreateInfo *out = patch.get();
+	CHECK(patch.changed());
+	CHECK_EQ(patch.dropped_optical_flow_family(), 4);
+	CHECK(entry_for(out, 4) == nullptr); // Godot's optical-flow-family queue is removed
+	CHECK_EQ(out->queueCreateInfoCount, 4u); // the other four families are untouched
+	for (uint32_t family = 0; family < 4; ++family) {
+		const VkDeviceQueueCreateInfo *kept = entry_for(out, family);
+		CHECK(kept != nullptr && kept->queueCount == 1u);
+	}
+}
+
+TEST(device_patch_keeps_every_queue_when_frame_generation_is_off) {
+	CustomHost host;
+	for (uint32_t family = 0; family < 5; ++family) {
+		host.add(family, 1);
+	}
+	host.finish();
+	DeviceCreatePatch patch(host.chain.info, DeviceRequest{}, nvidia_like_families()); // drop flag off
+	const VkDeviceCreateInfo *out = patch.get();
+	CHECK(!patch.changed());
+	CHECK_EQ(patch.dropped_optical_flow_family(), -1);
+	CHECK_EQ(out->queueCreateInfoCount, 5u); // every family, including optical flow, is kept
+	CHECK(entry_for(out, 4) != nullptr);
+	CHECK(out->pQueueCreateInfos == host.chain.info.pQueueCreateInfos); // the host's array, untouched
+}
+
+TEST(device_patch_remaps_the_optical_flow_queue_index) {
+	// After the drop, the host's vkGetDeviceQueue for the optical-flow family maps to index 0 (the one
+	// queue that exists there, the interposer's); other families and "no family dropped" pass through.
+	CHECK_EQ(remapped_optical_flow_queue_index(4, 4, 7), 0u);
+	CHECK_EQ(remapped_optical_flow_queue_index(4, 4, 0), 0u);
+	CHECK_EQ(remapped_optical_flow_queue_index(4, 2, 3), 3u); // a different family is unchanged
+	CHECK_EQ(remapped_optical_flow_queue_index(-1, 4, 7), 7u); // nothing dropped: unchanged
+}
+
 TEST(device_patch_enables_private_data_where_the_host_chains_it_or_prepends_it) {
 	GodotLikeChain godot;
 	DeviceRequest request;
