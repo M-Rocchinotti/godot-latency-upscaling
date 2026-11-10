@@ -1,5 +1,7 @@
 # godot-latency-upscaling
 
+https://youtu.be/KLIL1KSFFSY
+
 A Godot 4.7 addon (GDExtension) that brings NVIDIA technologies to any Vulkan project without
 engine changes and without project setup: **NVIDIA Reflex** (low-latency mode, frame-rate limiter,
 latency markers and measurements), **DLSS Super Resolution / DLAA** and **DLSS Frame Generation /
